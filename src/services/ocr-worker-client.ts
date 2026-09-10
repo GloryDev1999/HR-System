@@ -6,10 +6,15 @@
  *  - Mỗi lần chạy có requestId riêng -> progress/kết quả không bị trộn giữa các lần gọi
  *  - Các lần gọi được xếp hàng tuần tự (worker chỉ xử lý 1 ảnh tại một thời điểm)
  *  - terminateOcrWorker() huỷ worker và từ chối mọi tác vụ đang chờ
- *  - OFFLINE file:// (mở dist/index.html trực tiếp trong thư mục OneDrive):
- *    Worker module riêng file không khởi tạo được trên file:// nên tự dùng
- *    ocr-engine-direct.ts (pipeline thật, không Worker, model từ IndexedDB).
+ *  - Worker được bundle INLINE (`?worker&inline`, update-model.md §2) nên chạy được
+ *    cả file:// (double-click dist/index.html trong OneDrive) lẫn http://localhost.
+ *    Model/wasm lấy từ bản nhúng base64 trong worker, không fetch file rời.
+ *    Chỉ khi worker inline cũng lỗi mới rơi về ocr-engine-direct.ts
+ *    (đọc model từ kho IndexedDB offline).
+ *  - Chỉ worker này chứa bản nhúng 35MB. Main thread KHÔNG import
+ *    EMBEDDED_MODELS để tránh nhân đôi bundle.
  */
+import OcrWorker from '../workers/onnx-ocr.worker.ts?worker&inline';
 import type {
   OCRWorkerRequest,
   OCRWorkerProgress,
@@ -17,7 +22,6 @@ import type {
   OCRWorkerError,
 } from '../types/ocr-worker-protocol';
 import { runOcrDirect } from './ocr-engine-direct';
-import { canUseWorker } from './ocr-assets-store';
 
 export interface OcrRunHandlers {
   onProgress?: (progress: number, step: string, message: string) => void;
@@ -43,10 +47,8 @@ const pendingRejects = new Set<(err: Error) => void>();
 
 function getWorker(): Worker {
   if (!workerInstance) {
-    workerInstance = new Worker(
-      new URL('../workers/onnx-ocr.worker.ts', import.meta.url),
-      { type: 'module' }
-    );
+    // Inline worker (base64 trong bundle) — chạy được cả file:// lẫn http.
+    workerInstance = new OcrWorker() as unknown as Worker;
   }
   return workerInstance;
 }
@@ -139,7 +141,8 @@ async function runDirectAsWorkerResult(
 /**
  * Chạy pipeline OCR thật trên một ảnh. Các lời gọi chồng nhau được xếp hàng,
  * kết quả luôn gắn đúng requestId của lần gọi.
- * Tự chọn Worker (http://localhost) hay direct (file:// / Worker hỏng).
+ * Ưu tiên worker inline (có model nhúng, chạy được cả file://); chỉ rơi về
+ * direct khi worker hỏng/crash giữa chừng.
  */
 export function runOcrPipeline(
   imageBlob: Blob | ArrayBuffer,
@@ -150,7 +153,7 @@ export function runOcrPipeline(
 
   // Xếp hàng tuần tự để worker/direct engine không bao giờ nhận 2 tác vụ cùng lúc
   const run = queueTail.then(() => job()).then(async (bytes) => {
-    const wantDirect = options.forceDirect || workerBroken || !canUseWorker();
+    const wantDirect = options.forceDirect || workerBroken;
     if (wantDirect) {
       return runDirectAsWorkerResult(bytes, options);
     }

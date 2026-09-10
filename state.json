@@ -3,9 +3,9 @@
     "project_name": "SmartHR - Single-File In-Browser HRMS & Timekeeping System",
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
-    "last_updated": "2026-09-09T10:25:00Z",
-    "current_phase": "Phase 16: Opencode Audit & Domain Requirements Fully Remediated (ACID Import, RBAC Menus, Department Admin flows, Multi-format Probation, OCR Master Lookup, Atomic Seeder - 118/118 tests green, 0 tsc errors)",
-    "version": "1.6.0"
+    "last_updated": "2026-09-10T10:20:00Z",
+    "current_phase": "Phase 17: File-protocol Worker/Model Inline per update-model.md (Blob inline workers, embedded base64 models, embedded-aware health check - 118/118 tests green, 0 tsc errors)",
+    "version": "1.7.0"
   },
   "agent_profile": {
     "role": "Senior Principal System Designer & Staff IT Software Engineer",
@@ -244,6 +244,20 @@
         "Task 5 (P1): Chuẩn hoá luồng OCR theo nghiệp vụ đã thống nhất (B31): OCR tập trung nhận diện MSNV, Ngày tăng ca, và Giờ tăng ca; Tên nhân viên và Bộ phận tự động tra cứu từ danh mục Master (db.employees). Loại bỏ các phép thay thế ký tự đơn lẻ toàn cục ('O'->'0', 'l'->'1', 'S'->'5') khỏi hr-rag-postprocessor.ts để bảo vệ họ tên tiếng Việt.",
         "Task 6 (P1): Bọc transaction nguyên tử cho toàn bộ thao tác nạp dữ liệu ban đầu seedDatabaseIfEmpty trong db-seeder.ts.",
         "Subagent QC: 118/118 tests vitest passed 100%, tsc --noEmit sạch lỗi 0 warning, ghi nhận KB-010 đến KB-013 vào learning.md."
+      ]
+    },
+    "M17_File_Protocol_Inline_2026_09_10": {
+      "status": "COMPLETED_PENDING_EDGE_TEST",
+      "completion_pct": 90,
+      "features": [
+        "Spike test P1 theo update-model.md: spike-test/worker-wasm-test.html (TEST 1 Blob Worker + TEST 2/2b IndexedDB persistence 2 lần mở + TEST 3 base64) và spike-test/RESULT.md chờ user chạy trên Edge (container không thay thế được test file://).",
+        "Kiểm kê thực tế khác dự kiến tài liệu: chỉ 2 new Worker() (Header.tsx timesheet-parser, ocr-worker-client.ts onnx-ocr); formula-engine.worker.ts là orphan; không có importScripts; Vite 8.2.2 hỗ trợ ?worker&inline; ORT thực tế cài 1.27.0.",
+        "Cả 2 Worker chuyển sang ?worker&inline, không còn new URL worker rời — fix lỗi file:///dist/timesheet-parser.worker-*.js cannot be accessed from origin null.",
+        "scripts/embed-models.mjs (prebuild): nhúng 6 file thật sự được load (det 4.6MB + latin rec 8.6MB + ort wasm 13MB + mjs + latin/vi dict) thành base64 ~35MB, @ts-nocheck, gitignore; bỏ ch rec 11MB không ai load (tiết kiệm ~15MB).",
+        "onnx-ocr.worker.ts embedded-trước-fetch-sau + withEmbeddedWasmFetch (pattern đã chứng minh ở ocr-engine-direct.ts), không giả định shape wasmPaths theo version ORT; main thread không import bản nhúng (tránh nhân đôi).",
+        "onnx-model-checker.ts đọc embedded-manifest.ts tí hon, assetSource embedded, hết báo thiếu model giả trên file://; OCRVerificationPage ternary + title đồng bộ.",
+        "scripts/deploy-to-onedrive.mjs dùng env HR_ONEDRIVE_DIST thay hardcode username Windows.",
+        "Verify: tsc 0 lỗi, vitest 118/118 pass, dist/index.html 38MB một file, không còn *.worker-*.js. Còn lại: user chạy spike-test + 6 bước kiểm thử thủ công update-model.md §6 trên Edge và báo kết quả."
       ]
     }
   }

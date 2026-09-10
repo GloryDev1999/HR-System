@@ -216,3 +216,22 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
 - **Bài học kinh nghiệm (Key Takeaway)**:
   - Không OCR những thông tin đã có sẵn và chuẩn xác trong cơ sở dữ liệu Master. Tận dụng Master Data Lookup bằng khóa chính để đạt độ chính xác 100% cho các trường định danh.
 
+
+---
+
+### KB-014: Worker rời bị chặn trên `file://` origin 'null' — inline toàn bộ Worker + nhúng model base64 (update-model.md)
+- **Ngày ghi nhận**: 2026-09-10
+- **Vị trí**: `src/components/layout/Header.tsx`, `src/services/ocr-worker-client.ts`, `src/workers/onnx-ocr.worker.ts`, `src/services/onnx-model-checker.ts`, `scripts/embed-models.mjs`, `package.json`
+- **Triệu chứng (Symptom)**:
+  - Mở `dist/index.html` bằng double-click (OneDrive, Edge): OCR không load model; nạp chấm công báo `Failed to construct 'Worker': Script at 'file:///.../dist/timesheet-parser.worker-*.js' cannot be accessed from origin 'null'`. Qua `npm run serve` (http) thì chạy tốt.
+- **Nguyên nhân gốc rễ (Root Cause)**:
+  - Chromium áp origin `null` cho `file://` và chặn Worker fetch file `.js` rời + `fetch()` model `.onnx/.wasm` rời. Build cũ tách worker thành `dist/*.worker-*.js` nên 100% fail ở local. Ngoài ra mở nhầm `index.html` của bản build cũ sau khi đã fix cũng tái hiện đúng lỗi (hash `DKe9plTH` trong log chính là file worker của bản cũ).
+- **Giải pháp xử lý (Resolution)**:
+  - Cả 2 điểm khởi tạo Worker chuyển sang Vite `?worker&inline` (Header timesheet-parser, ocr-worker-client onnx-ocr). `formula-engine.worker.ts` là orphan (không nơi nào `new Worker`), giữ nguyên.
+  - `scripts/embed-models.mjs` (chạy ở `prebuild`) nhúng 6 file thật sự được load (det 4.6MB + latin rec 8.6MB + ort wasm 13MB + mjs + 2 dict) thành base64 vào `src/generated/embedded-models.ts` (~35MB, `@ts-nocheck`, gitignore, không commit). Bỏ `ch_PP-OCRv4_rec.onnx` (11MB, không code nào load) tiết kiệm ~15MB base64.
+  - Worker OCR đọc model embedded-trước-fetch-sau; wasm runtime phục vụ qua fetch-patch (pattern đã chứng minh ở `ocr-engine-direct.ts`), không giả định shape object `wasmPaths` theo version ORT (thực tế cài ORT 1.27.0, package khai ^1.24.3).
+  - Main thread KHÔNG import bản nhúng (tránh nhân đôi 35MB); health-check đọc `embedded-manifest.ts` tí hon (vài trăm bytes) nên báo đúng `assetSource='embedded'` trên `file://`, hết cảnh báo "Nạp model offline" giả.
+  - `deploy-to-onedrive` dùng env `HR_ONEDRIVE_DIST` thay vì hardcode username Windows.
+  - Kết quả: `tsc` 0 lỗi, vitest 118/118 pass, `dist/index.html` 38MB một file duy nhất, không còn `*.worker-*.js`.
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Mọi file worker/model rời đều chết trên `file://` — luật bất biến: bundle single-file thì worker + model cũng phải inline. Sau mỗi lần sửa code phải build lại + copy đúng `index.html` mới sang OneDrive; log lỗi mà còn trỏ `dist/*.worker-*.js` nghĩa là đang mở bản cũ.

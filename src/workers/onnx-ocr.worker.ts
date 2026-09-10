@@ -21,6 +21,73 @@ import type {
 } from '../types/ocr-worker-protocol';
 
 import * as ort from 'onnxruntime-web/wasm';
+import { EMBEDDED_MODELS } from '../generated/embedded-models';
+
+// ---------------------------------------------------------------------------
+// Model nhúng base64 tại build-time (update-model.md §3 — chạy được file://,
+// không fetch file rời). Thứ tự ưu tiên: embedded -> fetch tương đối (http dev).
+// Chỉ worker này import EMBEDDED_MODELS để tránh bundle 35MB bị nhân đôi vào
+// main thread (ocr-engine-direct.ts giữ nguyên luồng IndexedDB + fetch).
+// ---------------------------------------------------------------------------
+
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function getEmbeddedBuffer(relPath: string): ArrayBuffer | null {
+  const b64 = EMBEDDED_MODELS[relPath];
+  if (!b64) return null;
+  try {
+    const buf = base64ToArrayBuffer(b64);
+    return buf.byteLength > 0 ? buf : null;
+  } catch {
+    return null;
+  }
+}
+
+function getEmbeddedText(relPath: string): string | null {
+  const buf = getEmbeddedBuffer(relPath);
+  if (!buf) return null;
+  try {
+    return new TextDecoder('utf-8').decode(buf);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Vá tạm global fetch trong lúc tạo session để ORT phục vụ file .wasm/.mjs
+ * runtime từ bản nhúng thay vì fetch qua network (file:// chặn fetch).
+ * Pattern đã được chứng minh ở ocr-engine-direct.ts (withIdbWasmFetch).
+ * Không giả định shape object của `ort.env.wasm.wasmPaths` theo version ORT.
+ */
+async function withEmbeddedWasmFetch<T>(fn: () => Promise<T>): Promise<T> {
+  const wasmB64 = EMBEDDED_MODELS['PaddleOCR-Models/ort/ort-wasm-simd-threaded.wasm'];
+  const mjsB64 = EMBEDDED_MODELS['PaddleOCR-Models/ort/ort-wasm-simd-threaded.mjs'];
+  if (!wasmB64 && !mjsB64) return fn();
+  const origFetch = (globalThis as any).fetch.bind(globalThis);
+  const patched = async (input: any, init?: any): Promise<Response> => {
+    try {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url || String(input);
+      if (wasmB64 && url.endsWith('ort-wasm-simd-threaded.wasm')) {
+        return new Response(base64ToArrayBuffer(wasmB64).slice(0), { headers: { 'Content-Type': 'application/wasm' } });
+      }
+      if (mjsB64 && url.endsWith('ort-wasm-simd-threaded.mjs')) {
+        return new Response(base64ToArrayBuffer(mjsB64).slice(0), { headers: { 'Content-Type': 'text/javascript' } });
+      }
+    } catch { /* rơi về fetch gốc */ }
+    return origFetch(input, init);
+  };
+  (globalThis as any).fetch = patched;
+  try {
+    return await fn();
+  } finally {
+    (globalThis as any).fetch = origFetch;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Cấu hình
@@ -97,6 +164,9 @@ async function fetchWithCache(url: string): Promise<ArrayBuffer> {
 }
 
 async function fetchFirstAvailableBuffer(relPath: string): Promise<ArrayBuffer> {
+  // Ưu tiên bản nhúng (file:// không fetch được file rời)
+  const embedded = getEmbeddedBuffer(relPath);
+  if (embedded) return embedded.slice(0);
   const candidates = getCandidateUrls(relPath);
   let lastError: any = null;
   for (const url of candidates) {
@@ -111,6 +181,9 @@ async function fetchFirstAvailableBuffer(relPath: string): Promise<ArrayBuffer> 
 }
 
 async function fetchFirstAvailableText(relPath: string): Promise<string> {
+  // Ưu tiên bản nhúng (file:// không fetch được file rời)
+  const embedded = getEmbeddedText(relPath);
+  if (embedded !== null && embedded.length > 0) return embedded;
   const candidates = getCandidateUrls(relPath);
   let lastError: any = null;
   for (const url of candidates) {
@@ -224,11 +297,11 @@ async function ensureBundle(requestId: string): Promise<SessionBundle> {
 
   progress(requestId, 12, 'LOAD_DET', `Đang tự động nhận diện và tải mô hình phát hiện vùng chữ...`);
   const detBuf = await fetchFirstAvailableBuffer('PaddleOCR-Models/onnx/ch_PP-OCRv4_det_infer.onnx');
-  const det = await ort.InferenceSession.create(detBuf, { executionProviders: ['wasm'] });
+  const det = await withEmbeddedWasmFetch(() => ort.InferenceSession.create(detBuf, { executionProviders: ['wasm'] }));
 
   progress(requestId, 20, 'LOAD_REC', `Đang tự động nhận diện và tải mô hình nhận dạng ký tự...`);
   const recBuf = await fetchFirstAvailableBuffer('PaddleOCR-Models/onnx/latin_PP-OCRv3_rec.onnx');
-  const rec = await ort.InferenceSession.create(recBuf, { executionProviders: ['wasm'] });
+  const rec = await withEmbeddedWasmFetch(() => ort.InferenceSession.create(recBuf, { executionProviders: ['wasm'] }));
 
   bundle = { det, rec, charset: charsetInfo.charset, dictSize: charsetInfo.dictSize, charsetNote: '', dictSource: charsetInfo.source, viDictInfo: charsetInfo.viInfo };
   return bundle;

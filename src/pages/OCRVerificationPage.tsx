@@ -117,7 +117,7 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
   const { alertModal, confirm } = useModal();
   const { hasPermission, currentRole } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // Kho model offline cho file:// (mở trực tiếp trong thư mục OneDrive, không Worker)
+  // Kho model offline cho file:// (dự phòng cho engine trực tiếp khi Worker inline lỗi)
   const offlineAssetsInputRef = useRef<HTMLInputElement>(null);
   const [isLoadingAssets, setIsLoadingAssets] = useState(false);
   const [offlineAssetCount, setOfflineAssetCount] = useState<number>(-1);
@@ -782,7 +782,7 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
               Cấu hình chuẩn cho form LPVN-HR-F-0004 · Đánh máy, chữ ký viết tay
               {report.protocol === 'file' && (
                 <span className="block mt-1 font-bold text-amber-700">
-                  Chế độ file trực tiếp (không Worker) · Nguồn model: {report.assetSource === 'idb' ? 'kho offline (IndexedDB)' : report.assetSource === 'mixed' ? 'kết hợp server + kho offline' : report.assetSource === 'server' ? 'thư mục PaddleOCR-Models' : 'chưa đủ — cần Nạp model offline'}
+                  Chế độ file trực tiếp (không Worker) · Nguồn model: {report.assetSource === 'embedded' ? 'nhúng trong ứng dụng (chạy được file://)' : report.assetSource === 'idb' ? 'kho offline (IndexedDB)' : report.assetSource === 'mixed' ? 'kết hợp server + kho offline' : report.assetSource === 'server' ? 'thư mục PaddleOCR-Models' : 'chưa đủ — cần Nạp model offline'}
                 </span>
               )}
             </div>
@@ -845,7 +845,7 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
             <button
               onClick={() => offlineAssetsInputRef.current?.click()}
               disabled={isLoadingAssets}
-              title="Chế độ mở file trực tiếp (không Worker): chọn file model Paddle 1 lần để lưu vào kho offline, các lần sau quét luôn không cần mạng"
+              title="Worker OCR đã nhúng model trong ứng dụng nên thường không cần bước này. Chỉ dùng khi engine trực tiếp báo thiếu model: chọn file model Paddle 1 lần để lưu vào kho offline"
               className="flex items-center gap-2 px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 text-xs font-bold rounded-xl transition shadow-sm"
             >
               {isLoadingAssets ? <Loader2 className="w-4 h-4 animate-spin" /> : <Layers className="w-4 h-4" />}

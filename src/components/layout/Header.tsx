@@ -22,6 +22,7 @@ import { useModal } from '../../context/ModalContext';
 import { exportTimesheetToExcel } from '../../services/excel-exporter';
 import { exportDatabaseToSnapshot, importDatabaseFromSnapshot } from '../../services/db-sync';
 import { db } from '../../db';
+import TimesheetParserWorker from '../../workers/timesheet-parser.worker.ts?worker&inline';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { daysUntil as calcDaysUntil } from '../../services/pay-period';
 import { PresenceBar } from './PresenceBar';
@@ -94,12 +95,9 @@ export const Header: React.FC = () => {
 
       const buffer = await file.arrayBuffer();
 
-      // Launch Timesheet Parser Web Worker
+      // Launch Timesheet Parser Web Worker (inline trong bundle — chạy được cả file://)
       const now = new Date();
-      const worker = new Worker(
-        new URL('../../workers/timesheet-parser.worker.ts', import.meta.url),
-        { type: 'module' }
-      );
+      const worker = new TimesheetParserWorker() as unknown as Worker;
       workerRef.current = worker;
 
       // Dữ liệu nạp vào kỳ hiện tại thay vì tháng cứng

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Spike Test</title></head>
+<body>
+  <div id="log"></div>
+  <script>
+    const log = (msg) => {
+      document.getElementById('log').innerHTML += `<p>${msg}</p>`;
+      console.log(msg);
+    };
+
+    // TEST 1: Inline Blob Worker (classic, không phải module)
+    try {
+      const workerCode = `
+        self.onmessage = function(e) {
+          self.postMessage('Worker nhận được: ' + e.data);
+        };
+      `;
+      const blob = new Blob([workerCode], { type: 'application/javascript' });
+      const worker = new Worker(URL.createObjectURL(blob));
+      worker.onmessage = (e) => log('✅ TEST 1 PASS - Worker: ' + e.data);
+      worker.onerror = (e) => log('❌ TEST 1 FAIL - Worker error: ' + e.message);
+      worker.postMessage('hello');
+    } catch (err) {
+      log('❌ TEST 1 FAIL - Exception: ' + err.message);
+    }
+
+    // TEST 2: IndexedDB mở và ghi được + kiểm tra persistence qua nhiều lần mở
+    try {
+      const req = indexedDB.open('spike-test-db', 1);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('test')) {
+          db.createObjectStore('test', { keyPath: 'id' });
+        }
+      };
+      req.onsuccess = (e) => {
+        const db = e.target.result;
+        // Đọc trước: nếu đã có record id:1 từ lần mở trước -> persistence PASS
+        const readTx = db.transaction('test', 'readonly');
+        const getReq = readTx.objectStore('test').get(1);
+        getReq.onsuccess = () => {
+          if (getReq.result && getReq.result.value === 'test-data') {
+            log('✅ TEST 2b PASS - IndexedDB persistence: dữ liệu lần mở trước còn tồn tại (ts=' + getReq.result.ts + ')');
+          } else {
+            log('ℹ️ TEST 2b INFO - Chưa có dữ liệu cũ (lần mở đầu tiên, hoặc đã bị xoá). Đóng hẳn Edge rồi mở lại file này lần 2 để kiểm tra persistence.');
+          }
+          // Ghi (upsert) record cho lần kiểm tra sau
+          const writeTx = db.transaction('test', 'readwrite');
+          writeTx.objectStore('test').put({ id: 1, value: 'test-data', ts: Date.now() });
+          writeTx.oncomplete = () => log('✅ TEST 2 PASS - IndexedDB ghi thành công');
+          writeTx.onerror = () => log('❌ TEST 2 FAIL - Transaction error');
+        };
+        getReq.onerror = () => log('❌ TEST 2b FAIL - Không đọc được record cũ');
+      };
+      req.onerror = () => log('❌ TEST 2 FAIL - Không mở được IndexedDB');
+    } catch (err) {
+      log('❌ TEST 2 FAIL - Exception: ' + err.message);
+    }
+
+    // TEST 3: base64 -> ArrayBuffer (mô phỏng decode model nhúng sẵn)
+    try {
+      const fakeBase64 = btoa('fake-model-bytes-for-test');
+      const binary = atob(fakeBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      log('✅ TEST 3 PASS - base64 decode OK, ' + bytes.length + ' bytes');
+    } catch (err) {
+      log('❌ TEST 3 FAIL - Exception: ' + err.message);
+    }
+  </script>
+</body>
+</html>
