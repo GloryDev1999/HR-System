@@ -22,7 +22,7 @@ import { useModal } from '../../context/ModalContext';
 import { exportTimesheetToExcel } from '../../services/excel-exporter';
 import { exportDatabaseToSnapshot, importDatabaseFromSnapshot } from '../../services/db-sync';
 import { db } from '../../db';
-import TimesheetParserWorker from '../../workers/timesheet-parser.worker.ts?worker&inline';
+import { parseTimesheetFile } from '../../services/timesheet-parser-service';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { daysUntil as calcDaysUntil } from '../../services/pay-period';
 import { PresenceBar } from './PresenceBar';
@@ -33,7 +33,6 @@ export const Header: React.FC = () => {
   const { success, error, warning, info } = useToast();
   const { alertModal, confirm } = useModal();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const workerRef = useRef<Worker | null>(null);
 
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
@@ -73,12 +72,6 @@ export const Header: React.FC = () => {
     return list.sort((a,b) => a.days - b.days);
   })();
 
-  // Huỷ import worker khi rời trang để tránh leak + setState trên unmounted
-  useEffect(() => () => {
-    workerRef.current?.terminate();
-    workerRef.current = null;
-  }, []);
-
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -95,24 +88,18 @@ export const Header: React.FC = () => {
 
       const buffer = await file.arrayBuffer();
 
-      // Launch Timesheet Parser Web Worker (inline trong bundle — chạy được cả file://)
-      const now = new Date();
-      const worker = new TimesheetParserWorker() as unknown as Worker;
-      workerRef.current = worker;
-
       // Dữ liệu nạp vào kỳ hiện tại thay vì tháng cứng
+      const now = new Date();
       const importMonth = now.getMonth() + 1;
       const importYear = now.getFullYear();
-      worker.postMessage({ buffer, month: importMonth, year: importYear });
 
-      worker.onmessage = async (event) => {
-        const msg = event.data;
-        if (msg.type === 'PROGRESS') {
-          setImportProgress(msg.progress);
-          setImportStatusText(msg.message);
-        } else if (msg.type === 'COMPLETE') {
-          setImportProgress(40);
-          setImportStatusText('[3/6] Nhận diện kỳ công & chuẩn bị dữ liệu...');
+      const msg = await parseTimesheetFile(buffer, importMonth, importYear, (progress, message) => {
+        setImportProgress(progress);
+        setImportStatusText(message);
+      });
+
+      setImportProgress(40);
+      setImportStatusText('[3/6] Nhận diện kỳ công & chuẩn bị dữ liệu...');
 
           // Nhận diện kỳ công
           const detectedMonth = msg.detectedPeriod?.month || importMonth;
@@ -629,23 +616,6 @@ export const Header: React.FC = () => {
             'Nạp dữ liệu chấm công thành công!',
             `Đã làm sạch bảng công cũ và cập nhật ${postTimesheets.length.toLocaleString()} ô công, ${overtimesToCreate.length.toLocaleString()} bản ghi tăng ca, ${restViolationsToCreate.length} cảnh báo xoay ca < 12h.`
           );
-          worker.terminate();
-          workerRef.current = null;
-        } else if (msg.type === 'ERROR') {
-          setIsImporting(false);
-          error('Lỗi khi xử lý file', msg.error);
-          worker.terminate();
-          workerRef.current = null;
-        }
-      };
-
-      worker.onerror = (err) => {
-        setIsImporting(false);
-        error('Lỗi Web Worker', err.message);
-        worker.terminate();
-        workerRef.current = null;
-      };
-
     } catch (err: any) {
       setIsImporting(false);
       error('Lỗi hệ thống', err.message);
