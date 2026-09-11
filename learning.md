@@ -19,6 +19,8 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
 - [KB-011: Lỗi phân quyền menu RBAC (F6) và quyền sửa dữ liệu của Trưởng bộ phận](#kb-011-lỗi-phân-quyền-menu-rbac-f6-và-quyền-sửa-dữ-liệu-của-trưởng-bộ-phận)
 - [KB-012: Lỗi tính thử việc bị lệch do định dạng ngày ISO YYYY-MM-DD (B11)](#kb-012-lỗi-tính-thử-việc-bị-lệch-do-định-dạng-ngày-iso-yyyy-mm-dd-b11)
 - [KB-013: OCR chỉ cần MSNV, Ngày, Giờ — Tránh biến đổi ký tự tự do làm hỏng tên tiếng Việt (B31)](#kb-013-ocr-chỉ-cần-msnv-ngày-giờ--tránh-biến-đổi-ký-tự-tự-do-làm-hỏng-tên-tiếng-việt-b31)
+- [KB-015: Lỗi dynamic import() file:// trên ONNX Runtime Web (`TypeError: Failed to fetch dynamically imported module ... ort-wasm-simd-threaded.mjs`)](#kb-015-lỗi-dynamic-import-file-trên-onnx-runtime-web-typeerror-failed-to-fetch-dynamically-imported-module--ort-wasm-simd-threadedmjs)
+- [KB-016: Lỗi Web Worker bị chặn trên giao thức file:// khi nạp file chấm công (`Lỗi Web Worker`)](#kb-016-lỗi-web-worker-bị-chặn-trên-giao-thức-file-khi-nạp-file-chấm-công-lỗi-web-worker)
 
 ---
 
@@ -255,3 +257,24 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
   3. Trong `onnx-ocr.worker.ts`: Đảm bảo khi chạy offline trên `file://`, `ort.env.wasm.wasmBinary` được gán từ `getEmbeddedBuffer()`, `numThreads = 1` và `delete wasmPaths` để Emscripten chạy trực tiếp từ RAM, không gọi `import()`.
 - **Bài học kinh nghiệm (Key Takeaway)**:
   - Trên `file://`, mọi cơ chế dynamic `import()` của trình duyệt đều bị chặn. Thư viện WebAssembly phức tạp như ONNX Runtime Web bắt buộc phải dùng bản bundle có sẵn Emscripten glue module và khởi tạo bằng `wasmBinary` 1 luồng trong bộ nhớ.
+
+---
+
+### KB-016: Lỗi Web Worker bị chặn trên giao thức file:// khi nạp file chấm công (`Lỗi Web Worker`)
+- **Ngày ghi nhận**: 2026-09-11
+- **Vị trí**: `src/workers/timesheet-parser.worker.ts`, `src/services/timesheet-parser-service.ts`, `src/services/timesheet-parser-core.ts`, `src/components/layout/Header.tsx`
+- **Triệu chứng (Symptom)**:
+  - Khi mở `dist/index.html` qua giao thức `file:///C:/Users/.../dist/index.html` và nạp file Excel chấm công (`BẢNG CHẤM CÔNG CHI TIẾT (21.8 - 03.9).xlsx`), hệ thống lập tức thông báo lỗi `Lỗi Web Worker`.
+- **Nguyên nhân gốc rễ (Root Cause)**:
+  - Trên trình duyệt Chromium (Edge / Chrome), khi chạy trên giao thức `file://`, URL có origin là `null`.
+  - Khởi tạo Web Worker inline (`new Worker(blobUrl, { type: 'module' })`) bị kiểm tra an ninh Same-Origin nghiêm ngặt, bắn sự kiện `worker.onerror`.
+  - Trước đây, `Header.tsx` chỉ lắng nghe `worker.onerror` rồi bắn toast lỗi mà không có bất kỳ cơ chế fallback nào để thực thi trực tiếp trên Main Thread (khác với `ocr-worker-client.ts` đã có `runDirectAsWorkerResult`).
+- **Giải pháp xử lý (Resolution)**:
+  1. Tách lõi phân tích Excel thành pure in-memory module: `src/services/timesheet-parser-core.ts` (`parseTimesheetInMemory`), chia chunking qua `setTimeout(r, 0)` mỗi 2.000 dòng để giao diện không bị đơ giật.
+  2. Tạo service điều phối `src/services/timesheet-parser-service.ts`:
+     - Tự động phát hiện `isFileProtocol()`: nếu đang chạy trên `file://`, chuyển thẳng sang `parseTimesheetInMemory` trong main thread, hoàn toàn không tạo Web Worker.
+     - Nếu chạy trên HTTP/localhost: khởi tạo Web Worker, nhưng nếu `onerror` kích hoạt, tự động fallback về `parseTimesheetInMemory` trong suốt với người dùng.
+  3. Đơn giản hóa `timesheet-parser.worker.ts` chỉ cần gọi lại `parseTimesheetInMemory`.
+  4. Cập nhật `Header.tsx` gọi trực tiếp `parseTimesheetFile`, loại bỏ toàn bộ boilerplate worker cũ.
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Mọi tác vụ Web Worker trong hệ thống Single-File Offline đều BẮT BUỘC phải có cơ chế In-Memory Main-Thread Fallback khi chạy trên `file://`.
