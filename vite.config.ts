@@ -4,8 +4,25 @@ import tailwindcss from '@tailwindcss/vite';
 import { viteSingleFile } from 'vite-plugin-singlefile';
 import path from 'path';
 
+// Ngăn Vite asset-import-meta-url tự động nhúng đúp 4 lần ort-wasm-simd-threaded.wasm (~70MB thừa)
+function preventOrtWasmDoubleInline() {
+  return {
+    name: 'prevent-ort-wasm-double-inline',
+    enforce: 'pre' as const,
+    transform(code: string, id: string) {
+      if (id.includes('ort.wasm.bundle') || id.includes('onnxruntime-web')) {
+        return {
+          code: code.replaceAll('"ort-wasm-simd-threaded.wasm"', '["ort-wasm-simd-threaded", "wasm"].join(".")'),
+          map: null
+        };
+      }
+    }
+  };
+}
+
 export default defineConfig({
   plugins: [
+    preventOrtWasmDoubleInline(),
     react(),
     tailwindcss(),
     viteSingleFile()
@@ -17,11 +34,10 @@ export default defineConfig({
     include: ['src/**/*.{test,spec}.{ts,tsx}']
   },
   resolve: {
-    alias: {
-      '@': path.resolve(import.meta.dirname, './src')
-    },
-    // Dùng bản ORT nạp wasm ngoài (từ /PaddleOCR-Models/ort/) thay vì bản bundle nhúng base64
-    conditions: ['onnxruntime-web-use-extern-wasm', 'module', 'browser', 'import']
+    alias: [
+      { find: /^onnxruntime-web$/, replacement: path.resolve(import.meta.dirname, './node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs') },
+      { find: '@', replacement: path.resolve(import.meta.dirname, './src') }
+    ]
   },
   worker: {
     format: 'es'
@@ -31,7 +47,7 @@ export default defineConfig({
   base: './',
   build: {
     target: 'esnext',
-    assetsInlineLimit: 100000000,
+    assetsInlineLimit: 4096,
     chunkSizeWarningLimit: 100000000,
     cssCodeSplit: false
   },

@@ -235,3 +235,23 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
   - Kết quả: `tsc` 0 lỗi, vitest 118/118 pass, `dist/index.html` 38MB một file duy nhất, không còn `*.worker-*.js`.
 - **Bài học kinh nghiệm (Key Takeaway)**:
   - Mọi file worker/model rời đều chết trên `file://` — luật bất biến: bundle single-file thì worker + model cũng phải inline. Sau mỗi lần sửa code phải build lại + copy đúng `index.html` mới sang OneDrive; log lỗi mà còn trỏ `dist/*.worker-*.js` nghĩa là đang mở bản cũ.
+
+---
+
+### KB-015: Lỗi dynamic import() file:// trên ONNX Runtime Web (`TypeError: Failed to fetch dynamically imported module ... ort-wasm-simd-threaded.mjs`)
+- **Ngày ghi nhận**: 2026-09-11
+- **Vị trí**: `vite.config.ts`, `src/workers/onnx-ocr.worker.ts`, `src/services/ocr-engine-direct.ts`
+- **Triệu chứng (Symptom)**:
+  - Khi mở file `dist/index.html` trực tiếp qua đường dẫn `file:///C:/Users/.../dist/index.html` (chạy offline trên OneDrive/Edge) và quét ảnh OCR, hệ thống báo lỗi:
+    `image.png: no available backend found. ERR: [wasm] TypeError: Failed to fetch dynamically imported module: file:///C:/Users/bbuvqp1/OneDrive%20-%20Leggett%20&%20Platt,%20Incorporated/HR-System/dist/ort-wasm-simd-threaded.mjs`
+- **Nguyên nhân gốc rễ (Root Cause)**:
+  1. Trong `vite.config.ts`, cấu hình `conditions: ['onnxruntime-web-use-extern-wasm']` ép Vite nạp bản `ort.min.mjs` (bản extern-wasm). Trong bản này, factory module Emscripten (`Xr`) là `undefined`, khiến hàm khởi tạo WASM luôn thực thi lệnh `await import(...)` để tải file `ort-wasm-simd-threaded.mjs`.
+  2. Trên giao thức `file://`, trình duyệt Chromium/Edge cấm hoàn toàn dynamic `import()` các file cục bộ, ném ra lỗi `TypeError: Failed to fetch dynamically imported module`.
+  3. Khi không dùng `ort.min.mjs` mà dùng bản bundle `ort.wasm.bundle.min.mjs`, factory Emscripten đã được biên dịch nhúng sẵn bên trong (`Xr`), và khi truyền `wasmBinary` từ RAM cùng `numThreads: 1`, ORT dùng thẳng `Xr` mà tuyệt đối không gọi `import()`.
+  4. Ngoài ra, Rolldown (Vite 8) tự động biến đổi chuỗi `new URL("ort-wasm-simd-threaded.wasm", import.meta.url)` thành base64 nhúng 4 lần (~70MB thừa). Cần plugin Vite `preventOrtWasmDoubleInline` để giữ kích thước bundle dưới hạn mức 100MB của GitHub.
+- **Giải pháp xử lý (Resolution)**:
+  1. Trong `vite.config.ts`: Xóa bỏ `conditions: ['onnxruntime-web-use-extern-wasm']`. Thay bằng alias chính xác trỏ đến `node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs`.
+  2. Bổ sung plugin `preventOrtWasmDoubleInline` ngăn Vite Rolldown biến đổi `new URL("ort-wasm-simd-threaded.wasm", import.meta.url)` thành base64 dư thừa, giữ bundle ở mức ~72MB (an toàn dưới 100MB của GitHub).
+  3. Trong `onnx-ocr.worker.ts`: Đảm bảo khi chạy offline trên `file://`, `ort.env.wasm.wasmBinary` được gán từ `getEmbeddedBuffer()`, `numThreads = 1` và `delete wasmPaths` để Emscripten chạy trực tiếp từ RAM, không gọi `import()`.
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Trên `file://`, mọi cơ chế dynamic `import()` của trình duyệt đều bị chặn. Thư viện WebAssembly phức tạp như ONNX Runtime Web bắt buộc phải dùng bản bundle có sẵn Emscripten glue module và khởi tạo bằng `wasmBinary` 1 luồng trong bộ nhớ.

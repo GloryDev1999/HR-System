@@ -3,9 +3,9 @@
     "project_name": "SmartHR - Single-File In-Browser HRMS & Timekeeping System",
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
-    "last_updated": "2026-09-11T02:53:00Z",
-    "current_phase": "Phase 19: Codespace Auto-Approval & Agy CLI Configuration (Full headless non-interactive permission bypass, TURBO preset, VS Code trust & git sync dialog suppression, 125/125 tests green)",
-    "version": "1.9.0"
+    "last_updated": "2026-09-11T03:19:00Z",
+    "current_phase": "Phase 20: Fix file:// Dynamic Import Error on ONNX Runtime Web (Use ort.wasm.bundle with embedded Emscripten glue, preventOrtWasmDoubleInline Vite plugin, 125/125 tests green, singlefile bundle ~72MB)",
+    "version": "2.0.0"
   },
   "agent_profile": {
     "role": "Senior Principal System Designer & Staff IT Software Engineer",
