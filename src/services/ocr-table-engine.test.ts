@@ -6,7 +6,8 @@ import {
   mapGridToTableRows,
 } from './ocr-table-engine';
 import { extractCanonicalHRKey } from './hr-rag-postprocessor';
-import { IEmployee } from '../types';
+import { IEmployee, IOvertimeRecord } from '../types';
+import { reconcileRows, IExtractedFormRow } from './ocr-form-parser';
 import { OcrTextLine } from '../types/ocr-worker-protocol';
 
 const catalog: IEmployee[] = [
@@ -104,9 +105,21 @@ describe('normalizeEmployeeCode', () => {
     expect(res.matched).toBe(false);
     expect(res.name).toBe('');
   });
+  it('khớp mã nhân viên dính mã bộ phận: LEP026 WH -> LEP026', () => {
+    const res = normalizeEmployeeCode('LEP026 WH', catalog);
+    expect(res.normalizedId).toBe('LEP026');
+    expect(res.matched).toBe(true);
+    expect(res.name).toBe('Nguyễn Bá Trình');
+    expect(res.dept).toBe('WH');
+  });
+  it('khớp mã nhân viên dính liền bộ phận: LEP026WH -> LEP026', () => {
+    const res = normalizeEmployeeCode('LEP026WH', catalog);
+    expect(res.normalizedId).toBe('LEP026');
+    expect(res.matched).toBe(true);
+  });
 });
 
-describe('extractCanonicalHRKey - RAG model thu gọn HR key LEP000 và LEP000text', () => {
+describe('extractCanonicalHRKey - RAG model thu gọn HR key LEP000 và LEP000A', () => {
   it('thu gọn LEP000 chuẩn', () => {
     expect(extractCanonicalHRKey('LEP001')).toBe('LEP001');
     expect(extractCanonicalHRKey('LEP1')).toBe('LEP001');
@@ -116,13 +129,22 @@ describe('extractCanonicalHRKey - RAG model thu gọn HR key LEP000 và LEP000te
     expect(extractCanonicalHRKey('LEP40')).toBe('LEP040');
   });
 
-  it('thu gọn LEP000text có hậu tố chữ cái (ví dụ LEP066A, LEP100A, LEP000text)', () => {
+  it('thu gọn LEP000A có hậu tố chữ cái đơn (ví dụ LEP066A, LEP100A, LEP170a)', () => {
     expect(extractCanonicalHRKey('LEP066A')).toBe('LEP066A');
     expect(extractCanonicalHRKey('LEP66A')).toBe('LEP066A');
     expect(extractCanonicalHRKey('LEPO66A')).toBe('LEP066A');
     expect(extractCanonicalHRKey('LP100A')).toBe('LEP100A');
-    expect(extractCanonicalHRKey('LEP000text')).toBe('LEP000text');
-    expect(extractCanonicalHRKey('LEP040WH')).toBe('LEP040WH');
+    expect(extractCanonicalHRKey('LEP170a')).toBe('LEP170A');
+    expect(extractCanonicalHRKey('LEP170A')).toBe('LEP170A');
+  });
+
+  it('tách bỏ mã bộ phận dính kèm (WH, QC, PROD, KHO) để giữ đúng key LEP000/LEP000A', () => {
+    expect(extractCanonicalHRKey('LEP026 WH')).toBe('LEP026');
+    expect(extractCanonicalHRKey('LEP026WH')).toBe('LEP026');
+    expect(extractCanonicalHRKey('LEP040WH')).toBe('LEP040');
+    expect(extractCanonicalHRKey('LEP170a WH')).toBe('LEP170A');
+    expect(extractCanonicalHRKey('LEP170A-WH')).toBe('LEP170A');
+    expect(extractCanonicalHRKey('LEP026 Kho')).toBe('LEP026');
   });
 
   it('trích xuất từ chuỗi dài kèm text', () => {
@@ -279,5 +301,138 @@ describe('mapGridToTableRows', () => {
 
   it('grid rỗng trả về mảng rỗng - không bịa dòng', () => {
     expect(mapGridToTableRows({ imageWidth: 0, imageHeight: 0, rows: [], columnBoundaries: [] })).toEqual([]);
+  });
+
+  it('bảng có tiêu đề Giờ vào, Giờ ra, Tổng giờ', () => {
+    const grid = {
+      imageWidth: 600,
+      imageHeight: 100,
+      rows: [
+        {
+          yCenter: 20,
+          height: 18,
+          cells: [
+            { text: 'Mã NV', confidence: 0.95, x0: 10, x1: 90 },
+            { text: 'Ngày', confidence: 0.95, x0: 100, x1: 190 },
+            { text: 'Giờ vào', confidence: 0.95, x0: 200, x1: 290 },
+            { text: 'Giờ ra', confidence: 0.95, x0: 300, x1: 390 },
+            { text: 'Tổng giờ', confidence: 0.95, x0: 400, x1: 500 },
+          ]
+        },
+        {
+          yCenter: 50,
+          height: 18,
+          cells: [
+            { text: 'LEP026', confidence: 0.95, x0: 10, x1: 90 },
+            { text: '26/07/2026 CN', confidence: 0.95, x0: 100, x1: 190 },
+            { text: '07:30', confidence: 0.95, x0: 200, x1: 290 },
+            { text: '16:00', confidence: 0.95, x0: 300, x1: 390 },
+            { text: '8.0h', confidence: 0.95, x0: 400, x1: 500 },
+          ]
+        }
+      ],
+      columnBoundaries: []
+    };
+    const rows = mapGridToTableRows(grid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].employeeCode).toBe('LEP026');
+    expect(rows[0].rawDate).toBe('26/07/2026 CN');
+    expect(rows[0].fromTime).toBe('07:30');
+    expect(rows[0].toTime).toBe('16:00');
+    expect(rows[0].hoursText).toBe('8.0h');
+  });
+
+  it('bảng không header chứa 2 ô giờ đơn phân tách Giờ vào và Giờ ra', () => {
+    const grid = {
+      imageWidth: 600,
+      imageHeight: 100,
+      rows: [
+        {
+          yCenter: 30,
+          height: 18,
+          cells: [
+            { text: 'LEP004', confidence: 0.95, x0: 10, x1: 80 },
+            { text: '21/08/2026', confidence: 0.95, x0: 100, x1: 200 },
+            { text: '07:32', confidence: 0.95, x0: 220, x1: 280 },
+            { text: '16:07', confidence: 0.95, x0: 300, x1: 360 },
+          ]
+        }
+      ],
+      columnBoundaries: []
+    };
+    const rows = mapGridToTableRows(grid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].employeeCode).toBe('LEP004');
+    expect(rows[0].fromTime).toBe('07:32');
+    expect(rows[0].toTime).toBe('16:07');
+  });
+});
+
+describe('OCR Overtime Auto-Reconciliation (LEP026 ngày 26/07/2026)', () => {
+  const overtimesDb: IOvertimeRecord[] = [
+    {
+      employeeId_date: 'LEP026_2026-07-26',
+      employeeId: 'LEP026',
+      date: '2026-07-26',
+      dayOfWeek: 'CN',
+      hours: 8.0,
+      dayType: 'SUNDAY',
+      verificationStatus: 'PENDING',
+      month: 8,
+      year: 2026
+    }
+  ];
+
+  it('tự động đối soát và chuyển trạng thái MATCHED khi key LEP026 khớp ngày 26/07/2026 và đủ 8.0h', () => {
+    const testRows: IExtractedFormRow[] = [
+      {
+        rowId: 'row_1',
+        stt: 1,
+        fullName: 'Nguyễn Bá Trình',
+        employeeId: 'LEP026',
+        department: 'WH',
+        otDate: '2026-07-26',
+        otDateRaw: '26/07/2026 CN',
+        fromTime: '07:30',
+        toTime: '16:00',
+        otHours: 8.0,
+        reason: 'Tăng ca Chủ nhật',
+        confidence: 0.96
+      }
+    ];
+
+    const result = reconcileRows(testRows, catalog, overtimesDb);
+    expect(result).toHaveLength(1);
+    expect(result[0].matchStatus).toBe('MATCHED');
+    expect(result[0].dbHours).toBe(8.0);
+    expect(result[0].details).toContain('Khớp');
+  });
+
+  it('tự động bóc tách LEP026 WH và chuẩn hóa ngày 26/07/2026 CN để đối soát MATCHED', () => {
+    const testRows: IExtractedFormRow[] = [
+      {
+        rowId: 'row_2',
+        stt: 1,
+        fullName: '',
+        employeeId: 'LEP026 WH',
+        department: '',
+        otDate: '',
+        otDateRaw: '26/07/2026 CN',
+        fromTime: '07:30',
+        toTime: '16:00',
+        otHours: 8.0,
+        reason: '',
+        confidence: 0.95
+      }
+    ];
+
+    const result = reconcileRows(testRows, catalog, overtimesDb);
+    expect(result).toHaveLength(1);
+    expect(result[0].employeeId).toBe('LEP026');
+    expect(result[0].otDate).toBe('2026-07-26');
+    expect(result[0].fullName).toBe('Nguyễn Bá Trình');
+    expect(result[0].department).toBe('WH');
+    expect(result[0].matchStatus).toBe('MATCHED');
+    expect(result[0].dbHours).toBe(8.0);
   });
 });

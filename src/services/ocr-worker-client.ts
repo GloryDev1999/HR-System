@@ -22,6 +22,7 @@ import type {
   OCRWorkerError,
 } from '../types/ocr-worker-protocol';
 import { runOcrDirect } from './ocr-engine-direct';
+import { isFileProtocol } from './ocr-assets-store';
 
 export interface OcrRunHandlers {
   onProgress?: (progress: number, step: string, message: string) => void;
@@ -103,7 +104,7 @@ function runOnce(imageBytes: ArrayBuffer, options: OcrRunOptions): Promise<OCRWo
     const request: OCRWorkerRequest = {
       type: 'RUN_OCR',
       requestId,
-      payload: { imageBytes, fileName: options.fileName },
+      payload: { imageBytes, fileName: options.fileName, isFileProtocol: isFileProtocol() },
     };
     try {
       worker.postMessage(request, [imageBytes]); // transferable - tránh copy bộ nhớ

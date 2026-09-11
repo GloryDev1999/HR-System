@@ -14,9 +14,9 @@
 // ---------------------------------------------------------------------------
 
 export const HR_RAG_CONTEXT = {
-  // Patterns regex để classify field — hỗ trợ cả chuẩn LEP000 và LEP000text (ví dụ LEP066A, LEP100A, LEP000text)
+  // Patterns regex để classify field — chuẩn nghiệp vụ: LEP000 hoặc LEP000A (ví dụ LEP170, LEP170A)
   patterns: {
-    employeeId: /^LEP\d{3}[A-Za-z0-9_-]*$/i,
+    employeeId: /^LEP\d{3}[A-Za-z]?$/i,
     internalId: /^\d{7}$/,
     date: /^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/,
     time: /^\d{1,2}:\d{2}$/,
@@ -73,22 +73,30 @@ export const HR_RAG_CONTEXT = {
 // ---------------------------------------------------------------------------
 
 /**
- * Trích xuất và thu gọn chuỗi về đúng chuẩn HR Key: "LEP000" hoặc "LEP000text"
- * Đảm bảo RAG model thu gọn về mã chuẩn nghiệp vụ Leggett & Platt:
+ * Trích xuất và thu gọn chuỗi về đúng chuẩn HR Key: "LEP000" hoặc "LEP000A" (ví dụ LEP170, LEP170a)
+ * Chuẩn nghiệp vụ Leggett & Platt:
+ * - "LEP026 WH" -> "LEP026" (loại bỏ mã bộ phận dính vào như WH, PROD, QC, Kho...)
+ * - "LEP026WH" -> "LEP026" (dính liền không dấu cách)
  * - "LEP1" -> "LEP001"
  * - "LEP040" -> "LEP040"
  * - "LEPOO1" -> "LEP001" (nhầm O với 0)
- * - "LEP066A" -> "LEP066A" (giữ nguyên hậu tố chữ cái A)
- * - "LEP66A" -> "LEP066A" (pad 3 số + giữ hậu tố A)
+ * - "LEP170" -> "LEP170"
+ * - "LEP170a" -> "LEP170A" (chuẩn hóa hậu tố đơn A)
+ * - "LEP170a WH" -> "LEP170A"
+ * - "LEP066A" -> "LEP066A"
  * - "LP100A" -> "LEP100A"
- * - "LEP000text" -> "LEP000text"
  * - "1 LEP014 Nguyễn Văn A" -> "LEP014"
  */
 export function extractCanonicalHRKey(raw: string): string | null {
   if (!raw) return null;
   const cleaned = raw.trim();
-  // Khớp dạng LEP hoặc LP kèm số và text hậu tố (hỗ trợ cả LEP000 và LEP000text)
-  const match = cleaned.match(/(?:LEP|LP)\s*([0-9OoilIszZ]{1,6})([A-Za-z0-9_-]*)/i);
+
+  // Khớp tiền tố LEP hoặc LP, theo sau bởi 1-4 ký tự số (hỗ trợ OCR nhầm O,o,l,i,s,z)
+  // và tuỳ chọn DUY NHẤT 1 chữ cái hậu tố (A, B, C... hoặc a, b, c...)
+  // Nếu sau số là 2+ chữ cái (như WH, QC, PROD, KHO) thì đó là bộ phận, KHÔNG PHẢI hậu tố MSNV
+  const match = cleaned.match(
+    /(?:LEP|LP)\s*([0-9OoilIszZ]{1,4})(?:\s*([A-Za-z])(?![A-Za-z0-9])|\s+([A-Za-z]{2,})|(?=[^A-Za-z0-9]|$)|([A-Za-z]{2,}))?/i
+  );
   if (match) {
     const numCleaned = match[1]
       .replace(/[Oo]/g, '0')
@@ -99,8 +107,9 @@ export function extractCanonicalHRKey(raw: string): string | null {
     if (digits) {
       const num = parseInt(digits, 10);
       const padded = String(num).padStart(3, '0');
-      const suffix = (match[2] || '').trim();
-      return `LEP${padded}${suffix}`;
+      // Chỉ chấp nhận 1 ký tự hậu tố (A-Z)
+      const singleSuffix = match[2] ? match[2].toUpperCase() : '';
+      return `LEP${padded}${singleSuffix}`;
     }
   }
   return null;
@@ -127,9 +136,9 @@ export function applyHRCorrections(text: string): string {
     }
   }
 
-  // 3. Chuẩn hoá mã nhân viên về HR Key: LEP000 hoặc LEP000text
+  // 3. Chuẩn hoá mã nhân viên về HR Key: LEP000 hoặc LEP000A
   const hrKey = extractCanonicalHRKey(corrected);
-  if (hrKey && /^(?:LEP|LP)\s*[0-9OoilIszZ]{1,6}[A-Za-z0-9_-]*$/i.test(corrected)) {
+  if (hrKey && /^(?:LEP|LP)\s*[0-9OoilIszZ]{1,4}(?:\s*[A-Za-z])?(?:\s+[A-Za-z]{2,})?$/i.test(corrected)) {
     corrected = hrKey;
   }
 

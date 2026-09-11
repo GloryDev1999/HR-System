@@ -86,6 +86,18 @@ export async function seedDatabaseIfEmpty() {
     console.log('Database seeded successfully!');
   }
 
+  // Đảm bảo overtimeRecords luôn có dữ liệu đối soát chuẩn dù employees đã tồn tại trước đó
+  const otCount = await db.overtimeRecords.count();
+  if (otCount === 0) {
+    await db.overtimeRecords.bulkPut(initialOvertimes as unknown as IOvertimeRecord[]);
+  }
+
+  // Đảm bảo dailyTimesheets luôn có dữ liệu quẹt thẻ chuẩn
+  const tsCount = await db.dailyTimesheets.count();
+  if (tsCount === 0) {
+    await db.dailyTimesheets.bulkPut(initialTimesheets as unknown as IDailyTimesheetCell[]);
+  }
+
   // v5: đảm bảo shiftClasses + rbacRoles luôn có seed dù upgrade không chạy (fresh install cũ bỏ qua version)
   const scCount = await db.shiftClasses.count();
   if (scCount === 0) {

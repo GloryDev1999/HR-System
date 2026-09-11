@@ -21,59 +21,46 @@ export interface IOCRBbox {
 // 1. Chuẩn hoá mã nhân viên (LEP/LP, thiếu số 0, nhầm O với 0, hỗ trợ LEP000 và LEP000text)
 // ---------------------------------------------------------------------------
 
-export function normalizeEmployeeCode(rawText: string, catalog: IEmployee[]): {
+export function normalizeEmployeeCode(rawText: string, catalog: IEmployee[] = []): {
   normalizedId: string;
   name: string;
   dept: string;
   matched: boolean;
 } {
-  const cleaned = rawText.toUpperCase().replace(/\s+/g, '');
-
-  const tryCatalog = (candidate: string) =>
-    catalog.find(e => e.employeeId.toUpperCase() === candidate || e.erpId?.toUpperCase() === candidate);
-
-  // 1. Đối chiếu trực tiếp trước
-  const direct = tryCatalog(cleaned);
-  if (direct) {
-    return { normalizedId: direct.employeeId, name: direct.fullName, dept: direct.department, matched: true };
+  if (!rawText) {
+    return { normalizedId: '', name: '', dept: '', matched: false };
   }
 
-  // 2. Thu gọn và trích xuất qua HR RAG Key (hỗ trợ cả LEP000 và LEP000text)
+  const tryCatalog = (candidate: string) =>
+    catalog.find(e => e.employeeId.toUpperCase() === candidate.toUpperCase() || e.erpId?.toUpperCase() === candidate.toUpperCase());
+
+  // 1. Trích xuất mã chuẩn nghiệp vụ (LEP000 hoặc LEP000A) - tách bỏ bộ phận dính kèm như WH, QC, KHO
   const canonical = extractCanonicalHRKey(rawText);
   if (canonical) {
     const foundCanonical = tryCatalog(canonical);
     if (foundCanonical) {
       return { normalizedId: foundCanonical.employeeId, name: foundCanonical.fullName, dept: foundCanonical.department, matched: true };
     }
-  }
-
-  // 3. Nhóm tiền tố LEP/LP + phần số + phần text hậu tố (ví dụ: LEP066A, LEP100A, LEP040text)
-  // Chỉ thay O->0 TRONG phần số phía sau tiền tố, bảo toàn hậu tố
-  const lepMatch = cleaned.match(/^(LEP|LP)([0-9O]+)([A-Z0-9_-]*)$/);
-  if (lepMatch) {
-    const digits = lepMatch[2].replace(/O/g, '0').replace(/\D/g, '');
-    const suffix = lepMatch[3] || '';
-    if (digits) {
-      const num = parseInt(digits, 10);
-      const padded1 = `LEP${String(num).padStart(3, '0')}${suffix}`;
-      const padded2 = `LP${String(num).padStart(3, '0')}${suffix}`;
-      const found = tryCatalog(padded1) || tryCatalog(padded2);
-      if (found) {
-        return { normalizedId: found.employeeId, name: found.fullName, dept: found.department, matched: true };
-      }
-      // Thử nếu danh mục nhân viên chỉ lưu mã gốc không có suffix
-      const paddedNoSuffix = `LEP${String(num).padStart(3, '0')}`;
-      const foundNoSuffix = tryCatalog(paddedNoSuffix);
-      if (foundNoSuffix) {
-        return { normalizedId: foundNoSuffix.employeeId, name: foundNoSuffix.fullName, dept: foundNoSuffix.department, matched: true };
+    // Nếu có hậu tố chữ cái (ví dụ LEP170A), thử tìm mã gốc LEP170 trong danh mục
+    if (/[A-Za-z]$/.test(canonical)) {
+      const baseCode = canonical.slice(0, -1);
+      const foundBase = tryCatalog(baseCode);
+      if (foundBase) {
+        return { normalizedId: foundBase.employeeId, name: foundBase.fullName, dept: foundBase.department, matched: true };
       }
     }
   }
 
-  // Phương án cuối: chỉ có số -> thử ghép LEP{num}. Chỉ chấp nhận khi khớp danh mục
-  const digitsOnly = cleaned.replace(/\D/g, '');
-  if (digitsOnly && cleaned.length <= 4) {
-    const num = parseInt(digitsOnly, 10);
+  // 2. Đối chiếu trực tiếp
+  const cleaned = rawText.toUpperCase().replace(/\s+/g, '');
+  const direct = tryCatalog(cleaned);
+  if (direct) {
+    return { normalizedId: direct.employeeId, name: direct.fullName, dept: direct.department, matched: true };
+  }
+
+  // 3. Phương án phụ: chỉ có số (ví dụ user gõ "26" hoặc OCR chỉ đọc được "026") -> thử ghép LEP{num}
+  if (/^\d{1,4}$/.test(cleaned)) {
+    const num = parseInt(cleaned, 10);
     const candidate = `LEP${String(num).padStart(3, '0')}`;
     const found = tryCatalog(candidate);
     if (found) {
@@ -81,6 +68,7 @@ export function normalizeEmployeeCode(rawText: string, catalog: IEmployee[]): {
     }
   }
 
+  // 4. Trả về mã đã chuẩn hoá theo format LEP000/LEP000A (không dính chữ WH/KHO)
   return { normalizedId: canonical || cleaned || rawText.trim(), name: '', dept: '', matched: false };
 }
 
@@ -89,20 +77,35 @@ export function normalizeEmployeeCode(rawText: string, catalog: IEmployee[]): {
 // ---------------------------------------------------------------------------
 
 export function normalizeDateString(rawDate: string): { normalizedDate: string; valid: boolean } {
-  const input = (rawDate || '').trim();
+  if (!rawDate) return { normalizedDate: '', valid: false };
+  let input = String(rawDate).trim();
   if (!input) return { normalizedDate: '', valid: false };
 
-  // ISO YYYY-MM-DD ưu tiên tránh nhầm với DD/MM/YYYY
-  const iso = input.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  // 1. Sửa lỗi OCR số nhầm với chữ trong ngữ cảnh ngày tháng: O, o -> 0; l, I, i -> 1
+  input = input
+    .replace(/(?<=[/\-.\s]|^)[Oo](?=[0-9/\-.\s]|$)/g, '0')
+    .replace(/(?<=[0-9/\-.\s]|^)[Oo](?=[/\-.\s]|$)/g, '0')
+    .replace(/(?<=[/\-.\s]|^)[lIi](?=[0-9/\-.\s]|$)/g, '1')
+    .replace(/(?<=[0-9/\-.\s]|^)[lIi](?=[/\-.\s]|$)/g, '1');
+
+  // 2. ISO YYYY-MM-DD ưu tiên tránh nhầm với DD/MM/YYYY
+  const iso = input.match(/\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b/);
   if (iso) {
     return buildDate(iso[1], iso[2], iso[3]);
   }
 
-  const match = input.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4}|\d{2})$/);
-  if (match) {
-    let year = match[3];
+  // 3. DD/MM/YYYY hoặc DD/MM/YY (cho phép có chữ khác đi kèm như CN, Chủ nhật, Ngày...)
+  const matchFull = input.match(/\b(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4}|\d{2})\b/);
+  if (matchFull) {
+    let year = matchFull[3];
     if (year.length === 2) year = `20${year}`;
-    return buildDate(year, match[2], match[1]);
+    return buildDate(year, matchFull[2], matchFull[1]);
+  }
+
+  // 4. DD/MM (thiếu năm -> lấy năm 2026 mặc định cho kỳ chấm công hiện hành)
+  const matchShort = input.match(/\b(\d{1,2})[/\-.](\d{1,2})\b/);
+  if (matchShort) {
+    return buildDate('2026', matchShort[2], matchShort[1]);
   }
 
   return { normalizedDate: '', valid: false };
@@ -131,26 +134,38 @@ export function parseOvertimeHours(
   fromTime?: string,
   toTime?: string
 ): { hours: number | null; computedFromTime?: number } {
-  const numMatch = rawHoursText?.match(/(\d+(?:[\.,]\d+)?)/);
-  const parsed = numMatch ? parseFloat(numMatch[1].replace(',', '.')) : null;
+  let fTime = fromTime?.trim();
+  let tTime = toTime?.trim();
+
+  // Nếu rawHoursText chứa khung giờ dạng 07:30 - 16:00 thì ưu tiên tách fromTime/toTime
+  const rangeMatch = rawHoursText?.match(/(\d{1,2}(?::\d{2}|h\d{0,2}))\s*[-–—~đếnto]+\s*(\d{1,2}(?::\d{2}|h\d{0,2}))/i);
+  if (rangeMatch && (!fTime || !tTime)) {
+    fTime ||= rangeMatch[1].replace('h', ':').padStart(5, '0');
+    tTime ||= rangeMatch[2].replace('h', ':').padStart(5, '0');
+  }
+
+  // Chỉ parse số giờ nếu chuỗi KHÔNG phải là khung giờ dạng HH:MM - HH:MM
+  let parsed: number | null = null;
+  if (!/^\s*\d{1,2}:\d{2}\s*[-–—~đếnto]+\s*\d{1,2}:\d{2}\s*$/i.test(rawHoursText || '')) {
+    const numMatch = rawHoursText?.match(/(\d+(?:[\.,]\d+)?)(?:\s*(?:h|giờ|tiếng))?/i);
+    parsed = numMatch ? parseFloat(numMatch[1].replace(',', '.')) : null;
+  }
 
   let computedHours: number | undefined;
   if (
-    fromTime && toTime &&
-    /^\d{1,2}:\d{2}$/.test(fromTime.trim()) &&
-    /^\d{1,2}:\d{2}$/.test(toTime.trim())
+    fTime && tTime &&
+    /^\d{1,2}:\d{2}$/.test(fTime) &&
+    /^\d{1,2}:\d{2}$/.test(tTime)
   ) {
-    const [fh, fm] = fromTime.split(':').map(Number);
-    const [th, tm] = toTime.split(':').map(Number);
+    const [fh, fm] = fTime.split(':').map(Number);
+    const [th, tm] = tTime.split(':').map(Number);
     let diffMins = (th * 60 + tm) - (fh * 60 + fm);
     let startMin = fh * 60 + fm;
     if (diffMins < 0) {
       diffMins += 24 * 60; // ca qua đêm (22:00 -> 06:00)
-      // startMin giữ nguyên để kiểm tra cửa sổ nghỉ trưa theo ngày đầu
     }
     if (diffMins > 0) {
-      // Quy ước biểu mẫu công ty: khung giờ >= 8 tiếng QUÉT QUA buổi trưa đã gồm
-      // 30 phút nghỉ trưa. Ca đêm không chạm buổi trưa thì không trừ.
+      // Quy ước biểu mẫu công ty: khung giờ >= 8 tiếng QUÉT QUA buổi trưa đã gồm 30 phút nghỉ trưa
       const endMin = startMin + diffMins;
       const overlapsNoonLunch = startMin < 13 * 60 && endMin > 12 * 60;
       const mins = diffMins >= 480 && overlapsNoonLunch ? diffMins - 30 : diffMins;
@@ -173,15 +188,15 @@ type CanonicalField =
 
 const COLUMN_PATTERNS: { field: CanonicalField; pattern: RegExp }[] = [
   { field: 'stt', pattern: /^(stt|số\s*tt|no\.?|seq)$/i },
-  { field: 'employeeCode', pattern: /(mã\s*(số|nv|nhân viên|empl)|empl.*code|employee\s*code|^code)/i },
-  { field: 'fullName', pattern: /(họ|tên|full\s*name|^name)/i },
-  { field: 'department', pattern: /(bộ phận|đơn vị|phòng|dept|department)/i },
-  { field: 'date', pattern: /(ngày|^date|ot\s*date)/i },
-  { field: 'timeRange', pattern: /(thời gian|giờ làm|^time$|from\s*-\s*to)/i },
-  { field: 'fromTime', pattern: /(từ|^from)/i },
-  { field: 'toTime', pattern: /(đến|^to$)/i },
-  { field: 'hours', pattern: /(số giờ|ot hours|^hours|giờ tăng ca)/i },
-  { field: 'reason', pattern: /(lý do|reason|nội dung)/i },
+  { field: 'employeeCode', pattern: /(mã\s*(?:số|nv|nhân viên|empl)|empl.*code|employee\s*code|^code|mã\s*nv)/i },
+  { field: 'fullName', pattern: /(họ\s*(?:và|&)?\s*tên|họ|tên|full\s*name|^name)/i },
+  { field: 'department', pattern: /(bộ\s*phận|đơn\s*vị|phòng|dept|department|bộ\s*phận\/phòng)/i },
+  { field: 'date', pattern: /(ngày|date|ot\s*date)/i },
+  { field: 'timeRange', pattern: /(thời\s*gian|giờ\s*làm|^time$|from\s*-\s*to|khung\s*giờ)/i },
+  { field: 'fromTime', pattern: /(từ\s*(?:giờ)?|^from|bắt\s*đầu|giờ\s*vào|vào|start)/i },
+  { field: 'toTime', pattern: /(đến\s*(?:giờ)?|^to$|kết\s*thúc|giờ\s*ra|ra|end)/i },
+  { field: 'hours', pattern: /(số\s*giờ|ot\s*hours?|^hours?|giờ\s*(?:tăng\s*ca|tc)|tổng\s*(?:số\s*)?giờ|số\s*tiếng|ot\s*\(h\))/i },
+  { field: 'reason', pattern: /(lý\s*do|reason|nội\s*dung|mục\s*đích)/i },
 ];
 
 function classifyHeaderText(text: string): CanonicalField {
@@ -197,11 +212,13 @@ function classifyHeaderText(text: string): CanonicalField {
 function classifyByContent(text: string): CanonicalField {
   const t = text.trim();
   if (/^\d{1,2}$/.test(t)) return 'stt';
-  if (/^(LEP|LP)\s*\d+/i.test(t)) return 'employeeCode';
-  if (/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}$/.test(t)) return 'date';
-  if (/^\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}$/.test(t)) return 'timeRange';
-  if (/^\d{1,2}:\d{2}$/.test(t)) return 'unknown'; // không đủ căn cứ tách từ/đến
-  if (/^\d+(\.\d+)?$/.test(t)) return 'hours';
+  if (/^(?:LEP|LP)\s*\d+[a-zA-Z]?/i.test(t)) return 'employeeCode';
+  // Số giờ: 8, 8.0, 8,5, 8h, 8 giờ, 8 tiếng (ưu tiên trước date để tránh 8.0 bị nhầm là date)
+  if (/^\d+(?:[\.,]\d+)?\s*(?:h|giờ|tiếng)?$/i.test(t)) return 'hours';
+  // Chuỗi ngày tháng: DD/MM/YYYY, DD-MM-YYYY, DD/MM hoặc DD.MM.YYYY (có thể kèm thứ như 26/07/2026 CN)
+  if (/(?:\b|\d{1,2})[/\-]\d{1,2}(?:[/\-]\d{2,4})?|\b\d{1,2}\.\d{1,2}\.\d{2,4}\b/.test(t)) return 'date';
+  // Khung giờ dạng 07:30 - 16:00 hoặc 7h30 - 16h
+  if (/(\d{1,2}(?::\d{2}|h\d{0,2}))\s*[-–—~đếnto]+\s*(\d{1,2}(?::\d{2}|h\d{0,2}))/i.test(t)) return 'timeRange';
   if (/[\p{L}]/u.test(t) && t.length >= 3) return 'fullName';
   return 'unknown';
 }
@@ -302,14 +319,28 @@ export function mapGridToTableRows(grid: OcrTableGrid): IMappedTableRow[] {
       mapped.push(accumulateToRow(acc));
     }
     } else {
-    // Không tìm thấy header: xếp hạng theo nội dung
+    // Không tìm thấy header: xếp hạng theo nội dung và toạ độ x
     for (const { row } of meaningful) {
       const acc: Record<string, GridCellRef[]> = {};
+      const timeCells: GridCellRef[] = [];
       for (const cell of [...row.cells].sort((a, b) => a.x0 - b.x0)) {
-        if (!cell.text.trim()) continue;
+        const trimmed = cell.text.trim();
+        if (!trimmed) continue;
+        // Ô giờ đơn dạng HH:MM (ví dụ 07:32, 16:07)
+        if (/^\d{1,2}:\d{2}$/.test(trimmed)) {
+          timeCells.push(cell);
+          continue;
+        }
         const field = classifyByContent(cell.text);
         if (field === 'unknown') continue;
         (acc[field] ||= []).push(cell);
+      }
+      // Nếu có các ô giờ đơn (ví dụ cột Giờ vào và Giờ ra):
+      if (timeCells.length >= 2) {
+        (acc['fromTime'] ||= []).push(timeCells[0]);
+        (acc['toTime'] ||= []).push(timeCells[1]);
+      } else if (timeCells.length === 1) {
+        (acc['fromTime'] ||= []).push(timeCells[0]);
       }
       const r = accumulateToRow(acc);
       if (Object.keys(r).length > 1) mapped.push(r);
@@ -335,10 +366,10 @@ function accumulateToRow(acc: Record<string, GridCellRef[]>): IMappedTableRow {
   let fromTime = joinCells(acc['fromTime']);
   let toTime = joinCells(acc['toTime']);
   if (timeRange && (!fromTime || !toTime)) {
-    const parts = timeRange.match(/(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})/);
+    const parts = timeRange.match(/(\d{1,2}(?::\d{2}|h\d{0,2}))\s*[-–—~đếnto]+\s*(\d{1,2}(?::\d{2}|h\d{0,2}))/i);
     if (parts) {
-      fromTime ||= parts[1];
-      toTime ||= parts[2];
+      fromTime ||= parts[1].replace('h', ':').padStart(5, '0');
+      toTime ||= parts[2].replace('h', ':').padStart(5, '0');
     }
   }
 

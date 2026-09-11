@@ -84,15 +84,22 @@ function mappedToFormRows(grid: OCRWorkerResult['grid'], employeesCatalog: IEmpl
   return mapped.map((m, i) => {
     const dateNorm = m.rawDate ? normalizeDateString(m.rawDate) : { normalizedDate: '', valid: false };
     const hoursParsed = parseOvertimeHours(m.hoursText ?? '', m.fromTime, m.toTime);
-    const empCode = m.employeeCode ?? '';
+    let empCode = m.employeeCode ?? '';
     let empName = m.fullName ?? '';
     let empDept = m.department ?? '';
-    // Nghiệp vụ: OCR tập trung chuẩn MSNV, Ngày, Giờ tăng ca; Tên & Bộ phận tự động tra cứu từ danh mục nhân sự Master
-    if (employeesCatalog.length > 0 && empCode) {
+    // Nghiệp vụ: OCR tập trung chuẩn MSNV (LEP000/LEP000A), Ngày, Giờ tăng ca; Tên & Bộ phận tự động tra cứu từ danh mục nhân sự Master
+    if (empCode) {
       const normEmp = normalizeEmployeeCode(empCode, employeesCatalog);
+      empCode = normEmp.normalizedId || empCode;
       if (normEmp.matched) {
         empName = normEmp.name;
         empDept = normEmp.dept || empDept;
+      } else if (!empDept && m.employeeCode) {
+        // Tách bộ phận nếu dính vào mã nhân viên như "LEP026 WH"
+        const deptMatch = m.employeeCode.match(/(?:LEP|LP)\s*[0-9OoilIszZ]{1,4}\s*[A-Za-z]?\s+([A-Za-z]{2,})/i);
+        if (deptMatch) {
+          empDept = deptMatch[1].toUpperCase();
+        }
       }
     }
     return {
@@ -253,8 +260,26 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
         yCenter: r.yCenter,
         cells: r.cells.map(c => ({ text: c.text, confidence: c.confidence })),
       })));
-      setFormRows(mappedToFormRows(result.grid, employees));
+      setFormRows(mappedToFormRows(hrGrid, employees));
     });
+
+    // Tự động đối soát và đồng bộ ngay vào Bảng Tăng Ca nếu có dòng khớp
+    const mapped = mappedToFormRows(hrGrid, employees);
+    const reconciled = reconcileRows(mapped, employees, overtimeRecords);
+    const matchedRows = reconciled.filter(r => r.matchStatus === 'MATCHED' && r.employeeId && r.otDate && r.otHours !== null);
+    if (matchedRows.length > 0 && canCommit) {
+      commitVerifiedRows(matchedRows, {
+        fileName: title,
+        verifiedBy: currentRole ?? 'OCR_AUTO_SYNC',
+      }).then(({ updated }) => {
+        if (updated > 0) {
+          success('Tự động khớp Bảng Tăng Ca', `Đã đồng bộ ${updated} bản ghi khớp vào Bảng Tăng Ca.`);
+        }
+      }).catch(err => {
+        console.warn('[OCR Auto-Sync] Không thể tự động ghi dòng khớp:', err);
+      });
+    }
+
     // Bổ sung thông tin HR RAG vào details
     const detailsWithHR = correctedCells > 0
       ? `${result.details}; HR RAG đã tinh chỉnh ${correctedCells} ô (LEP codes, dates, tiếng Việt)`
@@ -266,7 +291,7 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
       `${result.lines.length} vùng chữ · ${result.processingTimeMs}ms${correctedCells ? ` · HR RAG ${correctedCells} ô` : ''}. Kiểm tra bảng tính bên phải trước khi ghi nhận.`
     );
     void imageUrl; // ảnh đã set ở nơi gọi
-  }, [info]);
+  }, [employees, overtimeRecords, canCommit, currentRole, info, success]);
 
   /** Chạy pipeline OCR-Scan trên bytes của một ảnh/PDF - có cache theo hash để tránh quét lại ảnh trùng (không bịa kết quả) */
   const scanImageBytes = useCallback(async (bytes: ArrayBuffer, fileName: string, objectUrl: string) => {
@@ -478,7 +503,7 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
           cells: r.cells.map(c => ({ text: c.text, confidence: c.confidence }))
         }));
         accumulatedGridRows = [...accumulatedGridRows, ...newGridRows];
-        const mapped = mappedToFormRows(result.grid, employees);
+        const mapped = mappedToFormRows(hrGrid, employees);
         accumulatedFormRows = [...accumulatedFormRows, ...mapped];
         startTransition(() => {
           setGridRows(accumulatedGridRows);
@@ -628,13 +653,19 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
         if (hoursRes.computedFromTime !== undefined) {
           updated.otHours = hoursRes.computedFromTime;
         }
+      } else if (field === 'otDateRaw') {
+        // Tự động chuẩn hóa otDate (YYYY-MM-DD) khi sửa otDateRaw (DD/MM/YYYY)
+        const dNorm = normalizeDateString(String(value));
+        if (dNorm.valid && dNorm.normalizedDate) {
+          updated.otDate = dNorm.normalizedDate;
+        }
       } else if (field === 'employeeId') {
         // Tự động tìm kiếm qua MSNV từ menu danh sách nhân viên để lấy Họ tên và Bộ phận
         const normEmp = normalizeEmployeeCode(String(value), employees);
+        updated.employeeId = normEmp.normalizedId || String(value);
         if (normEmp.matched) {
           updated.fullName = normEmp.name;
           if (normEmp.dept) updated.department = normEmp.dept;
-          updated.employeeId = normEmp.normalizedId;
         }
       }
       return updated;

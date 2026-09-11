@@ -42,7 +42,7 @@ const DET_BOX_SCORE = 0.5;
 const DET_UNCLIP_RATIO = 1.6;
 const REC_TARGET_H = 48;
 const MAX_BOXES = 400;
-const ROTATION_RETRY_CONFIDENCE = 0.55;
+const ROTATION_RETRY_CONFIDENCE = 0.25;
 
 // Đường dẫn tương đối (KHÔNG dùng '/' tuyệt đối để sống được cả file://
 // lẫn deploy sub-path). Thứ tự ưu tiên: IndexedDB -> fetch tương đối.
@@ -159,19 +159,24 @@ let wasmConfigured = false;
 function configureWasm() {
   if (wasmConfigured) return;
   wasmConfigured = true;
+  const fileMode = isFileProtocol();
   try {
-    // Đường dẫn tương đối theo document — đúng cả http://localhost và file://
-    // (trên file:// có IDB thì fetch wasm được vá ở withIdbWasmFetch).
-    const dir = new URL('PaddleOCR-Models/ort/', document.baseURI).href;
-    ort.env.wasm.wasmPaths = dir.endsWith('/') ? dir : dir + '/';
+    if (!fileMode) {
+      const dir = new URL('PaddleOCR-Models/ort/', document.baseURI).href;
+      ort.env.wasm.wasmPaths = dir.endsWith('/') ? dir : dir + '/';
+    } else {
+      // Trên file://, TUYỆT ĐỐI không đặt wasmPaths trỏ đường dẫn file://
+      // vì Chromium sẽ gọi dynamic import() tải file .mjs gây lỗi "Failed to fetch dynamically imported module"
+      delete (ort.env.wasm as any).wasmPaths;
+    }
   } catch {
-    ort.env.wasm.wasmPaths = './PaddleOCR-Models/ort/';
+    if (!fileMode) ort.env.wasm.wasmPaths = './PaddleOCR-Models/ort/';
   }
   try {
-    const fileMode = isFileProtocol();
+    const hasSAB = typeof SharedArrayBuffer !== 'undefined';
     const hw = (navigator as Navigator & { hardwareConcurrency?: number }).hardwareConcurrency || 4;
-    // file:// không có COOP/COEP (không SharedArrayBuffer) nên ép 1 luồng.
-    (ort.env.wasm as unknown as Record<string, unknown>).numThreads = fileMode ? 1 : Math.min(hw, 4);
+    // file:// hoặc môi trường không có SharedArrayBuffer thì 1 luồng, ngược lại dùng tối đa 4 luồng
+    (ort.env.wasm as unknown as Record<string, unknown>).numThreads = (hasSAB && !fileMode) ? Math.min(hw, 4) : 1;
     (ort.env.wasm as unknown as Record<string, unknown>).simd = true;
     (ort.env.wasm as unknown as Record<string, unknown>).proxy = false;
   } catch { /* ignore */ }
@@ -201,7 +206,11 @@ async function ensureBundle(onProgress: OcrDirectProgress['onProgress']): Promis
   } catch {
     viInfo = 'vi_dict lỗi (không bắt buộc)';
   }
-  onProgress?.(10, 'DICT', `Chuẩn bị dữ liệu nhận diện | ${viInfo}`);
+  const wasmRow = await getOcrAsset('ort-wasm');
+  if (wasmRow && wasmRow.bytes.byteLength > 0) {
+    ort.env.wasm.wasmBinary = wasmRow.bytes;
+    delete (ort.env.wasm as any).wasmPaths;
+  }
 
   onProgress?.(12, 'LOAD_DET', 'Đang tải mô hình phát hiện vùng chữ...');
   const detBuf = await loadBufferWithIdbFallback(REL_DET, 'det');
@@ -503,9 +512,12 @@ export async function runOcrDirect(
   for (let i = 0; i < boxes.length; i++) {
     const box = boxes[i];
     let line = await recognizeCrop(b, cropToCanvas(bmp, box));
-    if (line.confidence < ROTATION_RETRY_CONFIDENCE) {
+    // Tối ưu tốc độ: chỉ thử xoay 180° nếu độ tin cậy quá thấp (< 0.25)
+    // VÀ chưa nhận diện được chữ/số rõ ràng (tránh nhân đôi thời gian suy luận vô ích)
+    const hasMeaningful = /[A-Za-z0-9]{2,}/.test(line.text);
+    if (line.confidence < ROTATION_RETRY_CONFIDENCE && !hasMeaningful) {
       const rotated = await recognizeCrop(b, cropToCanvas(bmp, box, true));
-      if (rotated.text.trim().length > 0 && rotated.confidence > line.confidence + 0.05) {
+      if (rotated.text.trim().length > 0 && rotated.confidence > line.confidence + 0.1) {
         line = rotated;
         rotatedCount++;
       }

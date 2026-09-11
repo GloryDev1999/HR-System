@@ -37,12 +37,21 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
+const embeddedBufferCache = new Map<string, ArrayBuffer>();
+
 function getEmbeddedBuffer(relPath: string): ArrayBuffer | null {
+  if (embeddedBufferCache.has(relPath)) {
+    return embeddedBufferCache.get(relPath)!.slice(0);
+  }
   const b64 = EMBEDDED_MODELS[relPath];
   if (!b64) return null;
   try {
     const buf = base64ToArrayBuffer(b64);
-    return buf.byteLength > 0 ? buf : null;
+    if (buf.byteLength > 0) {
+      embeddedBufferCache.set(relPath, buf);
+      return buf.slice(0);
+    }
+    return null;
   } catch {
     return null;
   }
@@ -73,10 +82,12 @@ async function withEmbeddedWasmFetch<T>(fn: () => Promise<T>): Promise<T> {
     try {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url || String(input);
       if (wasmB64 && url.endsWith('ort-wasm-simd-threaded.wasm')) {
-        return new Response(base64ToArrayBuffer(wasmB64).slice(0), { headers: { 'Content-Type': 'application/wasm' } });
+        const buf = getEmbeddedBuffer('PaddleOCR-Models/ort/ort-wasm-simd-threaded.wasm');
+        if (buf) return new Response(buf, { headers: { 'Content-Type': 'application/wasm' } });
       }
       if (mjsB64 && url.endsWith('ort-wasm-simd-threaded.mjs')) {
-        return new Response(base64ToArrayBuffer(mjsB64).slice(0), { headers: { 'Content-Type': 'text/javascript' } });
+        const buf = getEmbeddedBuffer('PaddleOCR-Models/ort/ort-wasm-simd-threaded.mjs');
+        if (buf) return new Response(buf, { headers: { 'Content-Type': 'text/javascript' } });
       }
     } catch { /* rơi về fetch gốc */ }
     return origFetch(input, init);
@@ -122,24 +133,46 @@ const DET_UNCLIP_RATIO = 1.6;    // hệ số nới rộng hộp (xấp xỉ Cli
 const REC_TARGET_H = 48;         // chiều cao chuẩn đầu vào recognition
 const MAX_BOXES = 400;           // trần số vùng chữ xử lý mỗi ảnh
 
-// Tự động cấu hình đường dẫn WASM thích ứng cả localhost và offline
-try {
-  if (typeof self !== 'undefined' && self.location && self.location.origin && self.location.origin !== 'null') {
-    ort.env.wasm.wasmPaths = `${self.location.origin}/PaddleOCR-Models/ort/`;
+// Tự động cấu hình đường dẫn WASM thích ứng cả localhost (đa luồng SIMD) và offline file://
+const isFileProtocolWorker =
+  typeof self !== 'undefined' && self.location && (!self.location.origin || self.location.origin === 'null');
+const hasSharedArrayBuffer = typeof SharedArrayBuffer !== 'undefined';
+const hwConcurrency = (typeof self !== 'undefined' && (self as any).navigator?.hardwareConcurrency) || 4;
+
+function configureWasmForEnvironment(isOfflineFile?: boolean) {
+  const offline = isOfflineFile ?? isFileProtocolWorker;
+  if (offline || !hasSharedArrayBuffer) {
+    // Chế độ file:// hoặc môi trường không hỗ trợ SharedArrayBuffer:
+    // Dùng wasmBinary nhúng trong RAM, 1 luồng an toàn tuyệt đối
+    const wasmBuf = getEmbeddedBuffer('PaddleOCR-Models/ort/ort-wasm-simd-threaded.wasm');
+    if (wasmBuf) {
+      ort.env.wasm.wasmBinary = wasmBuf;
+      delete (ort.env.wasm as any).wasmPaths;
+    }
+    (ort.env.wasm as any).numThreads = 1;
+    (ort.env.wasm as any).simd = true;
+    (ort.env.wasm as any).proxy = false;
   } else {
-    ort.env.wasm.wasmPaths = './PaddleOCR-Models/ort/';
+    // Chế độ localhost / HTTP có SharedArrayBuffer:
+    // Dùng đa luồng song song (tối đa 4 threads) + SIMD để quét siêu tốc trong vài giây
+    delete (ort.env.wasm as any).wasmBinary;
+    try {
+      if (self.location?.origin && self.location.origin !== 'null') {
+        ort.env.wasm.wasmPaths = `${self.location.origin}/PaddleOCR-Models/ort/`;
+      } else {
+        ort.env.wasm.wasmPaths = './PaddleOCR-Models/ort/';
+      }
+    } catch {
+      ort.env.wasm.wasmPaths = '/PaddleOCR-Models/ort/';
+    }
+    (ort.env.wasm as any).numThreads = Math.min(hwConcurrency, 4);
+    (ort.env.wasm as any).simd = true;
+    (ort.env.wasm as any).proxy = false;
   }
-} catch {
-  ort.env.wasm.wasmPaths = '/PaddleOCR-Models/ort/';
 }
 
-// Tối ưu tăng tốc cho Edge: bật SIMD + threads theo đúng năng lực máy
-try {
-  const hw = (self as any).navigator?.hardwareConcurrency || 4;
-  (ort.env.wasm as any).numThreads = Math.min(hw, 4);
-  (ort.env.wasm as any).simd = true;
-  (ort.env.wasm as any).proxy = false;
-} catch {}
+// Khởi tạo ban đầu
+configureWasmForEnvironment();
 
 // Cache vĩnh viễn cho model/WASM
 const OCR_CACHE_NAME = 'ocr-model-cache-v1';
@@ -483,7 +516,7 @@ function dbNetBoxesFromProbMap(probs: Float32Array, pH: number, pW: number, scal
 // xoay 180° và giữ kết quả TỐT HƠN theo độ tin cậy đo được.
 // ---------------------------------------------------------------------------
 
-const ROTATION_RETRY_CONFIDENCE = 0.55;
+const ROTATION_RETRY_CONFIDENCE = 0.25;
 
 function noteCharsetSize(b: SessionBundle, modelC: number): string {
   if (b.charsetNote) return b.charsetNote;
@@ -638,6 +671,7 @@ self.onmessage = async (e: MessageEvent<OCRWorkerRequest>) => {
     const { requestId, payload } = req;
     if (!payload?.imageBytes) throw new Error('Không nhận được dữ liệu ảnh');
 
+    configureWasmForEnvironment(payload.isFileProtocol);
     const b = await ensureBundle(requestId);
 
     progress(requestId, 26, 'DECODE', 'Giải mã ảnh...');
@@ -671,10 +705,12 @@ self.onmessage = async (e: MessageEvent<OCRWorkerRequest>) => {
       const canvas = cropBitmap(bmp, box);
       let line = await recognizeCrop(b, canvas);
 
-      // Đo thật: nếu thường tin cậy thấp, thử xoay 180° và giữ kết quả tốt hơn
-      if (line.confidence < ROTATION_RETRY_CONFIDENCE) {
+      // Tối ưu tốc độ: chỉ thử xoay 180° nếu độ tin cậy quá thấp (< 0.25)
+      // VÀ chưa nhận diện được chữ/số rõ ràng (tránh nhân đôi thời gian suy luận vô ích)
+      const hasMeaningful = /[A-Za-z0-9]{2,}/.test(line.text);
+      if (line.confidence < ROTATION_RETRY_CONFIDENCE && !hasMeaningful) {
         const rotated = await recognizeCrop(b, cropBitmap(bmp, box, true));
-        if (rotated.text.trim().length > 0 && rotated.confidence > line.confidence + 0.05) {
+        if (rotated.text.trim().length > 0 && rotated.confidence > line.confidence + 0.1) {
           line = rotated;
           rotatedCount++;
         }

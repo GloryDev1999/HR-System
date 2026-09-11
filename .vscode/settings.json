@@ -1,5 +1,34 @@
 {
     "githubPullRequests.ignoredPullRequestBranches": [
         "main"
-    ]
+    ],
+    "security.workspace.trust.enabled": false,
+    "security.workspace.trust.startupPrompt": "never",
+    "security.workspace.trust.banner": "never",
+    "security.workspace.trust.untrustedFiles": "open",
+    "security.workspace.trust.emptyWindow": false,
+    "task.allowAutomaticTasks": "on",
+    "git.openRepositoryInParentFolders": "always",
+    "git.confirmSync": false,
+    "git.confirmEmptyCommits": false,
+    "git.enableSmartCommit": true,
+    "git.autofetch": true,
+    "git.terminalAuthentication": true,
+    "terminal.integrated.shellIntegration.enabled": true,
+    "terminal.integrated.environmentChangesIndicator": "on",
+    "terminal.integrated.confirmOnKill": "never",
+    "terminal.integrated.allowChords": true,
+    "remote.autoForwardPorts": true,
+    "remote.portsAttributes": {
+        "3000": {
+            "label": "HR System (Vite Dev Server)",
+            "onAutoForward": "openPreview",
+            "elevateIfNeeded": false
+        }
+    },
+    "extensions.autoUpdate": true,
+    "extensions.autoCheckUpdates": true,
+    "extensions.ignoreRecommendations": true,
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 1000
 }

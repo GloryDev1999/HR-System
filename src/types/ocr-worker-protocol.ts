@@ -45,6 +45,8 @@ export interface OCRWorkerRunPayload {
   /** Dữ liệu nhị phân ảnh (JPEG/PNG bytes) - transferable */
   imageBytes?: ArrayBuffer;
   fileName?: string;
+  /** Môi trường chạy offline file:// (cần 1 luồng / wasmBinary thay vì fetch wasm ngoài) */
+  isFileProtocol?: boolean;
 }
 
 export interface OCRWorkerRequest {

@@ -46,6 +46,7 @@ export function reconcileRows(
   return rows.map((row) => {
     const normEmp = normalizeEmployeeCode(row.employeeId, employees);
     const normDate = normalizeDateString(row.otDateRaw || row.otDate);
+    const activeEmpId = normEmp.normalizedId || row.employeeId;
 
     let matchStatus: MatchStatus;
     let details = '';
@@ -55,36 +56,43 @@ export function reconcileRows(
       details = 'Ngày trên ô không đúng định dạng DD/MM/YYYY - cần sửa trước khi ghi nhận';
     } else if (!normEmp.matched) {
       matchStatus = 'MISMATCH';
-      details = `Mã nhân viên [${row.employeeId}] không tồn tại trong danh mục nhân sự`;
+      details = `Mã nhân viên [${activeEmpId}] không tồn tại trong danh mục nhân sự`;
     } else {
-      const otKey = `${normEmp.normalizedId}_${normDate.normalizedDate}`;
-      const existingOT = overtimeRecords.find(o => o.employeeId_date === otKey);
+      const otKey = `${normEmp.normalizedId}_${normDate.normalizedDate}`.toUpperCase();
+      const existingOT = overtimeRecords.find(o =>
+        (o.employeeId_date && o.employeeId_date.toUpperCase() === otKey) ||
+        (o.employeeId?.toUpperCase() === normEmp.normalizedId.toUpperCase() && o.date === normDate.normalizedDate)
+      );
 
       if (!existingOT) {
         matchStatus = 'MISMATCH';
-        details = `VẮNG MẶT: Không có bản ghi quẹt thẻ nào của ${normEmp.name} ngày ${normDate.normalizedDate}`;
-      } else if (row.otHours === null) {
+        details = `VẮNG MẶT: Không có bản ghi quẹt thẻ nào của ${normEmp.name || activeEmpId} ngày ${normDate.normalizedDate}`;
+      } else if (row.otHours === null || row.otHours === undefined) {
         matchStatus = 'NOT_FOUND';
         details = 'Số giờ tăng ca trống/không hợp lệ - cần nhập trước khi ghi nhận';
-      } else if (Math.abs(existingOT.hours - row.otHours) < 0.001) {
+      } else if (existingOT.hours !== undefined && existingOT.hours !== null && Math.abs(existingOT.hours - row.otHours) < 0.05) {
         matchStatus = 'MATCHED';
         details = `Khớp: Quẹt thẻ ${existingOT.hours}h = Phiếu duyệt ${row.otHours}h`;
       } else {
         matchStatus = 'MISMATCH';
-        details = `LỆCH GIỜ: Quẹt thẻ thực tế ${existingOT.hours}h khác Phiếu duyệt ${row.otHours}h (Chênh ${Math.abs(existingOT.hours - row.otHours).toFixed(1)}h)`;
+        details = `LỆCH GIỜ: Quẹt thẻ thực tế ${existingOT.hours}h khác Phiếu duyệt ${row.otHours}h (Chênh ${Math.abs(existingOT.hours - (row.otHours ?? 0)).toFixed(1)}h)`;
       }
     }
+
+    const otKey = `${normEmp.normalizedId}_${normDate.normalizedDate}`.toUpperCase();
+    const existingOT = overtimeRecords.find(o =>
+      (o.employeeId_date && o.employeeId_date.toUpperCase() === otKey) ||
+      (o.employeeId?.toUpperCase() === normEmp.normalizedId.toUpperCase() && o.date === normDate.normalizedDate)
+    );
 
     return {
       ...row,
       fullName: normEmp.matched ? normEmp.name : row.fullName,
       department: normEmp.dept || row.department,
-      employeeId: normEmp.matched ? normEmp.normalizedId : row.employeeId,
+      employeeId: activeEmpId,
       otDate: normDate.normalizedDate || row.otDate,
       matchStatus,
-      dbHours: normEmp.matched && normDate.valid
-        ? overtimeRecords.find(o => o.employeeId_date === `${normEmp.normalizedId}_${normDate.normalizedDate}`)?.hours
-        : undefined,
+      dbHours: existingOT?.hours,
       details
     };
   });
@@ -112,9 +120,13 @@ export async function commitVerifiedRows(rows: IExtractedFormRow[], meta: Commit
       if (!row.otDate || row.otHours === null || row.otHours === undefined) continue;
 
       const otKey = `${row.employeeId}_${row.otDate}`;
-      const existing = await db.overtimeRecords.get(otKey);
+      let existing = await db.overtimeRecords.get(otKey);
+      if (!existing) {
+        const recordsOnDate = await db.overtimeRecords.where('date').equals(row.otDate).toArray();
+        existing = recordsOnDate.find(o => o.employeeId?.toUpperCase() === row.employeeId?.toUpperCase());
+      }
       if (existing) {
-        await db.overtimeRecords.update(otKey, {
+        await db.overtimeRecords.update(existing.employeeId_date, {
           verificationStatus: row.matchStatus === 'MATCHED' ? 'MATCHED' : 'MISMATCH',
           ocrExtractedHours: row.otHours,
           ocrConfidence: row.confidence,

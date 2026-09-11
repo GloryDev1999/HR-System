@@ -1,6 +1,7 @@
 node_modules/
 extracted_figma/
 *.log
+*.zip
 .DS_Store
 *.tmpPaddleOCR-Models/paddle_inference/
 shortcuts/
