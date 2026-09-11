@@ -3,9 +3,9 @@
     "project_name": "SmartHR - Single-File In-Browser HRMS & Timekeeping System",
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
-    "last_updated": "2026-09-11T04:28:00Z",
-    "current_phase": "Phase 21: In-Memory Timesheet Parser Fallback on file:// protocol (Prevent Web Worker origin null crash, seamless 100% offline file parsing, 125/125 tests green)",
-    "version": "2.1.0"
+    "last_updated": "2026-09-11T04:37:00Z",
+    "current_phase": "Phase 22: Enhanced Offline OCR Model Guide & Management Modal (Clarified 100% embedded model status on fresh machine, listed 5 fallback files, 125/125 tests green)",
+    "version": "2.2.0"
   },
   "agent_profile": {
     "role": "Senior Principal System Designer & Staff IT Software Engineer",

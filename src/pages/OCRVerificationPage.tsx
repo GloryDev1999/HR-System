@@ -14,7 +14,8 @@ import {
   Trash2,
   Save,
   RefreshCw,
-  Table2
+  Table2,
+  X
 } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
@@ -28,7 +29,7 @@ import { runOcrPipeline } from '../services/ocr-worker-client';
 import type { OCRWorkerResult } from '../types/ocr-worker-protocol';
 import { IEmployee } from '../types';
 import { testONNXModelRuntime, IONNXModelHealthReport } from '../services/onnx-model-checker';
-import { isFileProtocol, putOcrAsset, guessOcrAssetKey, getStoredOcrAssetKeys } from '../services/ocr-assets-store';
+import { isFileProtocol, putOcrAsset, guessOcrAssetKey, getStoredOcrAssetKeys, clearOcrAssets } from '../services/ocr-assets-store';
 import {
   normalizeDateString,
   parseOvertimeHours,
@@ -128,6 +129,8 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
   const offlineAssetsInputRef = useRef<HTMLInputElement>(null);
   const [isLoadingAssets, setIsLoadingAssets] = useState(false);
   const [offlineAssetCount, setOfflineAssetCount] = useState<number>(-1);
+  const [isOfflineModalOpen, setIsOfflineModalOpen] = useState(false);
+  const [storedAssetKeys, setStoredAssetKeys] = useState<string[]>([]);
   const fileMode = isFileProtocol();
 
   const [isScanning, setIsScanning] = useState(false);
@@ -182,7 +185,15 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
   // file://: đếm sẵn model đã nạp trong kho offline để hiển thị trạng thái nút
   useEffect(() => {
     if (!fileMode) return;
-    getStoredOcrAssetKeys().then(keys => setOfflineAssetCount(keys.length)).catch(() => setOfflineAssetCount(0));
+    getStoredOcrAssetKeys()
+      .then(keys => {
+        setOfflineAssetCount(keys.length);
+        setStoredAssetKeys(keys);
+      })
+      .catch(() => {
+        setOfflineAssetCount(0);
+        setStoredAssetKeys([]);
+      });
   }, [fileMode]);
 
   // Persist OCR data khi qua menu Quản lý tăng ca thì không reset - lưu vào localStorage
@@ -575,6 +586,7 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
       }
       const keys = await getStoredOcrAssetKeys();
       setOfflineAssetCount(keys.length);
+      setStoredAssetKeys(keys);
       if (saved > 0) {
         success('Đã nạp model offline', `Lưu ${saved} file vào kho offline (${keys.length} mục). Từ nay mở file trực tiếp vẫn quét OCR được.`);
       }
@@ -590,6 +602,21 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
       setIsLoadingAssets(false);
       if (offlineAssetsInputRef.current) offlineAssetsInputRef.current.value = '';
     }
+  };
+
+  const handleClearOfflineAssets = async () => {
+    const ok = await confirm({
+      title: 'Xóa kho IndexedDB offline?',
+      message: 'Các file model đã lưu trong bộ nhớ trình duyệt sẽ được xóa. Hệ thống vẫn tiếp tục hoạt động bình thường nhờ bản model đã nhúng sẵn trong tệp HTML.',
+      type: 'warning',
+      confirmText: 'Xóa kho',
+      cancelText: 'Hủy'
+    });
+    if (!ok) return;
+    await clearOcrAssets();
+    setOfflineAssetCount(0);
+    setStoredAssetKeys([]);
+    info('Đã dọn dẹp kho offline', 'Các file trong IndexedDB đã được xóa. Hệ thống sẽ tiếp tục sử dụng bản model nhúng sẵn trong file HTML.');
   };
 
   // 2. Ảnh mẫu image.png - đã ẩn khỏi toolbar theo yêu cầu (giữ hàm để không vỡ logic, nhưng không hiển thị nút)
@@ -874,13 +901,13 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
 
           {fileMode && (
             <button
-              onClick={() => offlineAssetsInputRef.current?.click()}
+              onClick={() => setIsOfflineModalOpen(true)}
               disabled={isLoadingAssets}
-              title="Worker OCR đã nhúng model trong ứng dụng nên thường không cần bước này. Chỉ dùng khi engine trực tiếp báo thiếu model: chọn file model Paddle 1 lần để lưu vào kho offline"
+              title="Xem hướng dẫn & quản lý model OCR offline"
               className="flex items-center gap-2 px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 text-xs font-bold rounded-xl transition shadow-sm"
             >
               {isLoadingAssets ? <Loader2 className="w-4 h-4 animate-spin" /> : <Layers className="w-4 h-4" />}
-              <span>{offlineAssetCount >= 0 ? `Nạp model offline (${offlineAssetCount} mục)` : 'Nạp model offline'}</span>
+              <span>{storedAssetKeys.length > 0 ? `Kho model offline (${storedAssetKeys.length}/5 file)` : 'Nạp model offline'}</span>
             </button>
           )}
 
@@ -1288,6 +1315,151 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
           </div>
         </div>
       </div>
+
+      {/* Modal Hướng dẫn & Quản lý Model Offline */}
+      {isOfflineModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-2xl w-full p-6 space-y-5 text-slate-800 my-auto">
+            {/* Header */}
+            <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center font-bold">
+                  <Layers className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-slate-900">Hướng Dẫn & Quản Lý Model OCR Offline</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Cấu hình nhận diện hình ảnh & PDF cho phiếu tăng ca LPVN-HR-F-0004</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsOfflineModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Thông điệp cốt lõi: MÁY MỚI CÓ CẦN NẠP THỦ CÔNG KHÔNG? */}
+            <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 space-y-2">
+              <div className="flex items-center gap-2 font-bold text-sm">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                <span>Mở trên máy tính mới hoàn toàn: KHÔNG CẦN nạp thủ công!</span>
+              </div>
+              <p className="text-xs text-emerald-800 leading-relaxed pl-7">
+                Bản build Single-File <b>dist/index.html</b> đã được <b>nhúng sẵn 100% Model OCR (Base64)</b> và WebAssembly Core trực tiếp bên trong file HTML. Khi copy file sang bất kỳ máy tính mới nào mở lên, hệ thống sẽ <b>tự động giải mã model và quét ảnh nhận diện được ngay lập tức</b> mà không cần Internet hay tải thêm bất kỳ file nào.
+              </p>
+            </div>
+
+            {/* Khi nào cần nạp & danh sách file */}
+            <div className="space-y-3">
+              <div className="font-bold text-xs uppercase tracking-wider text-slate-500">
+                Khi nào cần nạp & Danh sách 5 file nạp dự phòng (Fallback)
+              </div>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Thẻ này chỉ dùng làm <b>phương án dự phòng thứ 2</b> khi trình duyệt máy bị thiếu RAM không khởi tạo được Worker và yêu cầu lưu model vào IndexedDB. Khi đó, hãy bấm nút màu cam bên dưới và chọn <b>5 file</b> sau từ thư mục <code className="px-1.5 py-0.5 bg-slate-100 rounded text-slate-700 font-mono text-[11px]">PaddleOCR-Models/</code> (hoặc thư mục <code className="px-1.5 py-0.5 bg-slate-100 rounded text-slate-700 font-mono text-[11px]">dist/</code>):
+              </p>
+
+              {/* Danh sách 5 file */}
+              <div className="grid grid-cols-1 gap-2 text-xs">
+                {[
+                  {
+                    key: 'det',
+                    name: 'ch_PP-OCRv4_det_infer.onnx',
+                    folder: 'PaddleOCR-Models/onnx/',
+                    desc: 'Model phát hiện vùng chữ trong phiếu tăng ca',
+                    size: '~4.5 MB'
+                  },
+                  {
+                    key: 'rec',
+                    name: 'latin_PP-OCRv3_rec.onnx',
+                    folder: 'PaddleOCR-Models/onnx/',
+                    desc: 'Model nhận diện ký tự tiếng Việt & Latin',
+                    size: '~8.6 MB'
+                  },
+                  {
+                    key: 'latin_dict',
+                    name: 'latin_dict.txt',
+                    folder: 'PaddleOCR-Models/dictionaries/',
+                    desc: 'Từ điển tiếng Việt đầy đủ dấu thanh',
+                    size: '~13 KB'
+                  },
+                  {
+                    key: 'vi_dict',
+                    name: 'vi_dict.txt',
+                    folder: 'PaddleOCR-Models/dictionaries/',
+                    desc: 'Từ điển bổ trợ nhận diện tiếng Việt',
+                    size: '~12 KB'
+                  },
+                  {
+                    key: 'ort-wasm',
+                    name: 'ort-wasm-simd-threaded.wasm',
+                    folder: 'PaddleOCR-Models/ort/',
+                    desc: 'Lõi tính toán WebAssembly ONNX Runtime',
+                    size: '~12.8 MB'
+                  },
+                ].map((item) => {
+                  const isLoaded = storedAssetKeys.includes(item.key);
+                  return (
+                    <div key={item.key} className="p-2.5 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-between gap-3">
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-slate-800 font-mono text-[11px] truncate">{item.name}</span>
+                          <span className="text-[10px] text-slate-400">({item.size})</span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 truncate">{item.desc} · <span className="font-mono text-slate-400">{item.folder}</span></div>
+                      </div>
+                      <div className="shrink-0 flex items-center gap-1.5">
+                        {isLoaded ? (
+                          <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                            ✓ Đã lưu kho IDB
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800 text-[10px] font-semibold">
+                            ⚡ Sẵn sàng (nhúng HTML)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Footer & Actions */}
+            <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                {storedAssetKeys.length > 0 && (
+                  <button
+                    onClick={handleClearOfflineAssets}
+                    className="px-3 py-1.5 text-xs text-rose-600 hover:bg-rose-50 rounded-lg transition font-medium border border-rose-200"
+                  >
+                    Xóa kho IndexedDB ({storedAssetKeys.length} file)
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setIsOfflineModalOpen(false);
+                    handleTestONNXModel();
+                  }}
+                  className="px-3.5 py-2 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition"
+                >
+                  Kiểm tra thuật toán OCR
+                </button>
+                <button
+                  onClick={() => offlineAssetsInputRef.current?.click()}
+                  disabled={isLoadingAssets}
+                  className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl transition shadow-md shadow-amber-200"
+                >
+                  {isLoadingAssets ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                  <span>Chọn file nạp dự phòng</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
