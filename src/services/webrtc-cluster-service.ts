@@ -289,6 +289,12 @@ class WebRTCClusterService {
 
   public setStatus(status: NodeConnectionStatus, details?: string): void {
     this.currentStatus = status;
+    // Điều chỉnh tần suất quét thư mục thích ứng:
+    if (status === 'CONNECTED') {
+      folderSignaling.setPollInterval(8000); // Đã có WebRTC DataChannel RAM-to-RAM, quét chậm 8s chỉ làm kênh dự phòng
+    } else {
+      folderSignaling.setPollInterval(2500); // Đang bắt tay hoặc tìm kiếm, quét 2.5s để kết nối tức thì
+    }
     this.statusListeners.forEach(fn => fn(status, details));
   }
 

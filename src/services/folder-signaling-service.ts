@@ -343,8 +343,10 @@ class FolderSignalingService {
     });
   }
 
+  private pollInterval = 2500;
+
   /**
-   * Bắt đầu vòng lặp quét thư mục định kỳ 2 giây/lần
+   * Bắt đầu vòng lặp quét thư mục định kỳ
    */
   public startPolling(): void {
     if (this.pollTimer || !this.dirHandle) return;
@@ -360,7 +362,22 @@ class FolderSignalingService {
       } finally {
         this.isPolling = false;
       }
-    }, 2000);
+    }, this.pollInterval);
+  }
+
+  /**
+   * Điều chỉnh tần suất quét thư mục thích ứng (Adaptive Throttling)
+   * - Khi đang bắt tay: 2.5s/lần để kết nối tức thì
+   * - Khi RTCDataChannel đã CONNECTED: 8s-10s/lần để siêu tiết kiệm pin và CPU
+   */
+  public setPollInterval(intervalMs: number): void {
+    const target = Math.max(1500, intervalMs);
+    if (this.pollInterval === target) return;
+    this.pollInterval = target;
+    if (this.pollTimer) {
+      this.stopPolling();
+      this.startPolling();
+    }
   }
 
   public stopPolling(): void {
