@@ -11,6 +11,8 @@ interface AuthContextType {
   login: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => void;
   changePassword: (currentPassword: string, newPassword: string) => Promise<{ ok: boolean; error?: string }>;
+  resetUserPassword: (username: string, newPassword?: string) => Promise<{ ok: boolean; error?: string }>;
+  unlockUser: (username: string) => Promise<{ ok: boolean; error?: string }>;
   createAccount: (username: string, displayName: string, role: RoleType, password?: string, departmentScope?: string | null) => Promise<{ ok: boolean; error?: string }>;
   updateAccountProfile: (username: string, updates: { displayName?: string; role?: RoleType; departmentScope?: string | null; active?: boolean }) => Promise<{ ok: boolean; error?: string }>;
   currentRole: RoleType | null;
@@ -178,14 +180,60 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       account = await db.accounts.filter(a => a.username.toLowerCase() === uname || a.displayName.toLowerCase() === uname).first();
     }
 
-    if (!account || !account.active) {
-      return { ok: false, error: 'Tài khoản không tồn tại hoặc đã bị khóa' };
+    if (!account) {
+      return { ok: false, error: 'Tài khoản không tồn tại' };
+    }
+
+    // Kiểm tra trạng thái khóa tài khoản do sai pass quá 10 lần hoặc bị admin vô hiệu hóa
+    if (account.isLocked || !account.active || (account.failedLoginAttempts && account.failedLoginAttempts >= 10)) {
+      return {
+        ok: false,
+        error: 'User đã bị khóa! vui lòng Liên hệ phòng nhân sự để được mở khóa user'
+      };
     }
 
     const valid = await verifyPassword(password, account.salt, account.passwordHash);
-    if (!valid) return { ok: false, error: 'Mật khẩu không đúng' };
+    if (!valid) {
+      const attempts = (account.failedLoginAttempts || 0) + 1;
+      if (attempts >= 10) {
+        await db.accounts.update(account.username, {
+          failedLoginAttempts: attempts,
+          isLocked: true,
+          active: false,
+          activeFlag: 0
+        });
+        logUserAction({
+          username: account.username,
+          displayName: account.displayName,
+          role: account.role,
+          actionType: 'AUTH_LOGIN',
+          targetEntity: account.username,
+          details: 'Tài khoản bị khóa tự động do nhập sai mật khẩu 10 lần liên tiếp'
+        }).catch(console.error);
+        return {
+          ok: false,
+          error: 'User đã bị khóa! vui lòng Liên hệ phòng nhân sự để được mở khóa user'
+        };
+      } else {
+        await db.accounts.update(account.username, {
+          failedLoginAttempts: attempts
+        });
+        const remaining = 10 - attempts;
+        return {
+          ok: false,
+          error: `Mật khẩu không đúng. Còn ${remaining} lần thử trước khi tài khoản bị khóa.`
+        };
+      }
+    }
 
-    await db.accounts.update(account.username, { lastLoginAt: new Date().toISOString() });
+    // Đăng nhập thành công: Reset số lần nhập sai về 0
+    await db.accounts.update(account.username, {
+      lastLoginAt: new Date().toISOString(),
+      failedLoginAttempts: 0,
+      isLocked: false,
+      active: true,
+      activeFlag: 1
+    });
     const effectiveDeptScope = account.departmentScope ?? getDepartmentScope(account.role);
     const s: SessionUser = {
       username: account.username,
@@ -249,6 +297,75 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     return { ok: true };
   }, [session]);
+
+  const resetUserPassword = useCallback(async (
+    username: string,
+    newPassword: string = '123'
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!makeHasPermission(session?.role ?? null, rolePermissions)('MANAGE_USERS') && !makeHasPermission(session?.role ?? null, rolePermissions)('SYSTEM_SETTINGS')) {
+      return { ok: false, error: 'Chỉ System Admin mới có quyền đặt lại mật khẩu' };
+    }
+    const uname = username.trim().toLowerCase();
+    const account = await db.accounts.get(uname);
+    if (!account) return { ok: false, error: 'Không tìm thấy tài khoản' };
+
+    const pass = newPassword.trim() || '123';
+    const salt = generateSalt();
+    const passwordHash = await hashPassword(pass, salt);
+
+    await db.accounts.update(uname, {
+      salt,
+      passwordHash,
+      failedLoginAttempts: 0,
+      isLocked: false,
+      active: true,
+      activeFlag: 1
+    });
+
+    if (session) {
+      logUserAction({
+        username: session.username,
+        displayName: session.displayName,
+        role: session.role,
+        actionType: 'UPDATE_USER_NAME',
+        targetEntity: uname,
+        details: `Đặt lại mật khẩu cho "${uname}" và mở khóa tài khoản thành công`
+      }).catch(console.error);
+    }
+
+    return { ok: true };
+  }, [session, rolePermissions]);
+
+  const unlockUser = useCallback(async (
+    username: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!makeHasPermission(session?.role ?? null, rolePermissions)('MANAGE_USERS') && !makeHasPermission(session?.role ?? null, rolePermissions)('SYSTEM_SETTINGS')) {
+      return { ok: false, error: 'Chỉ System Admin mới có quyền mở khóa tài khoản' };
+    }
+    const uname = username.trim().toLowerCase();
+    const account = await db.accounts.get(uname);
+    if (!account) return { ok: false, error: 'Không tìm thấy tài khoản' };
+
+    await db.accounts.update(uname, {
+      failedLoginAttempts: 0,
+      isLocked: false,
+      active: true,
+      activeFlag: 1
+    });
+
+    if (session) {
+      logUserAction({
+        username: session.username,
+        displayName: session.displayName,
+        role: session.role,
+        actionType: 'TOGGLE_USER_ACTIVE',
+        targetEntity: uname,
+        details: `Mở khóa và reset số lần nhập sai mật khẩu về 0 cho tài khoản "${uname}"`
+      }).catch(console.error);
+    }
+
+    return { ok: true };
+  }, [session, rolePermissions]);
 
   const createAccount = useCallback(async (
     username: string,
@@ -377,6 +494,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         login,
         logout,
         changePassword,
+        resetUserPassword,
+        unlockUser,
         createAccount,
         updateAccountProfile,
         currentRole,

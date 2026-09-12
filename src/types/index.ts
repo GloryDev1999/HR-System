@@ -18,6 +18,8 @@ export interface IAccount {
   activeFlag: 0 | 1;         // shadow 0|1 CHỈ để index — IndexedDB không cho boolean làm key
   createdAt: string;
   lastLoginAt?: string;
+  failedLoginAttempts?: number; // Số lần đăng nhập sai liên tiếp
+  isLocked?: boolean;           // Tài khoản bị khóa do nhập sai quá 10 lần
 }
 
 /** Phiên đăng nhập hiện hành */

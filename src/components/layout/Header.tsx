@@ -17,7 +17,10 @@ import {
   Radio,
   Server,
   Wifi,
-  WifiOff
+  WifiOff,
+  KeyRound,
+  X,
+  Lock
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
@@ -45,6 +48,7 @@ export const Header: React.FC = () => {
   const [importStatusText, setImportStatusText] = useState('');
   const [isUserDropdownOpen, setIsUserDropdownOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
 
   // Chỉ riêng phòng Nhân sự (HR Manager / HR Admin) mới được xem thông báo hợp đồng
   const isHR = currentRole === 'HR Manager' || currentRole === 'HR Admin';
@@ -728,6 +732,8 @@ export const Header: React.FC = () => {
                 ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                 : clusterStatus === 'SIGNALING'
                 ? 'bg-indigo-50 text-indigo-700 border-indigo-200 animate-pulse'
+                : clusterStatus === 'HOST_OFFLINE'
+                ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
                 : 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white border-orange-400'
             }`}
             title="Kết nối thời gian thực tới Máy Chủ Master DB (Kieu) qua WebRTC RTCDataChannel"
@@ -742,6 +748,12 @@ export const Header: React.FC = () => {
               <>
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
                 <span>Đang bắt tay Host Kieu...</span>
+              </>
+            ) : clusterStatus === 'HOST_OFFLINE' ? (
+              <>
+                <span className="w-2 h-2 rounded-full bg-amber-500" />
+                <Radio className="w-3.5 h-3.5 text-amber-700" />
+                <span>Host Kieu Chưa Bật (Lưu Cục Bộ)</span>
               </>
             ) : (
               <>
@@ -847,86 +859,6 @@ export const Header: React.FC = () => {
           </button>
         )}
 
-        {/* OneDrive Shared Sync Button */}
-        <button
-          onClick={() => {
-            alertModal(
-              'Đồng Bộ Dữ Liệu Dùng Chung (OneDrive Sync)',
-              (
-                <div className="space-y-4 text-xs">
-                  <div className="p-3 bg-blue-50 text-blue-900 rounded-xl border border-blue-200">
-                    <p className="font-bold flex items-center gap-1.5">
-                      <Cloud className="w-4 h-4 text-blue-600" />
-                      <span>Cơ Chế Đồng Bộ Nhiều Người Dùng Qua OneDrive</span>
-                    </p>
-                    <p className="text-slate-600 mt-1 leading-relaxed">
-                      Ứng dụng chạy 100% In-Browser. Để đồng bộ dữ liệu giữa các máy tính (HR Admin, Warehouse, Production, QC), bạn chỉ cần xuất file <b>Snapshot JSON</b> vào thư mục OneDrive dùng chung, hoặc nạp file JSON từ OneDrive.
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-                    <button
-                      onClick={async () => {
-                        await exportDatabaseToSnapshot(session?.username ?? 'unknown');
-                        success('Đã xuất bản ghi Snapshot', 'Lưu file JSON này vào thư mục OneDrive dùng chung.');
-                      }}
-                      className="p-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl flex flex-col items-center justify-center gap-2 transition"
-                    >
-                      <Download className="w-5 h-5 text-orange-400" />
-                      <span>1. Xuất Dữ Liệu Ra OneDrive</span>
-                    </button>
-
-                    <label className="p-3 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-xl flex flex-col items-center justify-center gap-2 transition cursor-pointer shadow-md shadow-orange-200">
-                      <Upload className="w-5 h-5" />
-                      <span>2. Nạp Dữ Liệu Từ OneDrive</span>
-                      <input
-                        type="file"
-                        accept=".json"
-                        className="hidden"
-                          onChange={async (e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          const ok = await confirm({
-                            title: 'Nạp dữ liệu đè lên hiện tại?',
-                            message: `Toàn bộ dữ liệu nhân viên/chấm công/tăng ca trên máy này sẽ bị THAY THẾ bằng nội dung file "${file.name}". Hành động không thể hoàn tác.`,
-                            confirmText: 'Thay thế dữ liệu',
-                            cancelText: 'Huỷ',
-                            type: 'warning'
-                          });
-                          if (!ok) {
-                            e.target.value = '';
-                            return;
-                          }
-                          try {
-                            const res = await importDatabaseFromSnapshot(file);
-                            await refreshPermissions();
-                            success(
-                              'Đồng bộ OneDrive thành công!',
-                              `Đã nạp ${res.employeesCount} nhân viên, ${res.timesheetsCount} ô công${res.skippedTotal > 0 ? `, bỏ qua ${res.skippedTotal} dòng lỗi` : ''}${res.settingsRestored ? ' và khôi phục cấu hình' : ''}.`
-                            );
-                            if (res.skippedTotal > 0) {
-                              warning('Có dòng dữ liệu không hợp lệ', `${res.skippedTotal} dòng bị bỏ qua do thiếu khoá hoặc sai cấu trúc.`);
-                            }
-                          } catch (err: any) {
-                            error('Lỗi nạp file đồng bộ', err.message);
-                          } finally {
-                            e.target.value = '';
-                          }
-                        }}
-                      />
-                    </label>
-                  </div>
-                </div>
-              )
-            );
-          }}
-          className="flex items-center gap-2 px-3.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-xs font-bold rounded-xl transition"
-          title="Đồng bộ dữ liệu đa người dùng qua thư mục OneDrive dùng chung"
-        >
-          <Cloud className="w-4 h-4 text-blue-600" />
-          <span className="hidden xl:inline">Đồng Bộ OneDrive</span>
-        </button>
-
         {/* Realtime Active Avatars */}
         <PresenceBar />
 
@@ -961,6 +893,17 @@ export const Header: React.FC = () => {
               <div className="px-3 py-1.5 text-[11px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
                 {session?.username} · {currentRole}
               </div>
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setIsUserDropdownOpen(false);
+                  setIsChangePasswordOpen(true);
+                }}
+                className="w-full text-left px-3 py-2 text-xs flex items-center gap-2 text-slate-700 hover:bg-slate-50 transition font-semibold border-b border-slate-100"
+              >
+                <KeyRound className="w-3.5 h-3.5 text-orange-500" />
+                <span>Đổi mật khẩu</span>
+              </button>
               <button
                 role="menuitem"
                 onClick={() => {
@@ -1026,6 +969,133 @@ export const Header: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Change Password Modal */}
+      {isChangePasswordOpen && (
+        <ChangePasswordModal
+          isOpen={isChangePasswordOpen}
+          onClose={() => setIsChangePasswordOpen(false)}
+        />
+      )}
     </header>
+  );
+};
+
+const ChangePasswordModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ isOpen, onClose }) => {
+  const { changePassword, session } = useAuth();
+  const { success, error, warning } = useToast();
+  const [currentPass, setCurrentPass] = useState('');
+  const [newPass, setNewPass] = useState('');
+  const [confirmPass, setConfirmPass] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentPass || !newPass || !confirmPass) {
+      warning('Thiếu thông tin', 'Vui lòng điền đầy đủ các trường.');
+      return;
+    }
+    if (newPass.length < 3) {
+      warning('Mật khẩu quá ngắn', 'Mật khẩu mới phải có tối thiểu 3 ký tự.');
+      return;
+    }
+    if (newPass !== confirmPass) {
+      warning('Không trùng khớp', 'Mật khẩu xác nhận không khớp với mật khẩu mới.');
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      const res = await changePassword(currentPass, newPass);
+      if (res.ok) {
+        success('Đổi mật khẩu thành công', 'Mật khẩu tài khoản của bạn đã được cập nhật.');
+        onClose();
+        setCurrentPass('');
+        setNewPass('');
+        setConfirmPass('');
+      } else {
+        error('Đổi mật khẩu thất bại', res.error || 'Vui lòng kiểm tra lại mật khẩu hiện tại.');
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+      <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+          <div className="flex items-center gap-2">
+            <div className="p-2 bg-orange-100 text-orange-700 rounded-xl">
+              <KeyRound className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-extrabold text-slate-900 text-base">Đổi Mật Khẩu</h3>
+              <p className="text-xs text-slate-500">Tài khoản: <b className="text-slate-800">{session?.displayName}</b> ({session?.username})</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 p-1">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">Mật khẩu hiện tại *</label>
+            <input
+              type="password"
+              value={currentPass}
+              onChange={(e) => setCurrentPass(e.target.value)}
+              placeholder="••••••••"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-500 text-xs"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">Mật khẩu mới *</label>
+            <input
+              type="password"
+              value={newPass}
+              onChange={(e) => setNewPass(e.target.value)}
+              placeholder="Tối thiểu 3 ký tự"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-500 text-xs"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">Xác nhận mật khẩu mới *</label>
+            <input
+              type="password"
+              value={confirmPass}
+              onChange={(e) => setConfirmPass(e.target.value)}
+              placeholder="Nhập lại mật khẩu mới"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-500 text-xs"
+              required
+            />
+          </div>
+
+          <div className="pt-2 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition"
+            >
+              Hủy
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="px-5 py-2 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center gap-1.5"
+            >
+              {isSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <KeyRound className="w-3.5 h-3.5" />}
+              <span>Cập Nhật Mật Khẩu</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 };

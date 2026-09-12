@@ -221,6 +221,38 @@ class PresenceManager {
     };
   }
 
+  public recordRemotePresence(presence: ActiveUserPresence): void {
+    if (!presence?.username) return;
+    const all = this.getAllPresences();
+    all[presence.username.toLowerCase()] = {
+      ...presence,
+      lastActive: Date.now()
+    };
+    this.savePresences(all);
+    this.notifyListeners();
+  }
+
+  public recordRemoteLeave(username: string): void {
+    if (!username) return;
+    const all = this.getAllPresences();
+    delete all[username.toLowerCase()];
+    this.savePresences(all);
+    this.notifyListeners();
+  }
+
+  public getCurrentPresence(): ActiveUserPresence | null {
+    if (!this.currentSession) return null;
+    return {
+      username: this.currentSession.username,
+      displayName: this.currentSession.displayName,
+      role: this.currentSession.role,
+      status: 'online',
+      lastActive: Date.now(),
+      currentTab: this.currentTabName,
+      color: getUserColor(this.currentSession.username)
+    };
+  }
+
   private notifyListeners() {
     const users = this.getActiveUsers();
     this.listeners.forEach((fn) => fn(users));

@@ -16,7 +16,9 @@ import {
   Building2,
   Calendar,
   Layers,
-  ArrowUpDown
+  ArrowUpDown,
+  KeyRound,
+  Unlock
 } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db';
@@ -26,7 +28,7 @@ import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 
 export const UserManagementPage: React.FC = () => {
-  const { session, createAccount, updateAccountProfile, hasPermission } = useAuth();
+  const { session, createAccount, updateAccountProfile, resetUserPassword, unlockUser, hasPermission } = useAuth();
   const { success, error, warning } = useToast();
   const { confirm } = useModal();
 
@@ -54,6 +56,10 @@ export const UserManagementPage: React.FC = () => {
   const [auditActionFilter, setAuditActionFilter] = useState<string>('ALL');
   const [auditSearchQuery, setAuditSearchQuery] = useState('');
 
+  // Reset password state
+  const [resetModalUser, setResetModalUser] = useState<IAccount | null>(null);
+  const [newPasswordInput, setNewPasswordInput] = useState('123');
+
   // Roles available
   const availableRoles: RoleType[] = [
     'AD System',
@@ -63,6 +69,44 @@ export const UserManagementPage: React.FC = () => {
     'Production Admin',
     'QC Admin'
   ];
+
+  const handleOpenResetPassword = (acc: IAccount) => {
+    setResetModalUser(acc);
+    setNewPasswordInput('123');
+  };
+
+  const handleConfirmResetPassword = async () => {
+    if (!resetModalUser) return;
+    if (!newPasswordInput.trim()) {
+      warning('Thiếu thông tin', 'Mật khẩu không được để trống.');
+      return;
+    }
+    const res = await resetUserPassword(resetModalUser.username, newPasswordInput.trim());
+    if (res.ok) {
+      success('Đặt lại mật khẩu thành công', `Đã đổi mật khẩu cho tài khoản "${resetModalUser.username}" thành "${newPasswordInput.trim()}" và mở khóa tài khoản.`);
+      setResetModalUser(null);
+    } else {
+      error('Lỗi đặt lại mật khẩu', res.error || 'Thao tác không thành công.');
+    }
+  };
+
+  const handleDirectUnlock = async (acc: IAccount) => {
+    const ok = await confirm({
+      title: 'Mở khóa tài khoản',
+      message: `Mở khóa cho tài khoản "${acc.displayName}" (${acc.username}) và đặt lại số lần nhập sai về 0?`,
+      confirmText: 'Mở khóa ngay',
+      cancelText: 'Hủy',
+      type: 'info'
+    });
+    if (ok) {
+      const res = await unlockUser(acc.username);
+      if (res.ok) {
+        success('Mở khóa thành công', `Tài khoản "${acc.username}" đã được mở khóa và có thể đăng nhập bình thường.`);
+      } else {
+        error('Lỗi', res.error || 'Thao tác không thành công.');
+      }
+    }
+  };
 
   const handleStartEdit = (acc: IAccount) => {
     setEditingUsername(acc.username);
@@ -342,28 +386,31 @@ export const UserManagementPage: React.FC = () => {
                         )}
                       </td>
 
-                      {/* Active State */}
+                      {/* Active / Lock State */}
                       <td className="py-3 px-4">
-                        <button
-                          onClick={() => handleToggleActive(acc)}
-                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold transition ${
-                            acc.active 
-                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100' 
-                              : 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
-                          }`}
-                        >
-                          {acc.active ? (
-                            <>
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                              <span>Hoạt động</span>
-                            </>
+                        <div className="flex flex-col gap-1">
+                          {acc.isLocked || (acc.failedLoginAttempts && acc.failedLoginAttempts >= 10) ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-100 text-rose-700 border border-rose-200">
+                              <Lock className="w-3 h-3 text-rose-600" />
+                              <span>Đã khóa ({acc.failedLoginAttempts || 10}/10 lần sai)</span>
+                            </span>
+                          ) : !acc.active ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                              <XCircle className="w-3 h-3 text-slate-500" />
+                              <span>Vô hiệu hóa</span>
+                            </span>
                           ) : (
-                            <>
-                              <XCircle className="w-3.5 h-3.5 text-rose-600" />
-                              <span>Đã khóa</span>
-                            </>
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                              <span>Hoạt động</span>
+                            </span>
                           )}
-                        </button>
+                          {acc.failedLoginAttempts && acc.failedLoginAttempts > 0 && !acc.isLocked && (
+                            <span className="text-[10px] text-amber-600 font-semibold pl-1">
+                              ⚠️ Sai {acc.failedLoginAttempts}/10 lần
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Actions */}
@@ -386,13 +433,36 @@ export const UserManagementPage: React.FC = () => {
                             </button>
                           </div>
                         ) : (
-                          <button
-                            onClick={() => handleStartEdit(acc)}
-                            className="flex items-center gap-1 mx-auto px-2.5 py-1 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 font-semibold transition"
-                          >
-                            <Edit3 className="w-3 h-3 text-slate-500" />
-                            <span>Sửa thông tin</span>
-                          </button>
+                          <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                            <button
+                              onClick={() => handleStartEdit(acc)}
+                              className="flex items-center gap-1 px-2.5 py-1 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 font-semibold text-xs transition"
+                              title="Chỉnh sửa tên và vai trò"
+                            >
+                              <Edit3 className="w-3 h-3 text-slate-500" />
+                              <span>Sửa</span>
+                            </button>
+
+                            {(acc.isLocked || (acc.failedLoginAttempts && acc.failedLoginAttempts >= 10) || !acc.active) && (
+                              <button
+                                onClick={() => handleDirectUnlock(acc)}
+                                className="flex items-center gap-1 px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg font-bold text-xs transition"
+                                title="Mở khóa tài khoản ngay lập tức"
+                              >
+                                <Unlock className="w-3 h-3 text-emerald-600" />
+                                <span>Mở khóa</span>
+                              </button>
+                            )}
+
+                            <button
+                              onClick={() => handleOpenResetPassword(acc)}
+                              className="flex items-center gap-1 px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-lg font-bold text-xs transition"
+                              title="Đặt lại mật khẩu cho tài khoản này"
+                            >
+                              <KeyRound className="w-3 h-3 text-amber-600" />
+                              <span>Đặt lại MK</span>
+                            </button>
+                          </div>
                         )}
                       </td>
                     </tr>
@@ -620,6 +690,72 @@ export const UserManagementPage: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Password Modal */}
+      {resetModalUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-amber-100 text-amber-700 rounded-xl">
+                  <KeyRound className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-base">Đặt Lại Mật Khẩu</h3>
+                  <p className="text-xs text-slate-500">Tài khoản: <b className="font-mono text-slate-800">{resetModalUser.username}</b> ({resetModalUser.displayName})</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setResetModalUser(null)}
+                className="text-slate-400 hover:text-slate-600 p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Mật khẩu mới cho tài khoản:</label>
+                <input
+                  type="text"
+                  value={newPasswordInput}
+                  onChange={(e) => setNewPasswordInput(e.target.value)}
+                  placeholder="Nhập mật khẩu mới (mặc định 123)"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm font-mono"
+                />
+              </div>
+
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 text-xs space-y-1">
+                <div className="font-bold flex items-center gap-1.5">
+                  <Unlock className="w-4 h-4 text-amber-700" />
+                  <span>Tự động mở khóa tài khoản</span>
+                </div>
+                <p className="text-[11px] text-amber-800">
+                  Khi đặt lại mật khẩu, hệ thống sẽ tự động đặt số lần đăng nhập sai về 0 và mở khóa tài khoản nếu user đang bị khóa.
+                </p>
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setResetModalUser(null)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmResetPassword}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center gap-1.5"
+                >
+                  <KeyRound className="w-4 h-4" />
+                  <span>Xác Nhận Đổi Mật Khẩu</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
