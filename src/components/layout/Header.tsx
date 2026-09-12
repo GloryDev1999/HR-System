@@ -34,6 +34,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { daysUntil as calcDaysUntil } from '../../services/pay-period';
 import { PresenceBar } from './PresenceBar';
 import { clusterService } from '../../services/webrtc-cluster-service';
+import { folderSignaling } from '../../services/folder-signaling-service';
 import { NodeConnectionStatus } from '../../types/cluster';
 
 export const Header: React.FC = () => {
@@ -83,6 +84,24 @@ export const Header: React.FC = () => {
 
   const handleOneTouchConnect = async () => {
     if (!session) return;
+
+    // Hỗ trợ tự động mở hộp thoại chọn thư mục HR_Signaling_Data khi mở file:/// mà chưa liên kết
+    if (
+      typeof window !== 'undefined' &&
+      window.location.protocol.startsWith('file') &&
+      !folderSignaling.hasDirectoryHandle() &&
+      folderSignaling.isSupported()
+    ) {
+      try {
+        const picked = await folderSignaling.pickDirectory();
+        if (picked) {
+          success('Đã chọn thư mục', 'Đã liên kết HR_Signaling_Data. File JSON tín hiệu sẽ tự động trao đổi qua OneDrive.');
+        }
+      } catch (err) {
+        console.warn('Hủy chọn thư mục:', err);
+      }
+    }
+
     if (isClusterHost) {
       await clusterService.quickStartAsHost();
       success('Host Master DB đang hoạt động', 'Máy chủ Kieu sẵn sàng tiếp nhận kết nối RTCDataChannel.');

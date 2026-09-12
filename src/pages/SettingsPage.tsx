@@ -20,7 +20,8 @@ import {
   Link2,
   Copy,
   Check,
-  X
+  X,
+  Folder
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -29,6 +30,7 @@ import { RoleType, ISystemSettings } from '../types';
 import { DEFAULT_SETTINGS, db } from '../db';
 import { seedDatabaseIfEmpty } from '../services/db-seeder';
 import { clusterService } from '../services/webrtc-cluster-service';
+import { folderSignaling } from '../services/folder-signaling-service';
 
 export const SettingsPage: React.FC = () => {
   const { session, currentRole, systemSettings, refreshPermissions, hasPermission, changePassword } = useAuth();
@@ -58,6 +60,33 @@ export const SettingsPage: React.FC = () => {
       setClusterConfig(clusterService.getConfig());
     });
   }, []);
+
+  // WebRTC Folder Signaling state (HR_Signaling_Data trên OneDrive)
+  const [hasFolderHandle, setHasFolderHandle] = useState(() => folderSignaling.hasDirectoryHandle());
+  const [folderName, setFolderName] = useState(() => folderSignaling.getFolderName());
+
+  React.useEffect(() => {
+    return folderSignaling.onStatusChange((has, name) => {
+      setHasFolderHandle(has);
+      setFolderName(name);
+    });
+  }, []);
+
+  const handlePickSignalingFolder = async () => {
+    try {
+      const ok = await folderSignaling.pickDirectory();
+      if (ok) {
+        success('Đã liên kết thư mục', `Hệ thống đã kết nối thành công với thư mục "${folderSignaling.getFolderName()}". File JSON tín hiệu WebRTC sẽ tự động đồng bộ tại đây.`);
+        if (clusterConfig.nodeRole === 'HOST') {
+          clusterService.quickStartAsHost().catch(console.error);
+        } else {
+          clusterService.quickConnectAsClient(session?.username || 'vinh', session?.displayName).catch(console.error);
+        }
+      }
+    } catch (err: any) {
+      error('Lỗi chọn thư mục', err.message);
+    }
+  };
 
   // Sync when AuthContext updates (Dexie live)
   React.useEffect(() => {
@@ -832,14 +861,42 @@ export const SettingsPage: React.FC = () => {
               </div>
 
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Thư mục Signaling (Chia sẻ mạng LAN):</label>
-                <input
-                  type="text"
-                  value={clusterConfig.syncFolderName}
-                  onChange={(e) => setClusterConfig({ ...clusterConfig, syncFolderName: e.target.value })}
-                  placeholder="HR_Signaling_Data"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-mono text-slate-800"
-                />
+                <label className="block font-bold text-slate-700 mb-1">
+                  Thư mục Tín Hiệu WebRTC (HR_Signaling_Data trên OneDrive):
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={clusterConfig.syncFolderName}
+                    onChange={(e) => setClusterConfig({ ...clusterConfig, syncFolderName: e.target.value })}
+                    placeholder="HR_Signaling_Data"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-mono text-slate-800 grow"
+                  />
+                  <button
+                    onClick={handlePickSignalingFolder}
+                    type="button"
+                    className={`flex items-center gap-1.5 px-4 py-2 rounded-xl font-bold text-xs shrink-0 transition shadow-xs border ${
+                      hasFolderHandle
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                        : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
+                    }`}
+                  >
+                    <Folder className="w-4 h-4 text-amber-500" />
+                    <span>{hasFolderHandle ? `Đã chọn: ${folderName || 'HR_Signaling_Data'}` : '📁 Chọn Thư Mục HR_Signaling_Data'}</span>
+                  </button>
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  {hasFolderHandle ? (
+                    <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>Đã liên kết thư mục <b>{folderName}</b>: Hệ thống sẽ tự động đọc/ghi các file JSON tín hiệu (<code>host_status.json</code>, <code>hello_*.json</code>, <code>offer_*.json</code>) để bắt tay WebRTC qua OneDrive.</span>
+                    </span>
+                  ) : (
+                    <span>
+                      💡 Hãy tạo thư mục <b>HR_Signaling_Data</b> (đặt cùng cấp với thư mục <code>dist</code> trong OneDrive) và bấm nút trên để Microsoft Edge tự động trao đổi file tín hiệu JSON.
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 

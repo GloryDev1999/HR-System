@@ -15,6 +15,7 @@ import { IClusterConfig, IClusterNode, IClusterMessage, DEFAULT_CLUSTER_CONFIG, 
 import { db } from '../db';
 import { logUserAction } from './audit-log-service';
 import { presenceManager } from './presence-service';
+import { folderSignaling } from './folder-signaling-service';
 
 type MessageHandler = (msg: IClusterMessage) => void;
 type StatusChangeHandler = (status: NodeConnectionStatus, details?: string) => void;
@@ -80,6 +81,11 @@ class WebRTCClusterService {
       if (window.location.protocol.startsWith('http')) {
         this.startHttpSignalingPoll();
       }
+
+      // Kích hoạt nhận tín hiệu file từ thư mục HR_Signaling_Data (OneDrive)
+      folderSignaling.setMessageListener((signal) => {
+        this.handleSignalingMessage(signal);
+      });
     }
   }
 
@@ -133,6 +139,9 @@ class WebRTCClusterService {
         body: JSON.stringify(signal)
       }).catch(() => {});
     }
+
+    // Ghi file JSON vào thư mục chia sẻ OneDrive (HR_Signaling_Data)
+    folderSignaling.writeSignal(signal).catch(() => {});
   }
 
   private async handleSignalingMessage(signal: ISignalEnvelope): Promise<void> {
@@ -142,6 +151,9 @@ class WebRTCClusterService {
     if (this.config.nodeRole === 'HOST' && signal.type === 'CLIENT_HELLO') {
       const clientId = signal.clientId;
       if (!clientId || clientId === this.config.nodeId) return;
+
+      // Tiêu thụ file hello
+      folderSignaling.consumeFile(`hello_${clientId}.json`).catch(() => {});
 
       try {
         const offerJson = await this.createOfferForClient(clientId);
@@ -160,6 +172,9 @@ class WebRTCClusterService {
     // 2. Client nhận gói Offer SDP từ Host
     if (this.config.nodeRole === 'CLIENT' && signal.type === 'OFFER_SDP') {
       if (signal.targetClient === this.config.nodeId && signal.offer) {
+        // Tiêu thụ file offer
+        folderSignaling.consumeFile(`offer_${this.config.nodeId}.json`).catch(() => {});
+
         try {
           const answerJson = await this.receiveOfferAndCreateAnswer(signal.offer);
           this.emitSignal({
@@ -179,6 +194,9 @@ class WebRTCClusterService {
     if (this.config.nodeRole === 'HOST' && signal.type === 'ANSWER_SDP') {
       const clientId = signal.clientId;
       if (clientId && signal.answer) {
+        // Tiêu thụ file answer
+        folderSignaling.consumeFile(`answer_${clientId}.json`).catch(() => {});
+
         try {
           await this.receiveAnswer(clientId, signal.answer);
         } catch (err) {
