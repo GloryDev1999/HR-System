@@ -3,9 +3,12 @@
  * Đáp ứng kiến trúc Local-First In-Browser:
  * - 100% In-Browser trên Microsoft Edge
  * - Không spawn tiến trình .exe, không mở port OS (vượt CrowdStrike Falcon EDR)
- * - Tự động trao đổi tín hiệu (Signaling Bus) qua BroadcastChannel và Storage Event Bus
- * - Tự động nhận diện kết nối, timeout 8 giây chống treo vô tận
- * - Đồng bộ danh sách online users thời gian thực giữa các máy qua RTCDataChannel
+ * - Đa kênh tín hiệu (Multi-Transport Signaling Bus):
+ *     1. HTTP Relay qua cổng 3000 hiện có (/api/cluster/signaling) khi chạy mạng LAN
+ *     2. BroadcastChannel & Storage Event Bus tức thời giữa các tab trên cùng máy
+ *     3. Ghép nối Offline bằng Token thủ công / thư mục HR_Signaling_Data khi mở file://
+ * - Vanilla ICE Gathering: Chờ thu thập ứng viên IP LAN trước khi xuất SDP, chống treo vô tận
+ * - Đồng bộ danh sách online users và sơ đồ 6 máy trong cụm (Star-Topology) thời gian thực
  */
 
 import { IClusterConfig, IClusterNode, IClusterMessage, DEFAULT_CLUSTER_CONFIG, NodeRole, NodeConnectionStatus } from '../types/cluster';
@@ -27,6 +30,11 @@ interface ISignalEnvelope {
   timestamp: number;
 }
 
+const ICE_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:global.stun.twilio.com:3478' }
+];
+
 class WebRTCClusterService {
   private config: IClusterConfig = { ...DEFAULT_CLUSTER_CONFIG };
   private peerConnections = new Map<string, RTCPeerConnection>();
@@ -38,6 +46,8 @@ class WebRTCClusterService {
   private signalingChannel: BroadcastChannel | null = null;
   private connectTimeoutTimer: any = null;
   private heartbeatTimer: any = null;
+  private httpPollTimer: any = null;
+  private lastSignalSince: number = 0;
 
   constructor() {
     this.loadConfig();
@@ -65,7 +75,46 @@ class WebRTCClusterService {
           } catch {}
         }
       });
+
+      // Kích hoạt HTTP Polling nếu đang truy cập qua Web Server (http / https)
+      if (window.location.protocol.startsWith('http')) {
+        this.startHttpSignalingPoll();
+      }
     }
+  }
+
+  private startHttpSignalingPoll(): void {
+    if (this.httpPollTimer) return;
+    this.httpPollTimer = setInterval(async () => {
+      try {
+        // Chỉ poll khi ở trạng thái SIGNALING, CONNECTED hoặc là Host đã cấu hình
+        if (this.currentStatus === 'IDLE' && !this.isHostConfigured()) return;
+
+        const params = new URLSearchParams({
+          role: this.config.nodeRole,
+          nodeId: this.config.nodeId,
+          since: String(this.lastSignalSince)
+        });
+
+        const res = await fetch(`/api/cluster/signaling?${params.toString()}`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (Array.isArray(data.signals) && data.signals.length > 0) {
+          for (const sig of data.signals) {
+            if (sig.arrivedAt && sig.arrivedAt > this.lastSignalSince) {
+              this.lastSignalSince = sig.arrivedAt;
+            }
+            await this.handleSignalingMessage(sig);
+          }
+        }
+        if (data.timestamp && data.timestamp > this.lastSignalSince) {
+          this.lastSignalSince = Math.max(this.lastSignalSince, data.timestamp - 1000);
+        }
+      } catch {
+        // Môi trường không có API server (offline / mock) - bỏ qua an toàn
+      }
+    }, 1200);
   }
 
   private emitSignal(signal: ISignalEnvelope): void {
@@ -75,6 +124,15 @@ class WebRTCClusterService {
     try {
       localStorage.setItem('smarthr_p2p_signaling_event', JSON.stringify({ ...signal, _rnd: Math.random() }));
     } catch {}
+
+    // Chuyển tiếp tín hiệu qua HTTP Relay endpoint nếu đang chạy web
+    if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
+      fetch('/api/cluster/signaling', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(signal)
+      }).catch(() => {});
+    }
   }
 
   private async handleSignalingMessage(signal: ISignalEnvelope): Promise<void> {
@@ -257,26 +315,66 @@ class WebRTCClusterService {
       timestamp: Date.now()
     });
 
-    // MỐC XÁC ĐỊNH KẾT NỐI (TIMEOUT 8 GIÂY):
-    // Tránh treo load vô tận khi Host chưa bật hoặc chưa online
+    // MỐC XÁC ĐỊNH KẾT NỐI (TIMEOUT 10 GIÂY):
+    // Đảm bảo đủ thời gian gom ICE Candidate và chuyển tiếp tín hiệu LAN
     this.connectTimeoutTimer = setTimeout(() => {
       if (this.currentStatus === 'SIGNALING') {
         this.setStatus('HOST_OFFLINE', 'Host Kiều chưa online hoặc chưa khởi chạy. Hệ thống đang hoạt động ở chế độ Cục Bộ (Local-First).');
       }
-    }, 8000);
+    }, 10000);
+  }
+
+  /**
+   * Vanilla ICE Gathering Helper:
+   * Chờ RTCPeerConnection thu thập đầy đủ địa chỉ IP LAN (host candidates)
+   * trước khi chuyển tiếp SDP, chống lỗi kết nối vô vọng do thiếu IP ứng viên.
+   */
+  private waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 2000): Promise<void> {
+    if (pc.iceGatheringState === 'complete') {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      let resolved = false;
+      const finish = () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          pc.removeEventListener('icecandidate', onCandidate);
+          pc.removeEventListener('icegatheringstatechange', onStateChange);
+          resolve();
+        }
+      };
+
+      const timer = setTimeout(finish, timeoutMs);
+
+      const onCandidate = (e: RTCPeerConnectionIceEvent) => {
+        // Candidate null báo hiệu quá trình gom ICE kết thúc
+        if (!e.candidate) {
+          finish();
+        }
+      };
+
+      const onStateChange = () => {
+        if (pc.iceGatheringState === 'complete') {
+          finish();
+        }
+      };
+
+      pc.addEventListener('icecandidate', onCandidate);
+      pc.addEventListener('icegatheringstatechange', onStateChange);
+    });
   }
 
   /**
    * Tạo gói tin Offer SDP để trao đổi file Signaling
    */
   public async createOfferForClient(clientId: string): Promise<string> {
-    // Đóng PC cũ nếu có
     const oldPc = this.peerConnections.get(clientId);
-    if (oldPc) oldPc.close();
+    if (oldPc) {
+      try { oldPc.close(); } catch {}
+    }
 
-    const pc = new RTCPeerConnection({
-      iceServers: [] // Chạy mạng LAN nội bộ, không cần STUN bên ngoài
-    });
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     this.peerConnections.set(clientId, pc);
 
     const dc = pc.createDataChannel('smarthr-cluster-channel', {
@@ -286,6 +384,9 @@ class WebRTCClusterService {
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
+
+    // Bắt buộc chờ gom ứng viên ICE để SDP chứa IP LAN
+    await this.waitForIceGathering(pc, 2000);
 
     return JSON.stringify({
       type: 'OFFER',
@@ -302,9 +403,11 @@ class WebRTCClusterService {
   public async receiveOfferAndCreateAnswer(offerJson: string): Promise<string> {
     const offerData = JSON.parse(offerJson);
     const oldPc = this.peerConnections.get('HOST');
-    if (oldPc) oldPc.close();
+    if (oldPc) {
+      try { oldPc.close(); } catch {}
+    }
 
-    const pc = new RTCPeerConnection({ iceServers: [] });
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     this.peerConnections.set('HOST', pc);
 
     pc.ondatachannel = (e) => {
@@ -314,6 +417,9 @@ class WebRTCClusterService {
     await pc.setRemoteDescription(new RTCSessionDescription(offerData.sdp));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
+
+    // Bắt buộc chờ gom ứng viên ICE
+    await this.waitForIceGathering(pc, 2000);
 
     return JSON.stringify({
       type: 'ANSWER',
@@ -355,6 +461,18 @@ class WebRTCClusterService {
         timestamp: new Date().toISOString()
       });
 
+      // Nếu là Host: phân phối danh sách Node cập nhật cho Client vừa vào
+      if (this.config.nodeRole === 'HOST') {
+        this.sendMessage(remoteNodeId, {
+          id: `nodes_${Date.now()}`,
+          type: 'NODES_UPDATE',
+          senderId: this.config.nodeId,
+          senderName: this.config.displayName,
+          timestamp: new Date().toISOString(),
+          payload: { nodes: this.config.nodes }
+        });
+      }
+
       this.startClusterHeartbeat();
     };
 
@@ -365,7 +483,14 @@ class WebRTCClusterService {
 
       if (this.config.nodeRole === 'CLIENT') {
         this.setStatus('DISCONNECTED', 'Đã ngắt kết nối với Host Kiều');
+        // Tự động kết nối lại sau 4s nếu ở chế độ auto-connect
+        setTimeout(() => {
+          if (this.isAutoConnectClient() && this.currentStatus !== 'CONNECTED') {
+            this.initClientMode();
+          }
+        }, 4000);
       } else {
+        this.broadcastNodesUpdate();
         if (this.dataChannels.size === 0) {
           this.setStatus('SIGNALING', 'Host Master DB đang chờ các client kết nối');
         }
@@ -396,10 +521,18 @@ class WebRTCClusterService {
           senderName: this.config.displayName,
           timestamp: new Date().toISOString()
         });
+        this.broadcastNodesUpdate();
       }
     } else if (msg.type === 'HANDSHAKE_ACK') {
       this.setStatus('CONNECTED', 'Đã kết nối thành công với Host Kiều');
       this.updateNodeStatus('HOST', 'CONNECTED');
+    }
+
+    // Nhận cập nhật trạng thái Sơ đồ mạng từ Host
+    if (msg.type === 'NODES_UPDATE' && msg.payload?.nodes) {
+      this.config.nodes = msg.payload.nodes;
+      this.saveConfig({ nodes: msg.payload.nodes });
+      this.statusListeners.forEach(fn => fn(this.currentStatus));
     }
 
     // Đồng bộ Realtime Presence qua WebRTC DataChannel
@@ -419,6 +552,19 @@ class WebRTCClusterService {
     if (this.config.nodeRole === 'HOST' && msg.type === 'ACTION') {
       this.processClientActionAtHost(senderNodeId, msg);
     }
+  }
+
+  private broadcastNodesUpdate(): void {
+    if (this.config.nodeRole !== 'HOST') return;
+    const msg: IClusterMessage = {
+      id: `nodes_${Date.now()}`,
+      type: 'NODES_UPDATE',
+      senderId: this.config.nodeId,
+      senderName: this.config.displayName,
+      timestamp: new Date().toISOString(),
+      payload: { nodes: this.config.nodes }
+    };
+    this.broadcast(msg);
   }
 
   private startClusterHeartbeat(): void {
@@ -503,7 +649,29 @@ class WebRTCClusterService {
       node.lastPing = new Date().toLocaleTimeString();
       this.saveConfig({ nodes: [...this.config.nodes] });
       this.statusListeners.forEach(fn => fn(this.currentStatus));
+      if (this.config.nodeRole === 'HOST') {
+        this.broadcastNodesUpdate();
+      }
     }
+  }
+
+  /**
+   * Tạo Token ghép nối thủ công dạng Base64 (dành cho môi trường offline file:///)
+   */
+  public async createPairingOfferToken(clientId: string): Promise<string> {
+    const offerJson = await this.createOfferForClient(clientId);
+    return btoa(unescape(encodeURIComponent(offerJson)));
+  }
+
+  public async acceptOfferTokenAndCreateAnswer(token: string): Promise<string> {
+    const offerJson = decodeURIComponent(escape(atob(token.trim())));
+    const answerJson = await this.receiveOfferAndCreateAnswer(offerJson);
+    return btoa(unescape(encodeURIComponent(answerJson)));
+  }
+
+  public async acceptAnswerToken(clientId: string, token: string): Promise<void> {
+    const answerJson = decodeURIComponent(escape(atob(token.trim())));
+    await this.receiveAnswer(clientId, answerJson);
   }
 
   public disconnectAll(): void {
@@ -515,8 +683,16 @@ class WebRTCClusterService {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
-    this.dataChannels.forEach(dc => dc.close());
-    this.peerConnections.forEach(pc => pc.close());
+    if (this.httpPollTimer) {
+      clearInterval(this.httpPollTimer);
+      this.httpPollTimer = null;
+    }
+    this.dataChannels.forEach(dc => {
+      try { dc.close(); } catch {}
+    });
+    this.peerConnections.forEach(pc => {
+      try { pc.close(); } catch {}
+    });
     this.dataChannels.clear();
     this.peerConnections.clear();
     this.setStatus('IDLE', 'Đã ngắt toàn bộ kết nối');

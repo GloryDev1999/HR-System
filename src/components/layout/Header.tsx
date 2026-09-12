@@ -55,26 +55,31 @@ export const Header: React.FC = () => {
 
   // Quản trị trạng thái Cụm Mạng P2P WebRTC (Star-Topology)
   const [clusterStatus, setClusterStatus] = useState<NodeConnectionStatus>(() => clusterService.getStatus());
-  const [isClusterHost, setIsClusterHost] = useState<boolean>(() => clusterService.getConfig().nodeRole === 'HOST');
+  
+  // Xác định chính xác quyền Host: Mặc định là 'kieu' (hoặc 'glory' nếu được cấu hình trong Cài Đặt)
+  // Các tài khoản trạm (vinh, nguyetanh, han, hoa...) tuyệt đối không bị nhận nhầm làm Host
+  const isClusterHost = session ? (
+    session.username.toLowerCase() === 'kieu' ||
+    (session.username.toLowerCase() === 'glory' && clusterService.isHostConfigured())
+  ) : false;
 
   useEffect(() => {
     return clusterService.onStatusChange((status) => {
       setClusterStatus(status);
-      setIsClusterHost(clusterService.getConfig().nodeRole === 'HOST');
     });
   }, []);
 
-  // Tự động kích hoạt: Kieu chỉ cần host 1 lần là tự động duy trì; Client tự kết nối lại
+  // Tự động kích hoạt: Kieu tự động host Master DB; Máy trạm tự động tìm kiếm kết nối tới Kieu
   useEffect(() => {
     if (session) {
-      const u = session.username.toLowerCase();
-      if (u === 'kieu' || clusterService.isHostConfigured()) {
+      if (isClusterHost) {
         clusterService.quickStartAsHost().catch(console.error);
-      } else if (clusterService.isAutoConnectClient()) {
+      } else {
+        // Tự động kết nối 1-chạm tới Host Kiều khi đăng nhập máy trạm
         clusterService.quickConnectAsClient(session.username, session.displayName).catch(console.error);
       }
     }
-  }, [session]);
+  }, [session, isClusterHost]);
 
   const handleOneTouchConnect = async () => {
     if (!session) return;
@@ -83,7 +88,7 @@ export const Header: React.FC = () => {
       success('Host Master DB đang hoạt động', 'Máy chủ Kieu sẵn sàng tiếp nhận kết nối RTCDataChannel.');
     } else {
       await clusterService.quickConnectAsClient(session.username, session.displayName);
-      success('Đã kích hoạt kết nối 1-chạm', `Máy trạm ${session.displayName} đang tự động bắt tay với Host Kieu...`);
+      info('Đang kết nối tới Host Kiều', `Máy trạm ${session.displayName} đang phát tín hiệu bắt tay qua mạng LAN...`);
     }
   };
 
@@ -720,9 +725,9 @@ export const Header: React.FC = () => {
         {/* Nút Kết Nối 1-Chạm (1-Touch WebRTC Cluster Connect) */}
         {isClusterHost ? (
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-bold shadow-sm">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className={`w-2 h-2 rounded-full ${clusterStatus === 'CONNECTED' ? 'bg-emerald-500' : 'bg-amber-500'} animate-pulse`} />
             <Server className="w-3.5 h-3.5 text-orange-600" />
-            <span>Host Master DB</span>
+            <span>{clusterStatus === 'CONNECTED' ? 'Host Master DB (Đang Phục Vụ)' : 'Host Master DB (Sẵn Sàng)'}</span>
           </div>
         ) : (
           <button

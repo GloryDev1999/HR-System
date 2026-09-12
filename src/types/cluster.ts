@@ -25,7 +25,7 @@ export interface IClusterConfig {
 
 export interface IClusterMessage {
   id: string;
-  type: 'HANDSHAKE' | 'HANDSHAKE_ACK' | 'SYNC_REQUEST' | 'SYNC_RESPONSE' | 'ACTION' | 'ACTION_ACK' | 'PING' | 'PONG' | 'PRESENCE_HEARTBEAT';
+  type: 'HANDSHAKE' | 'HANDSHAKE_ACK' | 'SYNC_REQUEST' | 'SYNC_RESPONSE' | 'ACTION' | 'ACTION_ACK' | 'PING' | 'PONG' | 'PRESENCE_HEARTBEAT' | 'NODES_UPDATE';
   senderId: string;
   senderName: string;
   timestamp: string;
