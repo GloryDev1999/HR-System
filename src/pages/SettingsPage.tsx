@@ -63,18 +63,25 @@ export const SettingsPage: React.FC = () => {
 
   // WebRTC Folder Signaling state (HR_Signaling_Data trên OneDrive)
   const [hasFolderHandle, setHasFolderHandle] = useState(() => folderSignaling.hasDirectoryHandle());
+  const [isFolderGranted, setIsFolderGranted] = useState(() => folderSignaling.isPermissionGranted());
   const [folderName, setFolderName] = useState(() => folderSignaling.getFolderName());
 
   React.useEffect(() => {
-    return folderSignaling.onStatusChange((has, name) => {
+    return folderSignaling.onStatusChange((has, name, isGranted) => {
       setHasFolderHandle(has);
       setFolderName(name);
+      setIsFolderGranted(isGranted);
     });
   }, []);
 
   const handlePickSignalingFolder = async () => {
     try {
-      const ok = await folderSignaling.pickDirectory();
+      let ok = false;
+      if (hasFolderHandle && !isFolderGranted) {
+        ok = await folderSignaling.requestPermission();
+      } else {
+        ok = await folderSignaling.pickDirectory();
+      }
       if (ok) {
         success('Đã liên kết thư mục', `Hệ thống đã kết nối thành công với thư mục "${folderSignaling.getFolderName()}". File JSON tín hiệu WebRTC sẽ tự động đồng bộ tại đây.`);
         if (clusterConfig.nodeRole === 'HOST') {
@@ -84,7 +91,9 @@ export const SettingsPage: React.FC = () => {
         }
       }
     } catch (err: any) {
-      error('Lỗi chọn thư mục', err.message);
+      if (err.name !== 'AbortError') {
+        error('Lỗi chọn thư mục', err.message);
+      }
     }
   };
 
@@ -876,13 +885,21 @@ export const SettingsPage: React.FC = () => {
                     onClick={handlePickSignalingFolder}
                     type="button"
                     className={`flex items-center gap-1.5 px-4 py-2 rounded-xl font-bold text-xs shrink-0 transition shadow-xs border ${
-                      hasFolderHandle
+                      hasFolderHandle && isFolderGranted
                         ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                        : hasFolderHandle && !isFolderGranted
+                        ? 'bg-amber-100 text-amber-900 border-amber-300 hover:bg-amber-200'
                         : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
                     }`}
                   >
                     <Folder className="w-4 h-4 text-amber-500" />
-                    <span>{hasFolderHandle ? `Đã chọn: ${folderName || 'HR_Signaling_Data'}` : '📁 Chọn Thư Mục HR_Signaling_Data'}</span>
+                    <span>
+                      {hasFolderHandle && isFolderGranted
+                        ? `Đã chọn: ${folderName || 'HR_Signaling_Data'}`
+                        : hasFolderHandle && !isFolderGranted
+                        ? `⚠️ Cấp Quyền: ${folderName || 'HR_Signaling_Data'}`
+                        : '📁 Chọn Thư Mục HR_Signaling_Data'}
+                    </span>
                   </button>
                 </div>
                 <div className="text-[11px] text-slate-500 mt-1">

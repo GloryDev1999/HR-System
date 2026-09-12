@@ -20,7 +20,8 @@ import {
   WifiOff,
   KeyRound,
   X,
-  Lock
+  Lock,
+  Folder
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
@@ -57,6 +58,21 @@ export const Header: React.FC = () => {
   // Quản trị trạng thái Cụm Mạng P2P WebRTC (Star-Topology)
   const [clusterStatus, setClusterStatus] = useState<NodeConnectionStatus>(() => clusterService.getStatus());
   
+  // Quản lý Thư Mục Tín Hiệu WebRTC (HR_Signaling_Data trên OneDrive)
+  const [hasFolderHandle, setHasFolderHandle] = useState(() => folderSignaling.hasDirectoryHandle());
+  const [isFolderGranted, setIsFolderGranted] = useState(() => folderSignaling.isPermissionGranted());
+  const [folderName, setFolderName] = useState(() => folderSignaling.getFolderName());
+  const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
+  const [folderHostCheck, setFolderHostCheck] = useState<{ online: boolean; hostInfo?: any; lastSeen?: number } | null>(null);
+
+  useEffect(() => {
+    return folderSignaling.onStatusChange((has, name, isGranted) => {
+      setHasFolderHandle(has);
+      setFolderName(name);
+      setIsFolderGranted(isGranted);
+    });
+  }, []);
+
   // Xác định chính xác quyền Host: Mặc định là 'kieu' (hoặc 'glory' nếu được cấu hình trong Cài Đặt)
   // Các tài khoản trạm (vinh, nguyetanh, han, hoa...) tuyệt đối không bị nhận nhầm làm Host
   const isClusterHost = session ? (
@@ -82,23 +98,48 @@ export const Header: React.FC = () => {
     }
   }, [session, isClusterHost]);
 
+  const handlePickOrGrantFolder = async () => {
+    try {
+      let ok = false;
+      if (hasFolderHandle && !isFolderGranted) {
+        ok = await folderSignaling.requestPermission();
+      } else {
+        ok = await folderSignaling.pickDirectory();
+      }
+
+      if (ok) {
+        success('Đã cấp quyền thư mục', `Đã liên kết thành công với thư mục "${folderSignaling.getFolderName()}".`);
+        if (isClusterHost) {
+          clusterService.quickStartAsHost().catch(console.error);
+        } else if (session) {
+          clusterService.quickConnectAsClient(session.username, session.displayName).catch(console.error);
+        }
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        error('Lỗi chọn thư mục', err.message || 'Không thể liên kết thư mục.');
+      }
+    }
+  };
+
+  const handleOpenFolderModal = async () => {
+    const check = await folderSignaling.checkHostStatus();
+    setFolderHostCheck(check);
+    setIsFolderModalOpen(true);
+  };
+
   const handleOneTouchConnect = async () => {
     if (!session) return;
 
-    // Hỗ trợ tự động mở hộp thoại chọn thư mục HR_Signaling_Data khi mở file:/// mà chưa liên kết
-    if (
-      typeof window !== 'undefined' &&
-      window.location.protocol.startsWith('file') &&
-      !folderSignaling.hasDirectoryHandle() &&
-      folderSignaling.isSupported()
-    ) {
+    // Hỗ trợ tự động cấp quyền thư mục HR_Signaling_Data nếu chưa cấp
+    if (folderSignaling.isSupported() && (!folderSignaling.hasDirectoryHandle() || !folderSignaling.isPermissionGranted())) {
       try {
-        const picked = await folderSignaling.pickDirectory();
-        if (picked) {
-          success('Đã chọn thư mục', 'Đã liên kết HR_Signaling_Data. File JSON tín hiệu sẽ tự động trao đổi qua OneDrive.');
+        const ok = await folderSignaling.requestPermission();
+        if (ok) {
+          success('Đã cấp quyền thư mục', `Đã liên kết HR_Signaling_Data. File JSON tín hiệu sẽ tự động trao đổi qua OneDrive.`);
         }
       } catch (err) {
-        console.warn('Hủy chọn thư mục:', err);
+        console.warn('Chưa cấp quyền thư mục:', err);
       }
     }
 
@@ -107,7 +148,7 @@ export const Header: React.FC = () => {
       success('Host Master DB đang hoạt động', 'Máy chủ Kieu sẵn sàng tiếp nhận kết nối RTCDataChannel.');
     } else {
       await clusterService.quickConnectAsClient(session.username, session.displayName);
-      info('Đang kết nối tới Host Kiều', `Máy trạm ${session.displayName} đang phát tín hiệu bắt tay qua mạng LAN...`);
+      info('Đang kết nối tới Host Kiều', `Máy trạm ${session.displayName} đang phát tín hiệu bắt tay qua mạng P2P...`);
     }
   };
 
@@ -732,18 +773,51 @@ export const Header: React.FC = () => {
 
   return (
     <header className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between sticky top-0 z-30 shadow-sm">
-      {/* Left: Logo + Nút Kết Nối 1-Chạm + Chuông thông báo hợp đồng (Chỉ HR) */}
-      <div className="flex items-center gap-3 flex-1 max-w-xl">
+      {/* Left: Logo + Nút Thư Mục Signaling + Nút Kết Nối 1-Chạm + Chuông thông báo hợp đồng (Chỉ HR) */}
+      <div className="flex items-center gap-2.5 flex-1 max-w-2xl">
         <img
           src="./Leggett.jpg"
           alt="Leggett & Platt HOME FURNITURE"
-          className="h-9 w-auto object-contain max-w-[240px]"
+          className="h-9 w-auto object-contain max-w-[200px]"
           loading="eager"
         />
 
+        {/* Nút Chọn & Quản lý Thư Mục HR_Signaling_Data (Hiển thị trực tiếp cho MỌI role trên Header) */}
+        {folderSignaling.isSupported() && (
+          !hasFolderHandle ? (
+            <button
+              onClick={handlePickOrGrantFolder}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-sm border border-amber-400 animate-pulse transition shrink-0"
+              title="Nhấn để chọn thư mục HR_Signaling_Data (OneDrive) để đồng bộ mạng P2P với Host Kiều"
+            >
+              <Folder className="w-3.5 h-3.5" />
+              <span>📁 Chọn HR_Signaling_Data</span>
+            </button>
+          ) : !isFolderGranted ? (
+            <button
+              onClick={handlePickOrGrantFolder}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 shadow-sm transition shrink-0"
+              title="Trình duyệt cần bạn bấm để cấp quyền đọc/ghi thư mục HR_Signaling_Data"
+            >
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 animate-bounce" />
+              <span>Cấp Quyền {folderName || 'Thư Mục'}</span>
+            </button>
+          ) : (
+            <button
+              onClick={handleOpenFolderModal}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 shadow-xs transition shrink-0"
+              title="Thư mục tín hiệu WebRTC P2P đã sẵn sàng. Bấm để xem thông tin hoặc đổi thư mục."
+            >
+              <Folder className="w-3.5 h-3.5 text-amber-500" />
+              <span className="font-mono text-[11px] max-w-[120px] truncate">{folderName || 'HR_Signaling_Data'}</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            </button>
+          )
+        )}
+
         {/* Nút Kết Nối 1-Chạm (1-Touch WebRTC Cluster Connect) */}
         {isClusterHost ? (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-bold shadow-sm">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-bold shadow-sm shrink-0">
             <span className={`w-2 h-2 rounded-full ${clusterStatus === 'CONNECTED' ? 'bg-emerald-500' : 'bg-amber-500'} animate-pulse`} />
             <Server className="w-3.5 h-3.5 text-orange-600" />
             <span>{clusterStatus === 'CONNECTED' ? 'Host Master DB (Đang Phục Vụ)' : 'Host Master DB (Sẵn Sàng)'}</span>
@@ -751,7 +825,7 @@ export const Header: React.FC = () => {
         ) : (
           <button
             onClick={handleOneTouchConnect}
-            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition shadow-sm border ${
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition shadow-sm border shrink-0 ${
               clusterStatus === 'CONNECTED'
                 ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                 : clusterStatus === 'SIGNALING'
@@ -988,6 +1062,95 @@ export const Header: React.FC = () => {
                 <div>• Đối chiếu ca làm việc, tính công (W/N/OFF) & vi phạm (LA/ED/MCI/MCO)</div>
                 <div>• Tính giờ tăng ca thực tế & gắn cờ vào sớm (khung 6h-6h30)</div>
                 <div>• Kiểm soát vi phạm xoay ca không nghỉ đủ 12 tiếng</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Quản Lý Thư Mục HR_Signaling_Data */}
+      {isFolderModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full border border-slate-100 overflow-hidden space-y-0">
+            <div className="p-4 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-500/20 rounded-xl border border-amber-500/30 text-amber-400">
+                  <Folder className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold">Thư Mục Tín Hiệu P2P</h3>
+                  <p className="text-[11px] text-slate-300">HR_Signaling_Data (OneDrive Offline)</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsFolderModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-white/10 transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs">
+              <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2.5">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500 font-semibold">Tên thư mục đã chọn:</span>
+                  <span className="font-bold text-slate-800 font-mono bg-white px-2 py-0.5 rounded border border-slate-200">
+                    {folderName || 'HR_Signaling_Data'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500 font-semibold">Quyền đọc/ghi (Edge):</span>
+                  <span className="font-bold text-emerald-600 flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    Đã cấp quyền hoạt động
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500 font-semibold">Trạng thái Host Kiều:</span>
+                  {folderHostCheck?.online ? (
+                    <span className="font-bold text-emerald-600 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      Đang Online (Sẵn Sàng)
+                    </span>
+                  ) : (
+                    <span className="font-bold text-amber-600 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-amber-500" />
+                      Chưa online hoặc đang chờ tín hiệu
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-3 bg-indigo-50/60 rounded-2xl border border-indigo-100 text-slate-600 space-y-1">
+                <p className="font-bold text-indigo-900">💡 Kiến trúc P2P Offline chuẩn:</p>
+                <p>• Trao đổi tín hiệu SDP qua file JSON trong OneDrive mà không cần Web Server hay mở cổng OS.</p>
+                <p>• Hoạt động an toàn 100% trong môi trường máy tính nhà máy Leggett & Platt có CrowdStrike EDR.</p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const picked = await folderSignaling.pickDirectory();
+                    if (picked) {
+                      success('Đã đổi thư mục', `Đã liên kết với thư mục "${folderSignaling.getFolderName()}"`);
+                      setIsFolderModalOpen(false);
+                    }
+                  }}
+                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition"
+                >
+                  Chọn Thư Mục Khác
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setIsFolderModalOpen(false);
+                    await handleOneTouchConnect();
+                  }}
+                  className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold rounded-xl transition shadow-sm"
+                >
+                  ⚡ Bắt Tay Kết Nối Lại
+                </button>
               </div>
             </div>
           </div>

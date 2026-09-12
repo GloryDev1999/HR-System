@@ -207,7 +207,7 @@ class WebRTCClusterService {
 
     // 4. Client phát hiện Host vừa Online
     if (this.config.nodeRole === 'CLIENT' && signal.type === 'HOST_ANNOUNCE') {
-      if (this.currentStatus === 'HOST_OFFLINE' || this.currentStatus === 'IDLE' || this.isAutoConnectClient()) {
+      if (this.currentStatus === 'HOST_OFFLINE' || this.currentStatus === 'IDLE' || this.currentStatus === 'DISCONNECTED') {
         this.initClientMode();
       }
     }
@@ -310,6 +310,11 @@ class WebRTCClusterService {
 
   private initHostMode(): void {
     this.setStatus('SIGNALING', 'Host Master DB đang sẵn sàng tiếp nhận kết nối RTCDataChannel');
+    // Bật nhịp tim liên tục vào HR_Signaling_Data (OneDrive)
+    folderSignaling.startHostHeartbeat({
+      nodeId: this.config.nodeId,
+      displayName: this.config.displayName
+    });
     this.emitSignal({
       type: 'HOST_ANNOUNCE',
       fromHost: this.config.nodeId,
@@ -318,11 +323,17 @@ class WebRTCClusterService {
     this.startClusterHeartbeat();
   }
 
-  private initClientMode(): void {
+  private async initClientMode(): Promise<void> {
     this.setStatus('SIGNALING', 'Client đang tìm kiếm Host Kiều trong mạng...');
 
     if (this.connectTimeoutTimer) {
       clearTimeout(this.connectTimeoutTimer);
+    }
+
+    // Kiểm tra trực tiếp nhịp tim Host trong thư mục HR_Signaling_Data nếu có
+    const hostCheck = await folderSignaling.checkHostStatus();
+    if (hostCheck.online) {
+      this.setStatus('SIGNALING', 'Host Kiều đang Online. Đang bắt tay RTCDataChannel...');
     }
 
     // Phát tín hiệu tìm kiếm Host
@@ -335,8 +346,20 @@ class WebRTCClusterService {
 
     // MỐC XÁC ĐỊNH KẾT NỐI (TIMEOUT 10 GIÂY):
     // Đảm bảo đủ thời gian gom ICE Candidate và chuyển tiếp tín hiệu LAN
-    this.connectTimeoutTimer = setTimeout(() => {
+    this.connectTimeoutTimer = setTimeout(async () => {
       if (this.currentStatus === 'SIGNALING') {
+        const recheck = await folderSignaling.checkHostStatus();
+        if (recheck.online) {
+          // Host thực tế đang online trong thư mục! Gia hạn và phát lại CLIENT_HELLO
+          this.setStatus('SIGNALING', 'Host Kiều đang Online. Đang hoàn tất bắt tay SDP...');
+          this.emitSignal({
+            type: 'CLIENT_HELLO',
+            clientId: this.config.nodeId,
+            clientName: this.config.displayName,
+            timestamp: Date.now()
+          });
+          return;
+        }
         this.setStatus('HOST_OFFLINE', 'Host Kiều chưa online hoặc chưa khởi chạy. Hệ thống đang hoạt động ở chế độ Cục Bộ (Local-First).');
       }
     }, 10000);
@@ -693,6 +716,10 @@ class WebRTCClusterService {
   }
 
   public disconnectAll(): void {
+    folderSignaling.stopHostHeartbeat();
+    if (this.config.nodeRole === 'HOST') {
+      folderSignaling.markHostOffline(this.config.nodeId).catch(() => {});
+    }
     if (this.connectTimeoutTimer) {
       clearTimeout(this.connectTimeoutTimer);
       this.connectTimeoutTimer = null;

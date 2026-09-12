@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { clusterService } from '../services/webrtc-cluster-service';
+import { folderSignaling } from '../services/folder-signaling-service';
 import { DEFAULT_CLUSTER_CONFIG, IClusterMessage } from '../types/cluster';
 
 class MockRTCPeerConnection {
@@ -195,5 +196,18 @@ describe('WebRTC P2P Star-Topology Cluster Service', () => {
     const node1 = config.nodes.find(n => n.id === 'CLIENT_01');
     expect(node1?.status).toBe('CONNECTED');
     expect(node1?.lastPing).toBeDefined();
+  });
+
+  it('folderSignaling quản lý trạng thái quyền và nhịp tim Host heartbeat', async () => {
+    expect(typeof folderSignaling.isSupported()).toBe('boolean');
+    expect(folderSignaling.isPermissionGranted()).toBe(false);
+
+    // Kích hoạt nhịp tim Host và ngắt an toàn
+    folderSignaling.startHostHeartbeat({ nodeId: 'HOST_KIEU_01', displayName: 'Kieu Mia' });
+    folderSignaling.stopHostHeartbeat();
+
+    // checkHostStatus trả về offline khi chưa có thư mục
+    const status = await folderSignaling.checkHostStatus();
+    expect(status.online).toBe(false);
   });
 });

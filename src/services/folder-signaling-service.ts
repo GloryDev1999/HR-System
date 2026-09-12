@@ -38,9 +38,11 @@ function openHandlesDB(): Promise<IDBDatabase> {
 
 class FolderSignalingService {
   private dirHandle: FileSystemDirectoryHandle | null = null;
+  private permissionGranted = false;
   private pollTimer: any = null;
+  private hostHeartbeatTimer: any = null;
   private messageListener: ((signal: ISignalFilePayload) => void) | null = null;
-  private statusListeners: Set<(hasHandle: boolean, folderName: string) => void> = new Set();
+  private statusListeners: Set<(hasHandle: boolean, folderName: string, isGranted: boolean) => void> = new Set();
   private isPolling = false;
 
   constructor() {
@@ -55,20 +57,25 @@ class FolderSignalingService {
     return this.dirHandle !== null;
   }
 
+  public isPermissionGranted(): boolean {
+    return this.permissionGranted;
+  }
+
   public getFolderName(): string {
     return this.dirHandle ? this.dirHandle.name : '';
   }
 
-  public onStatusChange(fn: (hasHandle: boolean, folderName: string) => void): () => void {
+  public onStatusChange(fn: (hasHandle: boolean, folderName: string, isGranted: boolean) => void): () => void {
     this.statusListeners.add(fn);
-    fn(this.hasDirectoryHandle(), this.getFolderName());
+    fn(this.hasDirectoryHandle(), this.getFolderName(), this.isPermissionGranted());
     return () => this.statusListeners.delete(fn);
   }
 
   private notifyStatus(): void {
     const has = this.hasDirectoryHandle();
     const name = this.getFolderName();
-    this.statusListeners.forEach(fn => fn(has, name));
+    const granted = this.isPermissionGranted();
+    this.statusListeners.forEach(fn => fn(has, name, granted));
   }
 
   public setMessageListener(fn: (signal: ISignalFilePayload) => void): void {
@@ -90,25 +97,52 @@ class FolderSignalingService {
       });
 
       if (handle) {
-        // Kiểm tra quyền đọc/ghi hiện tại
-        const perm = typeof (handle as any).queryPermission === 'function'
-          ? await (handle as any).queryPermission({ mode: 'readwrite' })
-          : 'granted';
-        if (perm === 'granted') {
-          this.dirHandle = handle;
-          this.notifyStatus();
+        this.dirHandle = handle;
+        // Kiểm tra quyền đọc/ghi hiện tại (không kích hoạt prompt nếu chưa click)
+        let isGranted = false;
+        try {
+          if (typeof (handle as any).queryPermission === 'function') {
+            const perm = await (handle as any).queryPermission({ mode: 'readwrite' });
+            isGranted = (perm === 'granted');
+          } else {
+            isGranted = true;
+          }
+        } catch {}
+        this.permissionGranted = isGranted;
+        this.notifyStatus();
+        if (isGranted) {
           this.startPolling();
           return true;
-        } else {
-          // Quyền tạm hoãn cho đến khi có click kích hoạt
-          this.dirHandle = handle;
-          this.notifyStatus();
         }
       }
     } catch (err) {
       console.warn('Không thể nạp thư mục signaling từ IndexedDB:', err);
     }
     return false;
+  }
+
+  /**
+   * Yêu cầu cấp lại quyền đọc/ghi khi người dùng nhấn nút (User Gesture)
+   */
+  public async requestPermission(): Promise<boolean> {
+    if (!this.dirHandle) {
+      return this.pickDirectory();
+    }
+    try {
+      const handleAny = this.dirHandle as any;
+      if (typeof handleAny.requestPermission === 'function') {
+        const perm = await handleAny.requestPermission({ mode: 'readwrite' });
+        if (perm === 'granted') {
+          this.permissionGranted = true;
+          this.notifyStatus();
+          this.startPolling();
+          return true;
+        }
+      }
+    } catch (err) {
+      console.warn('Yêu cầu cấp lại quyền thư mục thất bại:', err);
+    }
+    return this.pickDirectory();
   }
 
   /**
@@ -134,6 +168,7 @@ class FolderSignalingService {
       }
 
       this.dirHandle = handle;
+      this.permissionGranted = true;
       this.notifyStatus();
 
       // Lưu handle vào IndexedDB để dùng lại lần sau
@@ -160,18 +195,98 @@ class FolderSignalingService {
   /**
    * Đảm bảo quyền đọc ghi khi tương tác
    */
-  public async ensurePermission(): Promise<boolean> {
+  public async ensurePermission(interactive = false): Promise<boolean> {
     if (!this.dirHandle) return false;
     try {
       const handleAny = this.dirHandle as any;
-      if (typeof handleAny.queryPermission !== 'function') return true;
+      if (typeof handleAny.queryPermission !== 'function') {
+        this.permissionGranted = true;
+        return true;
+      }
       const perm = await handleAny.queryPermission({ mode: 'readwrite' });
-      if (perm === 'granted') return true;
-      const req = await handleAny.requestPermission({ mode: 'readwrite' });
-      return req === 'granted';
+      if (perm === 'granted') {
+        this.permissionGranted = true;
+        return true;
+      }
+      if (interactive && typeof handleAny.requestPermission === 'function') {
+        const req = await handleAny.requestPermission({ mode: 'readwrite' });
+        this.permissionGranted = (req === 'granted');
+        this.notifyStatus();
+        return this.permissionGranted;
+      }
+      return false;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Khởi chạy nhịp tim máy Host (Kieu) vào file host_status.json
+   * Lặp lại mỗi 3.5 giây để các máy Client biết Host đang hoạt động thực tế
+   */
+  public startHostHeartbeat(hostInfo: { nodeId: string; displayName?: string }): void {
+    this.stopHostHeartbeat();
+    const writeBeat = async () => {
+      if (!this.dirHandle) return;
+      try {
+        const payload: ISignalFilePayload = {
+          type: 'HOST_ANNOUNCE',
+          fromHost: hostInfo.nodeId,
+          clientName: hostInfo.displayName || 'Host Master DB',
+          timestamp: Date.now()
+        };
+        await this.writeSignal(payload);
+      } catch {}
+    };
+
+    writeBeat();
+    this.hostHeartbeatTimer = setInterval(writeBeat, 3500);
+  }
+
+  public stopHostHeartbeat(): void {
+    if (this.hostHeartbeatTimer) {
+      clearInterval(this.hostHeartbeatTimer);
+      this.hostHeartbeatTimer = null;
+    }
+  }
+
+  public async markHostOffline(hostNodeId: string): Promise<void> {
+    this.stopHostHeartbeat();
+    if (!this.dirHandle) return;
+    try {
+      await this.writeSignal({
+        type: 'HOST_ANNOUNCE',
+        fromHost: hostNodeId,
+        timestamp: 0 // Timestamp 0 biểu thị Host đã tắt
+      });
+    } catch {}
+  }
+
+  /**
+   * Kiểm tra trực tiếp xem Host có đang đập nhịp trong HR_Signaling_Data không
+   */
+  public async checkHostStatus(): Promise<{ online: boolean; hostInfo?: ISignalFilePayload; lastSeen?: number }> {
+    if (!this.dirHandle) return { online: false };
+    try {
+      const fileHandle = await this.dirHandle.getFileHandle('host_status.json');
+      const file = await fileHandle.getFile();
+      const text = await file.text();
+      if (!text.trim()) return { online: false };
+      const payload: ISignalFilePayload = JSON.parse(text);
+      if (payload && payload.type === 'HOST_ANNOUNCE') {
+        const timeDiff = Date.now() - (payload.timestamp || file.lastModified);
+        // Nếu nhịp tim mới dưới 15 giây và timestamp > 0 -> Host đang ONLINE
+        const isOnline = payload.timestamp > 0 && timeDiff < 15000;
+        return {
+          online: isOnline,
+          hostInfo: payload,
+          lastSeen: payload.timestamp || file.lastModified
+        };
+      }
+    } catch {
+      // File chưa tồn tại hoặc thư mục chưa cấp quyền
+    }
+    return { online: false };
   }
 
   /**
@@ -179,7 +294,7 @@ class FolderSignalingService {
    */
   public async writeSignal(signal: ISignalFilePayload): Promise<void> {
     if (!this.dirHandle) return;
-    const hasPerm = await this.ensurePermission();
+    const hasPerm = await this.ensurePermission(false);
     if (!hasPerm) return;
 
     try {
@@ -236,7 +351,7 @@ class FolderSignalingService {
    * Quét và phân tích các file JSON trong HR_Signaling_Data
    */
   private async scanDirectoryFiles(): Promise<void> {
-    if (!this.dirHandle) return;
+    if (!this.dirHandle || !this.permissionGranted) return;
 
     try {
       for await (const [name, handle] of (this.dirHandle as any).entries()) {
@@ -245,22 +360,38 @@ class FolderSignalingService {
         try {
           const fileHandle = handle as FileSystemFileHandle;
           const file = await fileHandle.getFile();
-          // Bỏ qua file cũ hơn 2 phút
-          if (Date.now() - file.lastModified > 120000) continue;
+          // Bỏ qua file cũ hơn 60 giây (trừ host_status.json được kiểm tra theo timestamp)
+          if (name !== 'host_status.json' && Date.now() - file.lastModified > 60000) {
+            continue;
+          }
 
           const text = await file.text();
           if (!text.trim()) continue;
 
           const payload: ISignalFilePayload = JSON.parse(text);
           if (payload && payload.type && this.messageListener) {
-            this.messageListener(payload);
+            if (payload.type === 'HOST_ANNOUNCE') {
+              const age = Date.now() - (payload.timestamp || file.lastModified);
+              if (payload.timestamp > 0 && age < 15000) {
+                this.messageListener(payload);
+              }
+            } else {
+              this.messageListener(payload);
+            }
           }
         } catch {
           // File đang được ghi dở từ máy khác (OneDrive sync) -> bỏ qua lần này
         }
       }
     } catch (err) {
-      // Có thể thư mục đang bận hoặc cần cấp quyền lại
+      // Kiểm tra xem quyền có bị thu hồi không
+      try {
+        const perm = await (this.dirHandle as any).queryPermission({ mode: 'readwrite' });
+        if (perm !== 'granted') {
+          this.permissionGranted = false;
+          this.notifyStatus();
+        }
+      } catch {}
     }
   }
 
