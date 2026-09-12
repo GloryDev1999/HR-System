@@ -892,30 +892,14 @@ export const SettingsPage: React.FC = () => {
                   </button>
                 </div>
                 <div className="text-[11px] text-slate-500 mt-1">
-                  {folderSignaling.isFileProtocol() ? (
-                    <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 space-y-1">
-                      <p className="font-bold flex items-center gap-1 text-amber-800">
-                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        <span>Đang mở tệp trực tiếp (file:///):</span>
-                      </p>
-                      <p>
-                        Microsoft Edge chặn tính năng Chọn Thư Mục khi mở file trực tiếp vì quy chuẩn bảo mật Sandbox của Windows.
-                      </p>
-                      <p className="text-indigo-900 font-semibold">
-                        👉 Giải pháp 1: Bấm nút <b>"Ghép Nối Bằng Mã (Offline Token)"</b> bên dưới để kết nối WebRTC tức thì mà không cần thư mục!
-                      </p>
-                      <p className="text-slate-700">
-                        👉 Giải pháp 2: Chạy tệp <code>CHAY_SMART_HR.bat</code> hoặc mở qua <code>http://localhost:3000</code> để mở khoá toàn bộ tính năng thư mục OneDrive tự động.
-                      </p>
-                    </div>
-                  ) : hasFolderHandle ? (
+                  {hasFolderHandle ? (
                     <span className="text-emerald-700 font-semibold flex items-center gap-1">
                       <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                       <span>Đã liên kết thư mục <b>{folderName}</b>: Hệ thống sẽ tự động đọc/ghi các file JSON tín hiệu (<code>host_status.json</code>, <code>hello_*.json</code>, <code>offer_*.json</code>) để bắt tay WebRTC qua OneDrive.</span>
                     </span>
                   ) : (
                     <span>
-                      💡 Hãy tạo thư mục <b>HR_Signaling_Data</b> (đặt cùng cấp với thư mục <code>dist</code> trong OneDrive) và bấm nút trên để Microsoft Edge tự động trao đổi file tín hiệu JSON.
+                      💡 Hãy tạo thư mục <b>HR_Signaling_Data</b> (đặt cùng cấp với thư mục <code>dist</code> trong OneDrive) và bấm nút trên để Microsoft Edge tự động trao đổi file tín hiệu JSON giữa Host Kiều và các máy trạm.
                     </span>
                   )}
                 </div>

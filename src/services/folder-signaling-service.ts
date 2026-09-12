@@ -51,13 +51,7 @@ class FolderSignalingService {
   }
 
   public isSupported(): boolean {
-    if (typeof window === 'undefined') return false;
-    if (!('showDirectoryPicker' in window)) return false;
-    // Microsoft Edge chặn File System Access API trên giao thức file:/// do origin bị gán là "null"
-    if (window.location.protocol.startsWith('file:') || window.origin === 'null') {
-      return false;
-    }
-    return true;
+    return typeof window !== 'undefined' && 'showDirectoryPicker' in window;
   }
 
   public isFileProtocol(): boolean {
@@ -161,10 +155,7 @@ class FolderSignalingService {
    */
   public async pickDirectory(): Promise<boolean> {
     if (!this.isSupported()) {
-      if (this.isFileProtocol()) {
-        throw new Error('Bạn đang mở tệp trực tiếp (file:///). Microsoft Edge chặn quyền chọn thư mục trên giao thức này vì cơ chế Sandbox của Windows. Vui lòng bấm tab "Ghép Nối Mã Offline" trên Header hoặc mở hệ thống qua http://localhost:3000 (chạy CHAY_SMART_HR.bat).');
-      }
-      throw new Error('Trình duyệt hiện tại không hỗ trợ File System Access API trong môi trường này (yêu cầu http://localhost hoặc https://). Vui lòng dùng tính năng "Ghép Nối Mã Offline" trên Header để kết nối P2P tức thì.');
+      throw new Error('Trình duyệt không hỗ trợ chọn thư mục (cần Microsoft Edge hoặc Google Chrome).');
     }
 
     try {

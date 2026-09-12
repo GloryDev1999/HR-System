@@ -1221,22 +1221,11 @@ export const Header: React.FC = () => {
                     <div className="p-3.5 bg-amber-50 rounded-2xl border border-amber-200 space-y-2 text-amber-900">
                       <p className="font-bold flex items-center gap-1.5">
                         <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                        Đang mở file trực tiếp (file:///)
+                        Trình duyệt hiện tại chưa hỗ trợ chọn thư mục
                       </p>
                       <p className="leading-relaxed text-[11px] text-amber-800">
-                        Chính sách bảo mật của Chromium/Edge chặn API Chọn Thư Mục khi mở file <code>file:///</code> để chống tấn công sandbox.
+                        Tính năng quét thư mục tự động yêu cầu trình duyệt Microsoft Edge hoặc Google Chrome.
                       </p>
-                    </div>
-                    <div className="p-3 bg-indigo-50/70 rounded-2xl border border-indigo-100 space-y-2 text-indigo-950">
-                      <p className="font-bold">2 Lựa chọn kết nối khuyên dùng:</p>
-                      <div className="space-y-1.5 text-[11px]">
-                        <p>
-                          <b>1. Ghép nối tức thời bằng Mã Token:</b> Bấm tab <b>"Ghép Nối Mã Offline"</b> ở trên để trao đổi mã một lần là kết nối WebRTC ngay lập tức mà không cần web server.
-                        </p>
-                        <p>
-                          <b>2. Sử dụng thư mục OneDrive tự động:</b> Mở ứng dụng qua máy chủ nội bộ (ví dụ: <code>http://localhost:3000</code> hoặc chạy <code>npm run serve</code>). Khi mở bằng URL <code>http://...</code>, trình duyệt Edge sẽ mở khoá toàn diện API Thư Mục.
-                        </p>
-                      </div>
                     </div>
                     <div className="flex justify-end pt-2">
                       <button
@@ -1245,7 +1234,7 @@ export const Header: React.FC = () => {
                         className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition shadow-sm flex items-center gap-1.5"
                       >
                         <Link2 className="w-3.5 h-3.5" />
-                        <span>Chuyển Sang Ghép Nối Mã Token</span>
+                        <span>Chuyển Sang Ghép Nối Bằng Mã</span>
                       </button>
                     </div>
                   </div>
