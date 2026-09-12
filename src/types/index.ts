@@ -11,6 +11,7 @@ export interface IAccount {
   username: string;          // khóa chính
   displayName: string;
   role: RoleType;
+  departmentScope?: string | null; // 'WH', 'Production', 'QC', hoặc null (toàn công ty)
   salt: string;              // hex 16 bytes
   passwordHash: string;      // hex SHA-256(salt || password)
   active: boolean;           // giữ boolean gốc cho UI/logic
@@ -24,6 +25,7 @@ export interface SessionUser {
   username: string;
   displayName: string;
   role: RoleType;
+  departmentScope?: string | null;
 }
 
 export type LanguageType = 'vi' | 'en';
@@ -298,4 +300,29 @@ export interface ISystemSettings {
     twoDaysULPenaltyPct?: number;      // 50%
     threeDaysULPenaltyPct?: number;    // 100%
   };
+}
+
+export type AuditActionType =
+  | 'AUTH_LOGIN'
+  | 'AUTH_LOGOUT'
+  | 'ASSIGN_SHIFT'
+  | 'UPDATE_RATE_NS'
+  | 'UPDATE_RATE_CL'
+  | 'APPROVE_LEAVE'
+  | 'REJECT_LEAVE'
+  | 'TIMESHEET_EDIT'
+  | 'CREATE_USER'
+  | 'UPDATE_USER_NAME'
+  | 'TOGGLE_USER_ACTIVE'
+  | 'UPDATE_USER_ROLE';
+
+export interface IUserAuditLog {
+  id: string;                 // UUID hoặc nanoId
+  timestamp: string;          // ISO Date string
+  username: string;           // kieu, hoa, vinh, nguyetanh, han, glory...
+  displayName: string;        // Kieu(Mia), Vinh(Glory)...
+  role: RoleType;
+  actionType: AuditActionType;
+  targetEntity: string;       // Đối tượng bị tác động (vd: 'WH - LEP010', 'line_rivet_1 (2026-08-01)', 'han')
+  details: string;            // Diễn giải chi tiết
 }

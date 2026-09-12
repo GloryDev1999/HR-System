@@ -100,12 +100,25 @@ export async function parseTimesheetInMemory(
   onProgress?.(5, 'Đang đọc tệp Excel chấm công...');
   await new Promise(r => setTimeout(r, 0));
 
-  // Sử dụng cellDates: false để tránh sai lệch múi giờ lịch sử ở Việt Nam
-  const workbook = XLSX.read(buffer, { type: 'array', cellDates: false });
+  const byteLen = (buffer as any)?.byteLength ?? (buffer as any)?.length ?? 0;
+  if (!buffer || byteLen === 0) {
+    throw new Error('Tệp tải lên rỗng hoặc không có dữ liệu nhị phân.');
+  }
 
-  // Check sheet name
+  // Sử dụng Uint8Array và cellDates: false để tương thích tuyệt đối mọi trình duyệt
+  const uint8 = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer as ArrayBuffer);
+  const workbook = XLSX.read(uint8, { type: 'array', cellDates: false });
+
+  if (!workbook || !workbook.SheetNames || workbook.SheetNames.length === 0) {
+    throw new Error('Tệp Excel không chứa bất kỳ trang tính (sheet) nào.');
+  }
+
+  // Check sheet name: ưu tiên sheet 'XuatLuoi', nếu không lấy sheet đầu tiên
   const sheetName = workbook.SheetNames.includes('XuatLuoi') ? 'XuatLuoi' : workbook.SheetNames[0];
   const worksheet = workbook.Sheets[sheetName];
+  if (!worksheet) {
+    throw new Error(`Không tìm thấy dữ liệu trong trang tính "${sheetName}".`);
+  }
 
   onProgress?.(20, `Đang phân tích cấu trúc sheet ${sheetName}...`);
   await new Promise(r => setTimeout(r, 0));

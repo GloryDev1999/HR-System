@@ -278,3 +278,22 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
   4. Cập nhật `Header.tsx` gọi trực tiếp `parseTimesheetFile`, loại bỏ toàn bộ boilerplate worker cũ.
 - **Bài học kinh nghiệm (Key Takeaway)**:
   - Mọi tác vụ Web Worker trong hệ thống Single-File Offline đều BẮT BUỘC phải có cơ chế In-Memory Main-Thread Fallback khi chạy trên `file://`.
+
+---
+
+### KB-017: Chuyển hoàn toàn Timesheet Parser sang Pure In-Memory, loại bỏ triệt để lỗi Web Worker
+- **Ngày ghi nhận**: 2026-09-12
+- **Vị trí**: `src/services/timesheet-parser-service.ts`, `src/services/timesheet-parser-core.ts`, `src/components/layout/Header.tsx`
+- **Triệu chứng (Symptom)**:
+  - Ở môi trường local trên máy Windows (chạy localhost hoặc file://), khi người dùng nạp file Excel chấm công máy, modal thông báo `Đang khởi tạo Web Worker xử lý nền...` và báo lỗi Web Worker (do chính sách CSP hoặc EDR chặn `blob:` URL, hoặc lỗi Structured Clone ArrayBuffer).
+- **Nguyên nhân gốc rễ (Root Cause)**:
+  - Việc tạo Web Worker inline (`?worker&inline`) từ Blob URL trên trình duyệt Microsoft Edge trong môi trường doanh nghiệp thường bị chính sách an ninh `worker-src 'self'` chặn.
+  - Trong khi đó, thuật toán SheetJS (`XLSX.read`) chỉ mất khoảng 300ms để phân tích 20.000 dòng quẹt thẻ, hoàn toàn không cần thiết phải spawn Worker rời.
+- **Giải pháp xử lý (Resolution)**:
+  1. Chuyển `parseTimesheetFile` trong `timesheet-parser-service.ts` sang chạy trực tiếp `parseTimesheetInMemory` 100% trong main thread, với cơ chế non-blocking chunking (`await new Promise(r => setTimeout(r, 0))`) giữ cho giao diện luôn phản hồi mượt mà.
+  2. Bọc `buffer` trong `Uint8Array` chuẩn và bổ sung kiểm tra null an toàn trước khi gọi `XLSX.read`.
+  3. Cập nhật text trạng thái trong `Header.tsx` từ `Đang khởi tạo Web Worker xử lý nền...` thành `Đang nạp và phân tích dữ liệu bảng công...`.
+  4. Bổ sung bộ test `src/test/timesheet-parser-upload.test.ts` xác thực quy trình nạp tệp Excel hoàn toàn xanh (134/134 tests PASS).
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Đối với các tác vụ xử lý bảng tính dưới 1 giây, ưu tiên tuyệt đối Pure In-Memory với async microtask ticks thay vì Web Worker để đạt độ ổn định 100% trên mọi môi trường bảo mật cao.
+

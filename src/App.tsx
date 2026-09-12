@@ -21,17 +21,36 @@ import { ShiftAssignmentPage } from './pages/ShiftAssignmentPage';
 import { AttendanceViolationPage } from './pages/AttendanceViolationPage';
 import { OCRVerificationPage } from './pages/OCRVerificationPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { UserManagementPage } from './pages/UserManagementPage';
 
 import { presenceManager } from './services/presence-service';
 
 const Shell: React.FC = () => {
-  const { session, hasPermission } = useAuth();
+  const { session, currentRole, hasPermission } = useAuth();
   const [activePage, setActivePage] = useState<NavPageId>('dashboard');
+  const isMasterUser = currentRole === 'AD System' || currentRole === 'HR Manager' || currentRole === 'HR Admin';
 
   useEffect(() => {
     // Seed initial data on startup if database is empty
     seedDatabaseIfEmpty().catch(console.error);
   }, []);
+
+  // Tự động điều hướng user restricted (Vinh, Nguyet Anh, Han) vào đúng menu được cấp quyền khi đăng nhập
+  useEffect(() => {
+    if (session) {
+      const canDashboard = hasPermission('VIEW_DASHBOARD') || hasPermission('VIEW_DEPT_DASHBOARD');
+      if (!canDashboard && activePage === 'dashboard') {
+        if (hasPermission('MANAGE_ROSTER') || hasPermission('MANAGE_DEPT_ROSTER')) {
+          setActivePage('shiftAssignment');
+        } else if (hasPermission('VIEW_PRODUCTIVITY_QUALITY')) {
+          setActivePage('productivityQuality');
+        }
+      }
+      if (!isMasterUser && activePage === 'shiftRoster') {
+        setActivePage('shiftAssignment');
+      }
+    }
+  }, [session, activePage, hasPermission, isMasterUser]);
 
   useEffect(() => {
     presenceManager.updateCurrentTab(activePage);
@@ -49,10 +68,45 @@ const Shell: React.FC = () => {
       {activePage === 'productivityQuality' && <ProductivityQualityPage />}
       {activePage === 'overtime' && <OvertimePage onNavigate={setActivePage} />}
       {activePage === 'leavePending' && <LeavePendingPage />}
-      {activePage === 'shiftRoster' && <ShiftRosterPage />}
+      {activePage === 'shiftRoster' && (
+        isMasterUser ? (
+          <ShiftRosterPage />
+        ) : (
+          <div className="flex-1 p-8 flex flex-col items-center justify-center text-center">
+            <div className="w-14 h-14 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mb-4 border border-rose-200">
+              <span className="text-2xl font-bold">🔒</span>
+            </div>
+            <h2 className="text-base font-bold text-slate-900">Quyền truy cập bị giới hạn</h2>
+            <p className="text-xs text-slate-500 max-w-sm mt-2 leading-relaxed">
+              Trang Phân Ca & Xoay Ca toàn hệ thống chỉ dành cho Quản trị viên và Nhân sự. Vui lòng chuyển sang trang "Sắp Xếp Ca Làm Việc" của bộ phận.
+            </p>
+            <button
+              onClick={() => setActivePage('shiftAssignment')}
+              className="mt-4 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold shadow-sm hover:bg-slate-800 transition"
+            >
+              Đến Sắp Xếp Ca Bộ Phận
+            </button>
+          </div>
+        )
+      )}
       {activePage === 'shiftAssignment' && <ShiftAssignmentPage />}
       {activePage === 'attendanceViolation' && <AttendanceViolationPage />}
       {activePage === 'ocrVerification' && <OCRVerificationPage onNavigate={setActivePage} />}
+      {activePage === 'userManagement' && (
+        hasPermission('MANAGE_USERS') ? (
+          <UserManagementPage />
+        ) : (
+          <div className="flex-1 p-8 flex flex-col items-center justify-center text-center">
+            <div className="w-14 h-14 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mb-4 border border-rose-200">
+              <span className="text-2xl font-bold">🔒</span>
+            </div>
+            <h2 className="text-base font-bold text-slate-900">Quyền truy cập bị giới hạn</h2>
+            <p className="text-xs text-slate-500 max-w-sm mt-2 leading-relaxed">
+              Tài khoản của bạn không có quyền quản lý người dùng và xem nhật ký giao dịch của hệ thống.
+            </p>
+          </div>
+        )
+      )}
       {activePage === 'settings' && (
         hasPermission('SYSTEM_SETTINGS') ? (
           <SettingsPage />
@@ -63,7 +117,7 @@ const Shell: React.FC = () => {
             </div>
             <h2 className="text-base font-bold text-slate-900">Quyền truy cập bị giới hạn</h2>
             <p className="text-xs text-slate-500 max-w-sm mt-2 leading-relaxed">
-              Tài khoản vai trò <b>HR Manager (Kiều)</b> không được phép thao tác mục Cài đặt hệ thống. Vui lòng đăng nhập với tài khoản <b>Vinh (Admin System)</b>.
+              Tài khoản không được phép thao tác mục Cài đặt hệ thống. Vui lòng đăng nhập với tài khoản <b>Kieu(Mia)</b> hoặc <b>Glory(Software)</b>.
             </p>
             <button
               onClick={() => setActivePage('dashboard')}

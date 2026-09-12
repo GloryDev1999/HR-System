@@ -12,6 +12,7 @@ import {
   ClipboardList,
   ExternalLink,
   ShieldAlert,
+  ShieldCheck,
   TrendingUp
 } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
@@ -30,6 +31,7 @@ export type NavPageId =
   | 'shiftAssignment'
   | 'attendanceViolation'
   | 'ocrVerification' 
+  | 'userManagement'
   | 'settings';
 
 interface SidebarProps {
@@ -40,6 +42,7 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) => {
   const { t } = useLanguage();
   const { session, currentRole, hasPermission } = useAuth();
+  const isMasterUser = currentRole === 'AD System' || currentRole === 'HR Manager' || currentRole === 'HR Admin';
 
   // v6: dùng Flag 0|1 thay boolean để index hợp lệ (IndexedDB chỉ cho Number/String/Date)
   const badgeCounts = useLiveQuery(async () => {
@@ -109,7 +112,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
         )}
 
         {/* Tỷ Lệ Đạt Năng Suất & Chất Lượng */}
-        {(hasPermission('MANAGE_EMPLOYEES') || hasPermission('MANAGE_TIMESHEET')) && (
+        {(hasPermission('VIEW_PRODUCTIVITY_QUALITY') || hasPermission('MANAGE_EMPLOYEES') || hasPermission('MANAGE_TIMESHEET')) && (
           <button
             onClick={() => onSelectPage('productivityQuality')}
             className={menuItemClass(activePage === 'productivityQuality')}
@@ -157,8 +160,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
           </button>
         )}
 
-        {/* Shift Roster & 12h Rest Violations */}
-        {(hasPermission('MANAGE_ROSTER') || hasPermission('MANAGE_DEPT_ROSTER')) && (
+        {/* Shift Roster & 12h Rest Violations - Chỉ HR, Admin, Software nhìn thấy */}
+        {isMasterUser && (hasPermission('MANAGE_ROSTER') || hasPermission('MANAGE_DEPT_ROSTER')) && (
           <button
             onClick={() => onSelectPage('shiftRoster')}
             className={menuItemClass(activePage === 'shiftRoster')}
@@ -219,6 +222,19 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
           </button>
         )}
 
+        {/* Quản lý User & Nhật Ký - Chỉ hiển thị khi có quyền MANAGE_USERS (Kieu, Glory) */}
+        {hasPermission('MANAGE_USERS') && (
+          <button
+            onClick={() => onSelectPage('userManagement')}
+            className={menuItemClass(activePage === 'userManagement')}
+          >
+            <div className="flex items-center gap-2.5">
+              <ShieldCheck className={`w-4 h-4 ${activePage === 'userManagement' ? 'text-[#FF5B26]' : 'text-slate-400'}`} />
+              <span>Người Dùng & Nhật Ký</span>
+            </div>
+          </button>
+        )}
+
         {/* Settings & RBAC - Chỉ hiển thị cho Admin System có quyền SYSTEM_SETTINGS, HR Manager bị ẩn */}
         {hasPermission('SYSTEM_SETTINGS') && (
           <button
@@ -232,19 +248,21 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
           </button>
         )}
 
-        {/* Tạo khảo sát - external link */}
-        <a
-          href="https://survey-zd8.pages.dev"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition text-slate-600 hover:bg-slate-50 hover:text-slate-900 group"
-        >
-          <div className="flex items-center gap-2.5">
-            <ClipboardList className="w-4 h-4 text-slate-400 group-hover:text-[#FF5B26]" />
-            <span>Tạo khảo sát</span>
-          </div>
-          <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600" />
-        </a>
+        {/* Tạo khảo sát - external link - Chỉ HR, Admin, Software nhìn thấy */}
+        {isMasterUser && (
+          <a
+            href="https://survey-zd8.pages.dev"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition text-slate-600 hover:bg-slate-50 hover:text-slate-900 group"
+          >
+            <div className="flex items-center gap-2.5">
+              <ClipboardList className="w-4 h-4 text-slate-400 group-hover:text-[#FF5B26]" />
+              <span>Tạo khảo sát</span>
+            </div>
+            <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600" />
+          </a>
+        )}
       </div>
 
       {/* User Footer Profile Card */}

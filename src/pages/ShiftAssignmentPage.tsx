@@ -16,6 +16,7 @@ import { db } from '../db';
 import { ShiftClassType, IEmployee } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { logUserAction } from '../services/audit-log-service';
 
 /**
  * Sắp Xếp Ca Làm Việc - Trang mới theo yêu cầu:
@@ -101,11 +102,11 @@ function getDateRange(mode: 'day' | 'week' | 'month', baseDateStr: string): stri
 }
 
 export const ShiftAssignmentPage: React.FC = () => {
-  const { departmentScope, hasPermission, currentRole } = useAuth();
+  const { session, departmentScope, hasPermission, currentRole } = useAuth();
   const { success, warning, error, info } = useToast();
 
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedDept, setSelectedDept] = useState<string>('ALL');
+  const [selectedDept, setSelectedDept] = useState<string>(departmentScope || 'ALL');
   const [mode, setMode] = useState<'day' | 'week' | 'month'>('day');
   const [baseDate, setBaseDate] = useState<string>(toDateStr(new Date()));
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<Set<string>>(new Set());
@@ -243,6 +244,17 @@ export const ShiftAssignmentPage: React.FC = () => {
       });
       success('Đã lưu sắp xếp ca', `Đã lưu ${toSave.length} bản ghi (${entries.length} NV × ${dateRange.length} ngày) và đồng bộ Nhóm Ca cho ${entries.length} NV. Phân Ca & Kiểm Soát sẽ cảnh báo nếu sai.`);
       info('Đồng bộ', 'Đã đồng bộ với Danh Mục Nhân Viên (Nhóm Ca) và Phân Ca & Xoay Ca. Khi nạp dữ liệu chấm công, hệ thống sẽ so sánh và cảnh báo nếu đi sai ca.');
+
+      if (session) {
+        logUserAction({
+          username: session.username,
+          displayName: session.displayName,
+          role: session.role,
+          actionType: 'ASSIGN_SHIFT',
+          targetEntity: `${departmentScope || selectedDept} (${entries.length} NV)`,
+          details: `Sắp xếp ca cho ${entries.length} nhân viên trong ${dateRange.length} ngày (${dateRange[0]} -> ${dateRange[dateRange.length - 1]})`
+        }).catch(console.error);
+      }
     } catch (err: any) {
       error('Lỗi lưu ca', err.message);
     }

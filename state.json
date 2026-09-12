@@ -3,9 +3,9 @@
     "project_name": "SmartHR - Single-File In-Browser HRMS & Timekeeping System",
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
-    "last_updated": "2026-09-11T04:45:00Z",
-    "current_phase": "Phase 23: Repository Cleanup & Architecture Streamlining (Purged 42MB+ of out-of-architecture python models, unused Chinese OCR models, orphan formula-engine worker, 125/125 tests green)",
-    "version": "2.3.0"
+    "last_updated": "2026-09-12T06:29:40Z",
+    "current_phase": "Phase 27: Eliminate Timesheet Web Worker in favor of Non-Blocking Pure In-Memory Parser (Zero Worker Errors on local Edge/file://, 134/134 tests green, build OK)",
+    "version": "2.7.0"
   },
   "agent_profile": {
     "role": "Senior Principal System Designer & Staff IT Software Engineer",
@@ -33,6 +33,7 @@
       }
     },
     "user_confirmed_rules": {
+      "enterprise_6_users": "Kieu(Mia) System Admin Host, Hoa(Molly) HR-System Client, Vinh(Glory) WH-Admin only shift roster for WH, Nguyet Anh QC-Admin only shift roster for QC and quality rate, Han Prd-Admin only shift roster for Production and productivity rate, Glory(Software) Technical Admin. Default password 123. Audit logs stored in userAuditLogs.",
       "overtime_rounding": "Exact calculation without rounding (rawMinutes and hours decimal), manual rounding modal on Overtime Table for HR",
       "early_checkin_ot": "Check-in between 06:00 and 06:30 for 07:30 shift is counted as early overtime with isEarlyIn flag; check-in after 06:30 does not receive early OT",
       "sunday_rule": "Sunday shifts are not marked as regular 'W' workdays on timesheets; full hours converted to Sunday OT with 30m lunch deduction if >= 8h; missing punches still flagged as MCI/MCO",
@@ -49,7 +50,7 @@
   "verified_schemas": {
     "db_name": "HRSystem_LeggettPlatt_DB",
     "db_file": "src/db/index.ts",
-    "current_version": 7,
+    "current_version": 8,
     "stores": {
       "employees": "employeeId PK, erpId, fullName, department, shiftClassId FK→shiftClasses.shiftClassId, contractType, status, productionLine, productivityGroup, [department+status], [contractType+status], [shiftClassId+status], [department+contractType]",
       "rawAttendanceLogs": "++id PK auto-increment, employeeId FK, date, [employeeId+date], departmentCode, [departmentCode+date]",
@@ -63,7 +64,8 @@
       "shiftClasses": "shiftClassId PK, startTime, endTime, standardWorkDays, isRotating (boolean), isRotatingFlag 0|1 indexed, workDaysPattern",
       "rbacRoles": "roleId PK, roleName, *permissions multiEntry, isSystem (boolean), isSystemFlag 0|1 indexed",
       "productionLines": "id PK, name, description, createdAt",
-      "productivityQualityRates": "lineId_date PK composite, lineId, date, month, year, productivityRate, qualityRate, [lineId+month+year], [lineId+date]"
+      "productivityQualityRates": "lineId_date PK composite, lineId, date, month, year, [lineId+month+year], [lineId+date]",
+      "userAuditLogs": "id PK, username, actionType, timestamp, [username+timestamp], [actionType+timestamp]"
     },
     "persistent_storage": {
       "helper": "ensurePersistentStorage() in src/db/index.ts + call in src/main.tsx bootstrap, fallback warning via Toast if denied",
@@ -260,7 +262,21 @@
         "Verify: tsc 0 lỗi, vitest 118/118 pass, dist/index.html 38MB một file, không còn *.worker-*.js. Còn lại: user chạy spike-test + 6 bước kiểm thử thủ công update-model.md §6 trên Edge và báo kết quả.",
         "Fix bổ sung theo yêu cầu user: onnx-ocr.worker.ts ép numThreads=1 khi file:// (không COOP/COEP/SharedArrayBuffer), http giữ min(hw,4); tách isFileProtocolWorker tường minh. Re-verify tsc 0 lỗi, 118/118 pass, rebuild dist 38MB."
       ]
+    },
+    "M18_Enterprise_User_Management_RBAC_Audit_2026_09_12": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "Khởi tạo 6 tài khoản doanh nghiệp chuẩn với mật khẩu khởi tạo mặc định là 123 (kieu: Kieu(Mia) System Admin Host, hoa: Hoa(Molly) HR-System Client, vinh: Vinh(Glory) WH-Admin, nguyetanh: Nguyet Anh QC-Admin, han: Han Prd-Admin, glory: Glory(Software) Technical Admin)",
+        "Nâng cấp Dexie.js Schema lên Version 8 bổ sung store userAuditLogs với compound indexes [username+timestamp] và [actionType+timestamp]",
+        "Hệ thống Menu Guard và Route Guard nghiêm ngặt: Vinh chỉ thấy duy nhất menu Sắp ca cho WH; Nguyet Anh và Han chỉ thấy menu Sắp ca và Tỷ Lệ Đạt NS & CL; toàn bộ các menu khác bị ẩn hoàn toàn",
+        "Phân quyền cột độc lập trên trang Tỷ Lệ Đạt NS & CL: Nguyet Anh (QC) chỉ được sửa cột Chất Lượng (% CL), ô Năng Suất (% NS) bị khóa cứng disabled; Han (Production) chỉ được sửa cột Năng Suất (% NS), ô Chất Lượng (% CL) bị khóa cứng disabled",
+        "Menu mới 'Người Dùng & Nhật Ký' (UserManagementPage.tsx) tích hợp 2 phân hệ: Quản lý danh sách User (thêm user mới với pass mặc định 123, đổi tên hiển thị, đổi vai trò, bật/khóa tài khoản, không thể xem hoặc sửa mật khẩu của user khác) và Bảng Transaction Hoạt Động (User Audit Trail)",
+        "Service audit-log-service.ts tự động ghi nhận mọi giao dịch và thao tác của người dùng: Đăng nhập (AUTH_LOGIN), Đăng xuất (AUTH_LOGOUT), Sắp ca (ASSIGN_SHIFT), Cập nhật % Năng suất (UPDATE_RATE_NS), Cập nhật % Chất lượng (UPDATE_RATE_CL), Tạo user (CREATE_USER), Đổi tên (UPDATE_USER_NAME), Bật/Khóa tài khoản (TOGGLE_USER_ACTIVE)",
+        "Kiểm thử tự động vitest 127/127 tests passed 100%, tsc --noEmit sạch lỗi 0 warning, production build thành công 100%"
+      ]
     }
   }
 }
+
 

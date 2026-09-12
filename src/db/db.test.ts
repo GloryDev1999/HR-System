@@ -24,12 +24,13 @@ describe('HRSystemDatabase v6 — Schema & Flag Indexes', () => {
       db.shiftClasses.clear(),
       db.rbacRoles.clear(),
       db.productionLines.clear(),
-      db.productivityQualityRates.clear()
+      db.productivityQualityRates.clear(),
+      db.userAuditLogs.clear()
     ]);
   });
 
-  it('(a) DB init không lỗi, version 7 và đủ 13 stores', async () => {
-    expect(db.verno).toBe(7);
+  it('(a) DB init không lỗi, version 8 và đủ 14 stores', async () => {
+    expect(db.verno).toBe(8);
     expect(db.employees).toBeDefined();
     expect(db.dailyTimesheets).toBeDefined();
     expect(db.overtimeRecords).toBeDefined();
@@ -43,6 +44,7 @@ describe('HRSystemDatabase v6 — Schema & Flag Indexes', () => {
     expect(db.rbacRoles).toBeDefined();
     expect(db.productionLines).toBeDefined();
     expect(db.productivityQualityRates).toBeDefined();
+    expect(db.userAuditLogs).toBeDefined();
   });
 
   it('(b) bulkPut/put cơ bản — employees + timesheet upsert với Flag', async () => {

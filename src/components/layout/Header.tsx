@@ -84,7 +84,7 @@ export const Header: React.FC = () => {
     try {
       setIsImporting(true);
       setImportProgress(5);
-      setImportStatusText('Đang khởi tạo Web Worker xử lý nền...');
+      setImportStatusText('Đang nạp và phân tích dữ liệu bảng công...');
 
       const buffer = await file.arrayBuffer();
 

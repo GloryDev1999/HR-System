@@ -17,14 +17,15 @@ import { IShiftRosterEntry, ShiftClassType, IEmployee } from '../types';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 import { useAuth } from '../context/AuthContext';
+import { logUserAction } from '../services/audit-log-service';
 
 export const ShiftRosterPage: React.FC = () => {
   const { success, warning, error } = useToast();
   const { confirm } = useModal();
-  const { departmentScope, hasPermission } = useAuth();
+  const { session, departmentScope, hasPermission } = useAuth();
 
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedDept, setSelectedDept] = useState<string>('Production');
+  const [selectedDept, setSelectedDept] = useState<string>(departmentScope || 'Production');
   const [selectedDate, setSelectedDate] = useState<string>('2026-07-22');
   const [filterViolationOnly, setFilterViolationOnly] = useState<boolean>(false);
 
@@ -95,6 +96,17 @@ export const ShiftRosterPage: React.FC = () => {
     } else {
       success('Đã điều chỉnh ca thành công!', 'Khoảng nghỉ giữa 2 ca đã đạt chuẩn an toàn 16 tiếng (>= 12h).');
     }
+
+    if (session) {
+      logUserAction({
+        username: session.username,
+        displayName: session.displayName,
+        role: session.role,
+        actionType: 'ASSIGN_SHIFT',
+        targetEntity: `${roster.fullName} (${roster.employeeId})`,
+        details: `Điều chỉnh phân ca từ ${roster.shiftCode} sang ${newShift} ngày ${roster.date} (${isViolating ? 'Còn vi phạm 8h' : 'Chuẩn an toàn 16h'})`
+      }).catch(console.error);
+    }
   };
 
   return (
@@ -142,7 +154,9 @@ export const ShiftRosterPage: React.FC = () => {
           <select
             value={selectedDept}
             onChange={(e) => setSelectedDept(e.target.value)}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:border-orange-500"
+            disabled={!!departmentScope}
+            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:border-orange-500 disabled:opacity-60"
+            title={departmentScope ? `Đã khóa theo phạm vi quyền: ${departmentScope}` : 'Lọc theo bộ phận'}
           >
             <option value="ALL">Tất cả Bộ Phận</option>
             {departments.map(d => (

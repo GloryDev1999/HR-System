@@ -12,7 +12,8 @@ import {
   IShiftClass,
   IRbacRole,
   IProductionLine,
-  IProductivityQualityRate
+  IProductivityQualityRate,
+  IUserAuditLog
 } from '../types';
 
 /**
@@ -60,6 +61,7 @@ export class HRSystemDatabase extends Dexie {
   rbacRoles!: Table<IRbacRole, string>;
   productionLines!: Table<IProductionLine, string>;
   productivityQualityRates!: Table<IProductivityQualityRate, string>;
+  userAuditLogs!: Table<IUserAuditLog, string>;
 
   constructor() {
     super('HRSystem_LeggettPlatt_DB');
@@ -227,8 +229,7 @@ export class HRSystemDatabase extends Dexie {
     });
 
     // v7: THÊM 2 STORE MỚI cho ma trận Năng suất & Chất lượng
-    // - productionLines: Quản lý danh sách Line sản xuất (Line Rivet 1, Line Rivet 2, mở rộng động)
-    // - productivityQualityRates: Quản lý tỷ lệ % Năng suất & % Chất lượng theo ngày của từng Line
+    // v7 (2026-09-09): THÊM 2 STORE CHO MA TRẬN NĂNG SUẤT & CHẤT LƯỢNG — productionLines + productivityQualityRates
     // Seed mặc định 'line_rivet_1' và 'line_rivet_2' nếu store trống, bảo đảm an toàn dữ liệu cũ.
     this.version(7).stores({
       productionLines: 'id, name',
@@ -252,6 +253,11 @@ export class HRSystemDatabase extends Dexie {
           }
         ]);
       }
+    });
+
+    // v8 (2026-09-12): THÊM STORE NHẬT KÝ HOẠT ĐỘNG NGƯỜI DÙNG & GIAO DỊCH HỆ THỐNG — userAuditLogs
+    this.version(8).stores({
+      userAuditLogs: 'id, username, actionType, timestamp, [username+timestamp], [actionType+timestamp]'
     });
 
     // Hooks tự đồng bộ Flag khi tạo/cập nhật — đảm bảo không sót chỗ set tay (v6)
@@ -349,11 +355,11 @@ export const DEFAULT_SETTINGS: ISystemSettings = {
   nightShiftAllowanceRate: 30,
   rolePermissions: {
     'HR Manager': ['ALL_ACCESS'],
-    'HR Admin': ['VIEW_DASHBOARD', 'MANAGE_EMPLOYEES', 'IMPORT_LOGS', 'MANAGE_TIMESHEET', 'MANAGE_OT', 'MANAGE_LEAVE', 'MANAGE_ROSTER', 'SCAN_OCR'],
-    'Warehouse Admin': ['VIEW_DEPT_DASHBOARD', 'VIEW_DEPT_EMPLOYEES', 'VIEW_DEPT_TIMESHEET', 'PROPOSE_DEPT_OT', 'VIEW_DEPT_LEAVE', 'MANAGE_DEPT_ROSTER', 'SCAN_DEPT_OCR'],
-    'Production Admin': ['VIEW_DEPT_DASHBOARD', 'VIEW_DEPT_EMPLOYEES', 'VIEW_DEPT_TIMESHEET', 'PROPOSE_DEPT_OT', 'VIEW_DEPT_LEAVE', 'MANAGE_DEPT_ROSTER', 'SCAN_DEPT_OCR'],
-    'QC Admin': ['VIEW_DEPT_DASHBOARD', 'VIEW_DEPT_EMPLOYEES', 'VIEW_DEPT_TIMESHEET', 'PROPOSE_DEPT_OT', 'VIEW_DEPT_LEAVE', 'MANAGE_DEPT_ROSTER', 'SCAN_DEPT_OCR'],
-    'AD System': ['ALL_ACCESS', 'SYSTEM_SETTINGS', 'MANAGE_ROLES_PERMISSIONS']
+    'HR Admin': ['VIEW_DASHBOARD', 'MANAGE_EMPLOYEES', 'IMPORT_LOGS', 'MANAGE_TIMESHEET', 'MANAGE_OT', 'MANAGE_LEAVE', 'MANAGE_ROSTER', 'SCAN_OCR', 'VIEW_PRODUCTIVITY_QUALITY', 'EDIT_PRODUCTIVITY_RATE', 'EDIT_QUALITY_RATE'],
+    'Warehouse Admin': ['MANAGE_DEPT_ROSTER'],
+    'Production Admin': ['MANAGE_DEPT_ROSTER', 'VIEW_PRODUCTIVITY_QUALITY', 'EDIT_PRODUCTIVITY_RATE'],
+    'QC Admin': ['MANAGE_DEPT_ROSTER', 'VIEW_PRODUCTIVITY_QUALITY', 'EDIT_QUALITY_RATE'],
+    'AD System': ['ALL_ACCESS', 'SYSTEM_SETTINGS', 'MANAGE_ROLES_PERMISSIONS', 'MANAGE_USERS', 'VIEW_PRODUCTIVITY_QUALITY', 'EDIT_PRODUCTIVITY_RATE', 'EDIT_QUALITY_RATE']
   },
   productivityBonusConfig: {
     defaultBaseRate: 1000000,

@@ -11,7 +11,12 @@ import {
   Layers,
   Award,
   Clock,
-  KeyRound
+  KeyRound,
+  Network,
+  Server,
+  Laptop,
+  Wifi,
+  Radio
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -19,6 +24,7 @@ import { useModal } from '../context/ModalContext';
 import { RoleType, ISystemSettings } from '../types';
 import { DEFAULT_SETTINGS, db } from '../db';
 import { seedDatabaseIfEmpty } from '../services/db-seeder';
+import { clusterService } from '../services/webrtc-cluster-service';
 
 export const SettingsPage: React.FC = () => {
   const { session, currentRole, systemSettings, refreshPermissions, hasPermission, changePassword } = useAuth();
@@ -29,6 +35,17 @@ export const SettingsPage: React.FC = () => {
   const canManageSystem = hasPermission('SYSTEM_SETTINGS');
 
   const [settings, setSettings] = useState<ISystemSettings>(systemSettings);
+
+  // WebRTC P2P Cluster state
+  const [clusterConfig, setClusterConfig] = useState(() => clusterService.getConfig());
+  const [clusterStatus, setClusterStatus] = useState(() => clusterService.getStatus());
+
+  React.useEffect(() => {
+    return clusterService.onStatusChange((status) => {
+      setClusterStatus(status);
+      setClusterConfig(clusterService.getConfig());
+    });
+  }, []);
 
   // Sync when AuthContext updates (Dexie live)
   React.useEffect(() => {
@@ -60,7 +77,7 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
-  const [activeTab, setActiveTab] = useState<'rbac' | 'diligence' | 'formula' | 'system'>('rbac');
+  const [activeTab, setActiveTab] = useState<'rbac' | 'diligence' | 'formula' | 'cluster' | 'system'>('rbac');
 
   const rolesList: RoleType[] = [
     'HR Manager',
@@ -220,6 +237,30 @@ export const SettingsPage: React.FC = () => {
         >
           <SlidersHorizontal className="w-4 h-4 text-emerald-400" />
           <span>Công Thức Năng Suất & Chuyên Cần</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('formula')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
+            activeTab === 'formula'
+              ? 'bg-slate-900 text-white shadow-sm'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <SlidersHorizontal className="w-4 h-4 text-emerald-400" />
+          <span>Công Thức Năng Suất & Chuyên Cần</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('cluster')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
+            activeTab === 'cluster'
+              ? 'bg-slate-900 text-white shadow-sm'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Network className="w-4 h-4 text-cyan-400" />
+          <span>Mạng P2P Cụm (WebRTC RTCDataChannel)</span>
         </button>
 
         <button
@@ -690,6 +731,249 @@ export const SettingsPage: React.FC = () => {
               <RefreshCw className="w-4 h-4" />
               <span>Khôi Phục Dữ Liệu Gốc</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Tab Content 5: WebRTC P2P Cluster (Star-Topology 1 Host - 5 Clients) */}
+      {activeTab === 'cluster' && (
+        <div className="space-y-6">
+          {/* Architecture Banner */}
+          <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-6 rounded-2xl border border-indigo-900/50 shadow-xl relative overflow-hidden">
+            <div className="relative z-10 space-y-3">
+              <div className="flex items-center gap-3">
+                <span className="p-2.5 bg-indigo-500/20 rounded-xl border border-indigo-500/40 text-indigo-400">
+                  <Network className="w-6 h-6" />
+                </span>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <span>Kiến Trúc Cụm Mạng Hình Sao P2P (Star-Topology via RTCDataChannel)</span>
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-indigo-500/30 text-indigo-300 border border-indigo-400/40">
+                      1 HOST (Master DB) + 5 CLIENTS
+                    </span>
+                  </h3>
+                  <p className="text-xs text-indigo-200/80 mt-0.5">
+                    100% In-Browser trên Microsoft Edge — Không file .exe, không mở Port OS, an toàn tuyệt đối với CrowdStrike Falcon EDR
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-3 bg-white/5 rounded-xl border border-white/10 text-xs text-indigo-100 flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                  <span className="font-semibold">Trạng thái Node hiện tại:</span>
+                  <span className="font-black text-amber-300">
+                    {clusterConfig.nodeRole === 'HOST' ? 'MÁY CHỦ HOST (MASTER DB)' : 'MÁY TRẠM CLIENT'}
+                  </span>
+                  <span className="text-slate-400">({clusterStatus})</span>
+                </div>
+                <div className="text-[11px] text-indigo-300">
+                  Signaling Folder: <code className="bg-black/30 px-2 py-0.5 rounded text-amber-300 font-mono">{clusterConfig.syncFolderName}</code> (OneDrive)
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Node Configuration Form */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <Server className="w-4 h-4 text-orange-500" />
+                <span>Cấu Hình Node Trên Máy Này (Dynamic Node Configuration)</span>
+              </h4>
+              <span className="text-xs text-slate-400">Lưu trữ cục bộ IndexedDB & Tự động nhận diện</span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Vai trò của máy này:</label>
+                <select
+                  value={clusterConfig.nodeRole}
+                  onChange={(e) => setClusterConfig({ ...clusterConfig, nodeRole: e.target.value as any })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:ring-2 focus:ring-orange-400"
+                >
+                  <option value="HOST">HOST — Máy Chủ (Kieu nắm Master DB)</option>
+                  <option value="CLIENT">CLIENT — Máy Trạm (Vinh, Han, Nguyet Anh, Hoa, Glory)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Mã định danh Node (Node ID):</label>
+                <input
+                  type="text"
+                  value={clusterConfig.nodeId}
+                  onChange={(e) => setClusterConfig({ ...clusterConfig, nodeId: e.target.value })}
+                  placeholder="HOST_KIEU_01 hoặc CLIENT_VINH_01"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-mono text-slate-800"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Tên máy hiển thị:</label>
+                <input
+                  type="text"
+                  value={clusterConfig.displayName}
+                  onChange={(e) => setClusterConfig({ ...clusterConfig, displayName: e.target.value })}
+                  placeholder="Kieu(Mia) - Máy Chủ Quản Lý"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-semibold"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Thư mục Signaling (OneDrive):</label>
+                <input
+                  type="text"
+                  value={clusterConfig.syncFolderName}
+                  onChange={(e) => setClusterConfig({ ...clusterConfig, syncFolderName: e.target.value })}
+                  placeholder="HR_Signaling_Data"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-mono text-slate-800"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-slate-100 flex-wrap gap-3">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    clusterService.saveConfig(clusterConfig);
+                    success('Đã lưu cấu hình Cụm Node', 'Cấu hình mạng P2P WebRTC đã được lưu thành công.');
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl transition shadow-sm"
+                >
+                  <Save className="w-4 h-4 text-emerald-400" />
+                  <span>Lưu Cấu Hình Node</span>
+                </button>
+
+                {clusterConfig.nodeRole === 'HOST' ? (
+                  <button
+                    onClick={async () => {
+                      await clusterService.initializeNode('HOST', clusterConfig.nodeId, clusterConfig.displayName);
+                      success('Đã khởi chạy Host', 'Máy chủ Kieu(Mia) đã sẵn sàng tiếp nhận RTCDataChannel từ 5 Client.');
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold text-xs rounded-xl transition shadow-md shadow-orange-200"
+                  >
+                    <Server className="w-4 h-4" />
+                    <span>Khởi Chạy Máy Chủ Host (Kieu Master DB)</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={async () => {
+                      await clusterService.initializeNode('CLIENT', clusterConfig.nodeId, clusterConfig.displayName);
+                      success('Đang kết nối tới Host', 'Client đang phát tín hiệu qua thư mục chia sẻ OneDrive.');
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-500 to-blue-500 hover:from-indigo-600 hover:to-blue-600 text-white font-bold text-xs rounded-xl transition shadow-md shadow-indigo-200"
+                  >
+                    <Radio className="w-4 h-4" />
+                    <span>Bắt Đầu Kết Nối Tới Host Kieu</span>
+                  </button>
+                )}
+              </div>
+
+              <button
+                onClick={() => {
+                  clusterService.disconnectAll();
+                  success('Đã ngắt toàn bộ kết nối', 'Các kênh RTCDataChannel đã đóng an toàn.');
+                }}
+                className="px-3 py-2 text-slate-500 hover:text-rose-600 hover:bg-rose-50 font-semibold text-xs rounded-xl transition"
+              >
+                Ngắt Toàn Bộ Kết Nối
+              </button>
+            </div>
+          </div>
+
+          {/* Star Topology Visual Nodes Status */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <Laptop className="w-4 h-4 text-indigo-600" />
+                <span>Sơ Đồ Kết Nối 6 Máy Trong Cụm (Star-Topology Cluster)</span>
+              </h4>
+              <span className="text-xs font-semibold text-slate-500">Mô hình 1 Host Kieu + 5 Client</span>
+            </div>
+
+            {/* Host Card */}
+            <div className="p-4 bg-gradient-to-r from-amber-50 to-orange-50 rounded-2xl border border-amber-200 flex items-center justify-between flex-wrap gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-orange-500 text-white flex items-center justify-center font-black text-base shadow-md shadow-orange-200">
+                  HOST
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-extrabold text-sm text-slate-900">Kieu(Mia) — System Admin</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-orange-200 text-orange-900 border border-orange-300">
+                      MASTER DATABASE
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Nắm giữ toàn bộ dữ liệu gốc: Danh mục nhân sự, bảng chấm công, dữ liệu OT & nhật ký giao dịch
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-xs font-bold text-emerald-800">Host Sẵn Sàng</span>
+              </div>
+            </div>
+
+            {/* 5 Clients Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {clusterConfig.nodes.map((node, idx) => (
+                <div key={node.id} className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2 hover:bg-white hover:shadow-sm transition">
+                  <div className="flex items-center justify-between">
+                    <span className="px-2 py-0.5 rounded-md bg-slate-200 text-slate-700 text-[10px] font-black font-mono">
+                      Client {idx + 1}: {node.id}
+                    </span>
+                    <span className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
+                      <span className={`w-2 h-2 rounded-full ${node.status === 'CONNECTED' ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                      <span>{node.status === 'CONNECTED' ? 'Online' : 'Chờ kết nối'}</span>
+                    </span>
+                  </div>
+
+                  <div>
+                    <h5 className="font-bold text-xs text-slate-900">{node.name}</h5>
+                    <div className="text-[11px] text-slate-500">Tài khoản: <code className="font-mono text-slate-800 font-bold">{node.username}</code> ({node.role})</div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-200/60">
+                    <span className="text-[10px] text-slate-400 block font-semibold">Quyền gửi dữ liệu về Host:</span>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {node.allowedActions.map(action => (
+                        <span key={action} className="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-blue-50 text-blue-700 border border-blue-100">
+                          {action}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Detailed Handover Workflow Guide */}
+          <div className="p-5 bg-slate-900 text-slate-200 rounded-2xl space-y-3 text-xs leading-relaxed">
+            <h4 className="font-bold text-sm text-white flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span>Quy Trình Bàn Giao Từ Máy Glory Sang Máy Kieu Vận Hành</span>
+            </h4>
+            <div className="space-y-2 text-slate-300">
+              <div className="flex items-start gap-2">
+                <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono font-bold shrink-0">BƯỚC 1</span>
+                <span><b>Glory build sản phẩm:</b> Máy Glory chạy <code>npm run build</code>, copy toàn bộ thư mục <code>dist/</code> sang thư mục OneDrive chung của công ty (ví dụ: <code>OneDrive - Leggett &amp; Platt/HR-System/dist</code>).</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono font-bold shrink-0">BƯỚC 2</span>
+                <span><b>Kieu nhận bàn giao:</b> Trên máy Kieu, mở trực tiếp file <code>dist/index.html</code> bằng Microsoft Edge. Đăng nhập tài khoản <code>kieu</code> (mật khẩu mặc định <code>123</code>).</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono font-bold shrink-0">BƯỚC 3</span>
+                <span><b>Kieu cấu hình làm HOST:</b> Vào menu <b>Cài Đặt &gt; Mạng P2P Cụm</b>, chọn vai trò là <b>HOST (Kieu Master DB)</b> và bấm <b>"Khởi Chạy Máy Chủ Host"</b>. Kieu nạp Master Data (Danh sách nhân viên, Bảng công).</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono font-bold shrink-0">BƯỚC 4</span>
+                <span><b>5 Máy Client kết nối:</b> Vinh, Nguyet Anh, Han, Hoa và Glory mở Edge trên máy mình, đăng nhập tài khoản của họ, chọn vai trò <b>CLIENT</b>. Hai bên tự động thiết lập kênh truyền <b>RTCDataChannel</b> qua mạng LAN nội bộ. Mọi thao tác sắp ca và điền tỷ lệ được tự động đẩy về Master DB của Kieu.</span>
+              </div>
+            </div>
           </div>
         </div>
       )}

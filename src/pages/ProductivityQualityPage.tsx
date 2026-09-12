@@ -6,7 +6,6 @@ import {
   CalendarRange, 
   Clock3, 
   CheckCircle2, 
-  Sparkles,
   Layers,
   Percent,
   Sliders,
@@ -20,12 +19,22 @@ import { formatPayPeriodLabel } from '../services/pay-period';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 import { useAuth } from '../context/AuthContext';
+import { logUserAction } from '../services/audit-log-service';
 
 export const ProductivityQualityPage: React.FC = () => {
   const { success, warning, error } = useToast();
   const { confirm } = useModal();
-  const { hasPermission } = useAuth();
-  const canManage = hasPermission('MANAGE_EMPLOYEES') || hasPermission('MANAGE_TIMESHEET');
+  const { session, currentRole, hasPermission } = useAuth();
+  
+  // Phân quyền độc lập theo yêu cầu:
+  // - Han (Prd-Admin): chỉ được sửa Năng Suất (canEditNS=true, canEditCL=false)
+  // - Nguyet Anh (QC-Admin): chỉ được sửa Chất Lượng (canEditCL=true, canEditNS=false)
+  // - Master Host / HR Client / Technical (Kieu, Hoa, Glory): toàn quyền cả 2 và quản lý Line
+  const isMasterUser = currentRole === 'AD System' || currentRole === 'HR Manager' || currentRole === 'HR Admin';
+  const canEditNS = hasPermission('ALL_ACCESS') || hasPermission('EDIT_PRODUCTIVITY_RATE');
+  const canEditCL = hasPermission('ALL_ACCESS') || hasPermission('EDIT_QUALITY_RATE');
+  const canManageLines = isMasterUser;
+  const canManage = isMasterUser;
 
   const [cycleMode, setCycleMode] = useState<'SEASONAL' | 'OFFICIAL'>('OFFICIAL');
   const [selectedMonth, setSelectedMonth] = useState<number>(() => {
@@ -43,11 +52,6 @@ export const ProductivityQualityPage: React.FC = () => {
   const [newLineId, setNewLineId] = useState('');
   const [newLineName, setNewLineName] = useState('');
   const [newLineDesc, setNewLineDesc] = useState('');
-
-  const [showBatchModal, setShowBatchModal] = useState(false);
-  const [batchLineId, setBatchLineId] = useState('');
-  const [batchNS, setBatchNS] = useState(100);
-  const [batchCL, setBatchCL] = useState(99);
 
   // Queries
   const lines = useLiveQuery(() => db.productionLines.toArray(), []) || [];
@@ -90,10 +94,15 @@ export const ProductivityQualityPage: React.FC = () => {
 
   // Save single rate cell
   const handleSaveRate = async (lineId: string, dateStr: string, day: CalendarDay, type: 'NS' | 'CL', val: number) => {
-    if (!canManage) {
-      error('Không đủ quyền', 'Bạn không có quyền chỉnh sửa tỷ lệ năng suất và chất lượng.');
+    if (type === 'NS' && !canEditNS) {
+      error('Không đủ quyền', 'Tài khoản của bạn không có quyền chỉnh sửa Tỷ Lệ Năng Suất (chỉ dành cho Prd-Admin hoặc Quản trị viên).');
       return;
     }
+    if (type === 'CL' && !canEditCL) {
+      error('Không đủ quyền', 'Tài khoản của bạn không có quyền chỉnh sửa Tỷ Lệ Chất Lượng (chỉ dành cho QC-Admin hoặc Quản trị viên).');
+      return;
+    }
+
     const key = `${lineId}_${dateStr}`;
     const existing = rateMap.get(key);
     const newRate: IProductivityQualityRate = {
@@ -109,6 +118,17 @@ export const ProductivityQualityPage: React.FC = () => {
 
     try {
       await db.productivityQualityRates.put(newRate);
+
+      if (session) {
+        logUserAction({
+          username: session.username,
+          displayName: session.displayName,
+          role: session.role,
+          actionType: type === 'NS' ? 'UPDATE_RATE_NS' : 'UPDATE_RATE_CL',
+          targetEntity: `${lineId} (${dateStr})`,
+          details: `Cập nhật ${type === 'NS' ? 'Tỷ lệ Năng Suất' : 'Tỷ lệ Chất Lượng'} = ${val}% cho chuyền ${lineId} ngày ${dateStr}`
+        }).catch(console.error);
+      }
     } catch (e: any) {
       error('Lỗi lưu tỷ lệ', e.message);
     }
@@ -163,39 +183,6 @@ export const ProductivityQualityPage: React.FC = () => {
     }
   };
 
-  // Batch fill for full month
-  const handleBatchFill = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!canManage) {
-      error('Không đủ quyền', 'Bạn không có quyền điền tỷ lệ hàng loạt.');
-      return;
-    }
-    if (!batchLineId) {
-      warning('Chưa chọn Line', 'Vui lòng chọn một chuyền để điền tự động.');
-      return;
-    }
-
-    const items: IProductivityQualityRate[] = calendarDays.map(day => ({
-      lineId_date: `${batchLineId}_${day.dateStr}`,
-      lineId: batchLineId,
-      date: day.dateStr,
-      month: day.monthNum,
-      year: day.yearNum,
-      productivityRate: batchNS,
-      qualityRate: batchCL,
-      updatedAt: new Date().toISOString()
-    }));
-
-    try {
-      await db.productivityQualityRates.bulkPut(items);
-      const lineObj = lines.find(l => l.id === batchLineId);
-      success('Điền nhanh thành công', `Đã áp dụng ${batchNS}% NS và ${batchCL}% CL cho ${calendarDays.length} ngày của ${lineObj?.name || batchLineId}.`);
-      setShowBatchModal(false);
-    } catch (e: any) {
-      error('Lỗi điền nhanh', e.message);
-    }
-  };
-
   return (
     <div className="p-5 w-full space-y-5 flex-1 flex flex-col font-sans">
       {/* Top Banner */}
@@ -238,26 +225,15 @@ export const ProductivityQualityPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Action Buttons */}
-        {canManage && (
+        {/* Action Buttons - Chỉ 3 user lớn (Kieu, Hoa, Glory) được hiển thị nút Thêm Line Sản Xuất */}
+        {isMasterUser && (
           <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={() => {
-                setBatchLineId(lines[0]?.id || '');
-                setShowBatchModal(true);
-              }}
-              className="flex items-center gap-2 px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold rounded-xl transition"
-            >
-              <Sparkles className="w-4 h-4 text-orange-500" />
-              <span>Điền Nhanh Cả Tháng</span>
-            </button>
-
             <button
               onClick={() => setShowAddLineModal(true)}
               className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white text-xs font-bold rounded-xl shadow-md shadow-orange-200 transition"
             >
               <Plus className="w-4 h-4" />
-              <span>+ Thêm Line Sản Xuất</span>
+              <span>Thêm Line Sản Xuất</span>
             </button>
           </div>
         )}
@@ -429,14 +405,14 @@ export const ProductivityQualityPage: React.FC = () => {
                               min={0}
                               max={200}
                               defaultValue={val}
-                              disabled={!canManage}
+                              disabled={!canEditNS}
                               key={`${key}_ns_${val}`}
                               onBlur={(e) => {
                                 const newV = parseFloat(e.target.value) || 0;
                                 if (newV !== val) handleSaveRate(line.id, day.dateStr, day, 'NS', newV);
                               }}
                               className={`w-10 px-1 py-1 text-center font-bold text-xs rounded-lg border focus:ring-2 focus:ring-orange-500/20 focus:outline-none transition ${
-                                !canManage ? 'opacity-70 cursor-not-allowed ' : ''
+                                !canEditNS ? 'opacity-40 cursor-not-allowed bg-slate-100 border-slate-300 ' : ''
                               }${
                                 isHigh
                                   ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
@@ -444,7 +420,7 @@ export const ProductivityQualityPage: React.FC = () => {
                                   ? 'bg-amber-50 text-amber-800 border-amber-200'
                                   : 'bg-rose-50 text-rose-800 border-rose-200'
                               }`}
-                              title={`Ngày ${day.dayNum}/${day.monthNum}: ${val}% Năng suất`}
+                              title={canEditNS ? `Ngày ${day.dayNum}/${day.monthNum}: ${val}% Năng suất` : `Tài khoản của bạn không có quyền sửa % Năng suất (Chỉ xem)`}
                             />
                           </td>
                         );
@@ -479,14 +455,14 @@ export const ProductivityQualityPage: React.FC = () => {
                               min={0}
                               max={100}
                               defaultValue={val}
-                              disabled={!canManage}
+                              disabled={!canEditCL}
                               key={`${key}_cl_${val}`}
                               onBlur={(e) => {
                                 const newV = parseFloat(e.target.value) || 0;
                                 if (newV !== val) handleSaveRate(line.id, day.dateStr, day, 'CL', newV);
                               }}
                               className={`w-10 px-1 py-1 text-center font-bold text-xs rounded-lg border focus:ring-2 focus:ring-blue-500/20 focus:outline-none transition ${
-                                !canManage ? 'opacity-70 cursor-not-allowed ' : ''
+                                !canEditCL ? 'opacity-40 cursor-not-allowed bg-slate-100 border-slate-300 ' : ''
                               }${
                                 isHigh
                                   ? 'bg-blue-50 text-blue-800 border-blue-200'
@@ -494,7 +470,7 @@ export const ProductivityQualityPage: React.FC = () => {
                                   ? 'bg-amber-50 text-amber-800 border-amber-200'
                                   : 'bg-rose-50 text-rose-800 border-rose-200'
                               }`}
-                              title={`Ngày ${day.dayNum}/${day.monthNum}: ${val}% Chất lượng`}
+                              title={canEditCL ? `Ngày ${day.dayNum}/${day.monthNum}: ${val}% Chất lượng` : `Tài khoản của bạn không có quyền sửa % Chất lượng (Chỉ xem)`}
                             />
                           </td>
                         );
@@ -578,81 +554,6 @@ export const ProductivityQualityPage: React.FC = () => {
                   className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-xl shadow-md shadow-orange-200"
                 >
                   Lưu Line Mới
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Batch Fill */}
-      {showBatchModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4 animate-in fade-in zoom-in duration-150">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-orange-500" />
-                <span>Điền Nhanh Tỷ Lệ Cả Tháng</span>
-              </h3>
-              <button onClick={() => setShowBatchModal(false)} className="text-slate-400 hover:text-slate-600 text-lg font-bold">✕</button>
-            </div>
-
-            <form onSubmit={handleBatchFill} className="space-y-4 text-xs">
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">Chọn Line áp dụng:</label>
-                <select
-                  value={batchLineId}
-                  onChange={(e) => setBatchLineId(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-semibold"
-                >
-                  {lines.map(l => (
-                    <option key={l.id} value={l.id}>{l.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">% Năng Suất chuẩn:</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={200}
-                    value={batchNS}
-                    onChange={(e) => setBatchNS(parseFloat(e.target.value) || 0)}
-                    className="w-full px-3 py-2 bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold rounded-xl"
-                  />
-                </div>
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">% Chất Lượng chuẩn:</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={batchCL}
-                    onChange={(e) => setBatchCL(parseFloat(e.target.value) || 0)}
-                    className="w-full px-3 py-2 bg-blue-50 border border-blue-200 text-blue-800 font-bold rounded-xl"
-                  />
-                </div>
-              </div>
-
-              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 text-[11px] leading-relaxed">
-                Thao tác sẽ tự động gán đồng loạt cho tất cả {calendarDays.length} ngày trong kỳ ({payLabel}). Bạn vẫn có thể chỉnh sửa riêng từng ngày bất kỳ lúc nào.
-              </div>
-
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setShowBatchModal(false)}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl"
-                >
-                  Hủy bỏ
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-gradient-to-r from-orange-500 to-rose-500 text-white font-bold rounded-xl shadow-md shadow-orange-200"
-                >
-                  Áp Dụng Cho Toàn Kỳ
                 </button>
               </div>
             </form>
