@@ -79,6 +79,47 @@ class WebRTCClusterService {
     }
   }
 
+  /**
+   * Kieu (hoặc máy Host) chỉ cần bấm Host 1 lần duy nhất:
+   * Hệ thống ghi nhớ cấu hình và tự động kích hoạt mỗi lần mở ứng dụng.
+   */
+  public async quickStartAsHost(nodeId = 'HOST_KIEU_01', displayName = 'Kieu(Mia) - System Admin Master DB'): Promise<void> {
+    localStorage.setItem('smarthr_is_host', 'true');
+    localStorage.removeItem('smarthr_auto_connect_client');
+    await this.initializeNode('HOST', nodeId, displayName);
+  }
+
+  /**
+   * Nút Kết Nối 1-Chạm (1-Touch Connect) dành cho máy Client (Vinh, Nguyet Anh, Han, Hoa, Glory):
+   * Tự động nhận diện tài khoản đang đăng nhập, lấy đúng ID node và kết nối tức thời.
+   */
+  public async quickConnectAsClient(username: string, userDisplayName?: string): Promise<void> {
+    const nodeMap: Record<string, { id: string; name: string }> = {
+      vinh: { id: 'CLIENT_01', name: 'Vinh(Glory) - Kho WH' },
+      nguyetanh: { id: 'CLIENT_02', name: 'Nguyet Anh - QC' },
+      han: { id: 'CLIENT_03', name: 'Han - Sản Xuất' },
+      hoa: { id: 'CLIENT_04', name: 'Hoa(Molly) - HR' },
+      glory: { id: 'CLIENT_05', name: 'Glory(Software) - Kỹ Thuật' }
+    };
+
+    const targetNode = nodeMap[username.toLowerCase()] || {
+      id: `CLIENT_${username.toUpperCase()}`,
+      name: userDisplayName || username
+    };
+
+    localStorage.setItem('smarthr_auto_connect_client', 'true');
+    localStorage.removeItem('smarthr_is_host');
+    await this.initializeNode('CLIENT', targetNode.id, targetNode.name);
+  }
+
+  public isHostConfigured(): boolean {
+    return localStorage.getItem('smarthr_is_host') === 'true';
+  }
+
+  public isAutoConnectClient(): boolean {
+    return localStorage.getItem('smarthr_auto_connect_client') === 'true';
+  }
+
   private initHostMode(): void {
     // Host chuẩn bị các kênh RTCDataChannel đón 5 máy client
     this.setStatus('SIGNALING', 'Host đang sẵn sàng tiếp nhận kết nối từ các máy trạm');

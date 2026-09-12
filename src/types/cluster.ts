@@ -1,6 +1,6 @@
 export type NodeRole = 'HOST' | 'CLIENT';
 
-export type NodeConnectionStatus = 'IDLE' | 'SIGNALING' | 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
+export type NodeConnectionStatus = 'IDLE' | 'SIGNALING' | 'CONNECTED' | 'DISCONNECTED' | 'HOST_OFFLINE' | 'ERROR';
 
 export interface IClusterNode {
   id: string;
