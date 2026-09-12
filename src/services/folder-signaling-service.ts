@@ -161,7 +161,10 @@ class FolderSignalingService {
    */
   public async pickDirectory(): Promise<boolean> {
     if (!this.isSupported()) {
-      throw new Error('Trình duyệt hiện tại không hỗ trợ File System Access API. Vui lòng sử dụng Microsoft Edge hoặc Google Chrome.');
+      if (this.isFileProtocol()) {
+        throw new Error('Bạn đang mở tệp trực tiếp (file:///). Microsoft Edge chặn quyền chọn thư mục trên giao thức này vì cơ chế Sandbox của Windows. Vui lòng bấm tab "Ghép Nối Mã Offline" trên Header hoặc mở hệ thống qua http://localhost:3000 (chạy CHAY_SMART_HR.bat).');
+      }
+      throw new Error('Trình duyệt hiện tại không hỗ trợ File System Access API trong môi trường này (yêu cầu http://localhost hoặc https://). Vui lòng dùng tính năng "Ghép Nối Mã Offline" trên Header để kết nối P2P tức thì.');
     }
 
     try {

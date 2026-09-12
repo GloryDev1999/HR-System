@@ -30,4 +30,11 @@ for (const t of targets) {
   cpSync(from, join(dist, 'PaddleOCR-Models', t), { recursive: true });
   console.log(`[offline-assets] Đã copy PaddleOCR-Models/${t} -> dist/`);
 }
+
+const batFile = join(root, 'CHAY_SMART_HR.bat');
+if (existsSync(batFile)) {
+  cpSync(batFile, join(dist, 'CHAY_SMART_HR.bat'));
+  console.log('[offline-assets] Đã copy CHAY_SMART_HR.bat -> dist/');
+}
+
 console.log('[offline-assets] Hoàn tất - bản build chạy offline đầy đủ.');
