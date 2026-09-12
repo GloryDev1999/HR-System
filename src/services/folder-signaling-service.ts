@@ -6,13 +6,18 @@
  */
 
 export interface ISignalFilePayload {
-  type: 'CLIENT_HELLO' | 'OFFER_SDP' | 'ANSWER_SDP' | 'HOST_ANNOUNCE';
+  type: 'CLIENT_HELLO' | 'OFFER_SDP' | 'ANSWER_SDP' | 'HOST_ANNOUNCE' | 'SHIFT_SUBMISSION';
   clientId?: string;
   clientName?: string;
   targetClient?: string;
   fromHost?: string;
   offer?: string;
   answer?: string;
+  department?: string;
+  rosters?: any[];
+  entries?: [string, string][];
+  dateRange?: string[];
+  senderUsername?: string;
   timestamp: number;
 }
 
@@ -312,6 +317,8 @@ class FolderSignalingService {
         filename = `offer_${signal.targetClient}.json`;
       } else if (signal.type === 'ANSWER_SDP' && signal.clientId) {
         filename = `answer_${signal.clientId}.json`;
+      } else if (signal.type === 'SHIFT_SUBMISSION' && signal.clientId) {
+        filename = `shifts_${signal.clientId}.json`;
       }
 
       if (!filename) return;
@@ -323,6 +330,17 @@ class FolderSignalingService {
     } catch (err) {
       console.warn('Ghi file signaling thất bại:', err);
     }
+  }
+
+  /**
+   * Máy Client ghi đợt sắp ca vào file shifts_{clientId}.json trên OneDrive
+   */
+  public async writeShiftSubmission(payload: Omit<ISignalFilePayload, 'type'>): Promise<void> {
+    await this.writeSignal({
+      ...payload,
+      type: 'SHIFT_SUBMISSION',
+      timestamp: Date.now()
+    });
   }
 
   /**
@@ -365,8 +383,8 @@ class FolderSignalingService {
         try {
           const fileHandle = handle as FileSystemFileHandle;
           const file = await fileHandle.getFile();
-          // Bỏ qua file cũ hơn 60 giây (trừ host_status.json được kiểm tra theo timestamp)
-          if (name !== 'host_status.json' && Date.now() - file.lastModified > 60000) {
+          // Bỏ qua file cũ hơn 60 giây (trừ host_status.json và shifts_*.json được kiểm tra theo timestamp)
+          if (name !== 'host_status.json' && !name.startsWith('shifts_') && Date.now() - file.lastModified > 60000) {
             continue;
           }
 

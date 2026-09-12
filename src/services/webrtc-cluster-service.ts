@@ -12,6 +12,7 @@
  */
 
 import { IClusterConfig, IClusterNode, IClusterMessage, DEFAULT_CLUSTER_CONFIG, NodeRole, NodeConnectionStatus } from '../types/cluster';
+import { ShiftClassType, RoleType } from '../types';
 import { db } from '../db';
 import { logUserAction } from './audit-log-service';
 import { presenceManager } from './presence-service';
@@ -21,13 +22,18 @@ type MessageHandler = (msg: IClusterMessage) => void;
 type StatusChangeHandler = (status: NodeConnectionStatus, details?: string) => void;
 
 interface ISignalEnvelope {
-  type: 'CLIENT_HELLO' | 'OFFER_SDP' | 'ANSWER_SDP' | 'HOST_ANNOUNCE';
+  type: 'CLIENT_HELLO' | 'OFFER_SDP' | 'ANSWER_SDP' | 'HOST_ANNOUNCE' | 'SHIFT_SUBMISSION';
   clientId?: string;
   clientName?: string;
   targetClient?: string;
   fromHost?: string;
   offer?: string;
   answer?: string;
+  department?: string;
+  rosters?: any[];
+  entries?: [string, string][];
+  dateRange?: string[];
+  senderUsername?: string;
   timestamp: number;
 }
 
@@ -236,6 +242,22 @@ class WebRTCClusterService {
     if (this.config.nodeRole === 'CLIENT' && signal.type === 'HOST_ANNOUNCE') {
       if (this.currentStatus === 'HOST_OFFLINE' || this.currentStatus === 'IDLE' || this.currentStatus === 'DISCONNECTED') {
         this.initClientMode();
+      }
+    }
+
+    // 5. Host nhận gói SHIFT_SUBMISSION qua Folder Signaling
+    if (this.config.nodeRole === 'HOST' && signal.type === 'SHIFT_SUBMISSION') {
+      if (signal.rosters && Array.isArray(signal.rosters) && signal.rosters.length > 0) {
+        await this.saveShiftSubmissionAtHost({
+          department: signal.department || 'Bộ phận',
+          rosters: signal.rosters,
+          entries: signal.entries || [],
+          senderNodeId: signal.clientId || 'CLIENT',
+          senderName: signal.clientName || signal.clientId || 'Trạm Client',
+          senderUsername: signal.senderUsername || signal.clientId,
+          dateRange: signal.dateRange,
+          timestamp: signal.timestamp ? new Date(signal.timestamp).toISOString() : new Date().toISOString()
+        });
       }
     }
   }
@@ -690,6 +712,19 @@ class WebRTCClusterService {
         if (payload?.roster) {
           await db.shiftRosters.put(payload.roster);
         }
+      } else if (actionType === 'ASSIGN_SHIFT_BATCH') {
+        if (payload?.rosters && Array.isArray(payload.rosters)) {
+          await this.saveShiftSubmissionAtHost({
+            department: payload.department || 'Bộ phận',
+            rosters: payload.rosters,
+            entries: payload.entries || [],
+            senderNodeId,
+            senderName: payload.senderName || senderNodeId,
+            senderUsername: payload.senderUsername || username || senderNodeId,
+            dateRange: payload.dateRange,
+            timestamp: payload.timestamp
+          });
+        }
       }
 
       // Ghi audit log trên Master Host
@@ -716,6 +751,150 @@ class WebRTCClusterService {
     } catch (e: any) {
       console.error('Host xử lý Action thất bại:', e);
     }
+  }
+
+  /**
+   * Lưu đợt nộp ca từ máy trạm vào Master DB của Host
+   */
+  public async saveShiftSubmissionAtHost(data: {
+    department: string;
+    rosters: any[];
+    entries: [string, string][];
+    senderNodeId: string;
+    senderName: string;
+    senderUsername?: string;
+    dateRange?: string[];
+    timestamp?: string;
+  }): Promise<void> {
+    const { department, rosters, entries, senderNodeId, senderName, senderUsername, dateRange, timestamp } = data;
+    const timeStr = timestamp || new Date().toISOString();
+
+    // 1. Lưu vào db.shiftRosters & db.employees
+    await db.transaction('rw', db.shiftRosters, db.employees, async () => {
+      await db.shiftRosters.bulkPut(rosters);
+      if (entries && Array.isArray(entries)) {
+        for (const [empId, shiftCode] of entries) {
+          await db.employees.update(empId, { shiftClassId: shiftCode as ShiftClassType });
+        }
+      }
+    });
+
+    // 2. Ghi nhật ký đợt nộp ca vào db.settings (key: 'shift_submissions')
+    try {
+      const existing = await db.settings.get('shift_submissions');
+      const list: any[] = existing?.value || [];
+      const newRec = {
+        id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        department,
+        senderNodeId,
+        senderName,
+        senderUsername: senderUsername || senderNodeId,
+        submittedAt: timeStr,
+        employeeCount: entries ? entries.length : new Set(rosters.map(r => r.employeeId)).size,
+        rosterCount: rosters.length,
+        dateRange: dateRange || [rosters[0]?.date, rosters[rosters.length - 1]?.date].filter(Boolean),
+        shiftsSummary: {
+          shift1Count: rosters.filter(r => r.shiftCode === 'SHIFT_1').length,
+          shift2Count: rosters.filter(r => r.shiftCode === 'SHIFT_2').length,
+          officeCount: rosters.filter(r => r.shiftCode === 'OFFICE_M_S' || r.shiftCode === 'OFFICE_M_F').length,
+        },
+        violationCount: rosters.filter(r => r.isRestViolation).length,
+      };
+      const updatedList = [newRec, ...list.filter(item => !(item.department === department && item.submittedAt === timeStr))].slice(0, 50);
+      await db.settings.put({ key: 'shift_submissions', value: updatedList });
+    } catch (e) {
+      console.warn('Lưu lịch sử nộp ca vào db.settings thất bại:', e);
+    }
+
+    // 3. Ghi audit log trên Master Host
+    const userRole: RoleType = department === 'WH' ? 'Warehouse Admin'
+      : department === 'QC' ? 'QC Admin'
+      : department === 'Production' ? 'Production Admin'
+      : 'HR Admin';
+
+    await logUserAction({
+      username: senderUsername || senderNodeId,
+      displayName: senderName || senderNodeId,
+      role: userRole,
+      actionType: 'ASSIGN_SHIFT',
+      targetEntity: `${department} (${entries?.length || rosters.length} NV)`,
+      details: `Tiếp nhận thành công dữ liệu sắp ca từ máy trạm ${senderNodeId} (${senderName})`
+    }).catch(console.error);
+
+    // 4. Bắn thông báo cập nhật toàn mạng P2P
+    this.broadcast({
+      id: `shift_notice_${Date.now()}`,
+      type: 'NODES_UPDATE',
+      senderId: this.config.nodeId,
+      senderName: this.config.displayName,
+      timestamp: new Date().toISOString(),
+      payload: {
+        type: 'SHIFT_SUBMISSION_RECEIVED',
+        department,
+        senderName,
+        rostersCount: rosters.length
+      }
+    });
+  }
+
+  /**
+   * Máy Client gửi đợt sắp ca lên Host (kết hợp tức thời qua WebRTC & dự phòng qua thư mục OneDrive)
+   */
+  public async sendShiftBatchToHost(data: {
+    department: string;
+    rosters: any[];
+    entries: [string, string][];
+    dateRange: string[];
+    username?: string;
+    displayName?: string;
+  }): Promise<{ sentViaWebRTC: boolean; sentViaFolder: boolean }> {
+    let sentViaWebRTC = false;
+    let sentViaFolder = false;
+
+    const actionMsg: IClusterMessage = {
+      id: `action_shift_${Date.now()}`,
+      type: 'ACTION',
+      senderId: this.config.nodeId,
+      senderName: data.displayName || this.config.displayName,
+      timestamp: new Date().toISOString(),
+      payload: {
+        actionType: 'ASSIGN_SHIFT_BATCH',
+        department: data.department,
+        rosters: data.rosters,
+        entries: data.entries,
+        dateRange: data.dateRange,
+        senderNodeId: this.config.nodeId,
+        senderName: data.displayName || this.config.displayName,
+        senderUsername: data.username || this.config.nodeId,
+        timestamp: new Date().toISOString()
+      }
+    };
+
+    // 1. Gửi tức thì qua kênh WebRTC RTCDataChannel nếu đã kết nối
+    try {
+      sentViaWebRTC = this.sendMessage('HOST', actionMsg);
+    } catch {}
+
+    // 2. Ghi dự phòng vào thư mục HR_Signaling_Data (OneDrive)
+    try {
+      if (folderSignaling.hasDirectoryHandle() && folderSignaling.isPermissionGranted()) {
+        await folderSignaling.writeShiftSubmission({
+          clientId: this.config.nodeId,
+          clientName: data.displayName || this.config.displayName,
+          department: data.department,
+          rosters: data.rosters,
+          entries: data.entries,
+          dateRange: data.dateRange,
+          senderUsername: data.username || this.config.nodeId,
+          timestamp: Date.now()
+        });
+        sentViaFolder = true;
+      }
+    } catch (err) {
+      console.warn('Ghi ca vào thư mục OneDrive thất bại:', err);
+    }
+
+    return { sentViaWebRTC, sentViaFolder };
   }
 
   public sendMessage(targetNodeId: string, msg: IClusterMessage): boolean {

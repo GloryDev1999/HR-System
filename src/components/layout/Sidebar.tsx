@@ -43,6 +43,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
   const { t } = useLanguage();
   const { session, currentRole, hasPermission } = useAuth();
   const isMasterUser = currentRole === 'AD System' || currentRole === 'HR Manager' || currentRole === 'HR Admin';
+  const isHostOrHR = session?.username?.toLowerCase() === 'kieu' || session?.username?.toLowerCase() === 'hoa' || currentRole === 'HR Manager';
 
   // v6: dùng Flag 0|1 thay boolean để index hợp lệ (IndexedDB chỉ cho Number/String/Date)
   const badgeCounts = useLiveQuery(async () => {
@@ -186,7 +187,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
           >
             <div className="flex items-center gap-2.5">
               <Briefcase className={`w-4 h-4 ${activePage === 'shiftAssignment' ? 'text-[#FF5B26]' : 'text-slate-400'}`} />
-              <span>{t('shiftAssignment')}</span>
+              <span>{isHostOrHR ? 'Tiếp Nhận Sắp Ca' : t('shiftAssignment')}</span>
             </div>
           </button>
         )}
