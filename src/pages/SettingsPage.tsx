@@ -290,18 +290,6 @@ export const SettingsPage: React.FC = () => {
         </button>
 
         <button
-          onClick={() => setActiveTab('formula')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
-            activeTab === 'formula'
-              ? 'bg-slate-900 text-white shadow-sm'
-              : 'text-slate-600 hover:bg-slate-100'
-          }`}
-        >
-          <SlidersHorizontal className="w-4 h-4 text-emerald-400" />
-          <span>Công Thức Năng Suất & Chuyên Cần</span>
-        </button>
-
-        <button
           onClick={() => setActiveTab('cluster')}
           className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
             activeTab === 'cluster'

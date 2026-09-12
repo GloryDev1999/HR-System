@@ -44,13 +44,24 @@ class FolderSignalingService {
   private messageListener: ((signal: ISignalFilePayload) => void) | null = null;
   private statusListeners: Set<(hasHandle: boolean, folderName: string, isGranted: boolean) => void> = new Set();
   private isPolling = false;
+  private lastProcessedTimes = new Map<string, number>();
 
   constructor() {
     this.restoreHandleFromStorage();
   }
 
   public isSupported(): boolean {
-    return typeof window !== 'undefined' && 'showDirectoryPicker' in window;
+    if (typeof window === 'undefined') return false;
+    if (!('showDirectoryPicker' in window)) return false;
+    // Microsoft Edge chặn File System Access API trên giao thức file:/// do origin bị gán là "null"
+    if (window.location.protocol.startsWith('file:') || window.origin === 'null') {
+      return false;
+    }
+    return true;
+  }
+
+  public isFileProtocol(): boolean {
+    return typeof window !== 'undefined' && (window.location.protocol.startsWith('file:') || window.origin === 'null');
   }
 
   public hasDirectoryHandle(): boolean {
@@ -369,13 +380,20 @@ class FolderSignalingService {
           if (!text.trim()) continue;
 
           const payload: ISignalFilePayload = JSON.parse(text);
-          if (payload && payload.type && this.messageListener) {
-            if (payload.type === 'HOST_ANNOUNCE') {
-              const age = Date.now() - (payload.timestamp || file.lastModified);
-              if (payload.timestamp > 0 && age < 15000) {
-                this.messageListener(payload);
-              }
-            } else {
+          if (!payload || !payload.type || !this.messageListener) continue;
+
+          const fileTime = payload.timestamp || file.lastModified;
+          const prevTime = this.lastProcessedTimes.get(name) || 0;
+
+          if (payload.type === 'HOST_ANNOUNCE') {
+            const age = Date.now() - fileTime;
+            if (payload.timestamp > 0 && age < 15000) {
+              this.messageListener(payload);
+            }
+          } else {
+            // Chỉ kích hoạt xử lý khi file có timestamp mới hơn lần xử lý trước
+            if (fileTime > prevTime) {
+              this.lastProcessedTimes.set(name, fileTime);
               this.messageListener(payload);
             }
           }
@@ -396,13 +414,12 @@ class FolderSignalingService {
   }
 
   /**
-   * Xóa file tín hiệu sau khi đã tiêu thụ xong để tránh xử lý lặp lại
+   * Đánh dấu đã tiêu thụ file tín hiệu (KHÔNG XÓA FILE để chống race condition OneDrive)
    */
   public async consumeFile(filename: string): Promise<void> {
-    if (!this.dirHandle) return;
-    try {
-      await this.dirHandle.removeEntry(filename);
-    } catch {}
+    // Tuyệt đối không xóa file JSON khỏi HR_Signaling_Data (OneDrive):
+    // Giữ nguyên file giúp người dùng kiểm tra trạng thái và ngăn ngừa xung đột đồng bộ file của OneDrive.
+    return Promise.resolve();
   }
 }
 

@@ -30,5 +30,5 @@ export const EMBEDDED_MANIFEST = {
       "hasVietnamese8": true
     }
   },
-  "generatedAt": "2026-09-12T08:14:59.326Z"
+  "generatedAt": "2026-09-12T08:22:28.815Z"
 };

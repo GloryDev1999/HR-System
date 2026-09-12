@@ -405,11 +405,11 @@ export const UserManagementPage: React.FC = () => {
                               <span>Hoạt động</span>
                             </span>
                           )}
-                          {acc.failedLoginAttempts && acc.failedLoginAttempts > 0 && !acc.isLocked && (
+                          {(acc.failedLoginAttempts ?? 0) > 0 && !acc.isLocked ? (
                             <span className="text-[10px] text-amber-600 font-semibold pl-1">
                               ⚠️ Sai {acc.failedLoginAttempts}/10 lần
                             </span>
-                          )}
+                          ) : null}
                         </div>
                       </td>
 

@@ -21,7 +21,10 @@ import {
   KeyRound,
   X,
   Lock,
-  Folder
+  Folder,
+  Link2,
+  Copy,
+  Check
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
@@ -64,6 +67,12 @@ export const Header: React.FC = () => {
   const [folderName, setFolderName] = useState(() => folderSignaling.getFolderName());
   const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
   const [folderHostCheck, setFolderHostCheck] = useState<{ online: boolean; hostInfo?: any; lastSeen?: number } | null>(null);
+  const [modalTab, setModalTab] = useState<'folder' | 'token'>('folder');
+  const [pairClientId, setPairClientId] = useState('CLIENT_01');
+  const [generatedPairToken, setGeneratedPairToken] = useState('');
+  const [inputPairToken, setInputPairToken] = useState('');
+  const [isPairWorking, setIsPairWorking] = useState(false);
+  const [hasCopiedPairToken, setHasCopiedPairToken] = useState(false);
 
   useEffect(() => {
     return folderSignaling.onStatusChange((has, name, isGranted) => {
@@ -782,8 +791,8 @@ export const Header: React.FC = () => {
           loading="eager"
         />
 
-        {/* Nút Chọn & Quản lý Thư Mục HR_Signaling_Data (Hiển thị trực tiếp cho MỌI role trên Header) */}
-        {folderSignaling.isSupported() && (
+        {/* Nút Chọn & Quản lý Thư Mục HR_Signaling_Data / Ghép Nối Mã Offline */}
+        {folderSignaling.isSupported() ? (
           !hasFolderHandle ? (
             <button
               onClick={handlePickOrGrantFolder}
@@ -813,6 +822,18 @@ export const Header: React.FC = () => {
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
             </button>
           )
+        ) : (
+          <button
+            onClick={() => {
+              setModalTab('token');
+              handleOpenFolderModal();
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 shadow-xs transition shrink-0"
+            title="Đang mở trực tiếp file://. Bấm để mở hộp thoại Ghép Nối Bằng Mã Offline (không cần web server)"
+          >
+            <Link2 className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Ghép Nối Mã Offline</span>
+          </button>
         )}
 
         {/* Nút Kết Nối 1-Chạm (1-Touch WebRTC Cluster Connect) */}
@@ -1068,90 +1089,340 @@ export const Header: React.FC = () => {
         </div>
       )}
 
-      {/* Modal Quản Lý Thư Mục HR_Signaling_Data */}
+      {/* Modal Quản Lý Thư Mục HR_Signaling_Data & Ghép Nối Mã Offline */}
       {isFolderModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full border border-slate-100 overflow-hidden space-y-0">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full border border-slate-100 overflow-hidden space-y-0">
+            {/* Modal Header */}
             <div className="p-4 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white flex items-center justify-between">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 bg-amber-500/20 rounded-xl border border-amber-500/30 text-amber-400">
-                  <Folder className="w-5 h-5" />
+                  {modalTab === 'folder' ? <Folder className="w-5 h-5" /> : <Link2 className="w-5 h-5 text-indigo-300" />}
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold">Thư Mục Tín Hiệu P2P</h3>
-                  <p className="text-[11px] text-slate-300">HR_Signaling_Data (OneDrive Offline)</p>
+                  <h3 className="text-sm font-bold">
+                    {modalTab === 'folder' ? 'Thư Mục Tín Hiệu P2P (OneDrive)' : 'Ghép Nối WebRTC P2P Bằng Mã (Offline)'}
+                  </h3>
+                  <p className="text-[11px] text-slate-300">
+                    {modalTab === 'folder' ? 'HR_Signaling_Data (Tự động trao đổi file)' : 'Dành cho tệp offline file:/// hoặc mạng không thư mục'}
+                  </p>
                 </div>
               </div>
               <button
-                onClick={() => setIsFolderModalOpen(false)}
+                onClick={() => {
+                  setIsFolderModalOpen(false);
+                  setGeneratedPairToken('');
+                  setInputPairToken('');
+                  setHasCopiedPairToken(false);
+                }}
                 className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-white/10 transition"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
+            {/* Tab Navigation */}
+            <div className="flex border-b border-slate-100 bg-slate-50 px-3 pt-2 gap-1 text-xs">
+              <button
+                type="button"
+                onClick={() => setModalTab('folder')}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-t-xl font-bold transition border-b-2 ${
+                  modalTab === 'folder'
+                    ? 'bg-white text-indigo-700 border-indigo-600 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800 border-transparent'
+                }`}
+              >
+                <Folder className="w-3.5 h-3.5" />
+                <span>Thư Mục Tín Hiệu (OneDrive)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setModalTab('token')}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-t-xl font-bold transition border-b-2 ${
+                  modalTab === 'token'
+                    ? 'bg-white text-indigo-700 border-indigo-600 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800 border-transparent'
+                }`}
+              >
+                <Link2 className="w-3.5 h-3.5" />
+                <span>Ghép Nối Mã Offline</span>
+              </button>
+            </div>
+
+            {/* Modal Body */}
             <div className="p-5 space-y-4 text-xs">
-              <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2.5">
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500 font-semibold">Tên thư mục đã chọn:</span>
-                  <span className="font-bold text-slate-800 font-mono bg-white px-2 py-0.5 rounded border border-slate-200">
-                    {folderName || 'HR_Signaling_Data'}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500 font-semibold">Quyền đọc/ghi (Edge):</span>
-                  <span className="font-bold text-emerald-600 flex items-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    Đã cấp quyền hoạt động
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500 font-semibold">Trạng thái Host Kiều:</span>
-                  {folderHostCheck?.online ? (
-                    <span className="font-bold text-emerald-600 flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                      Đang Online (Sẵn Sàng)
-                    </span>
+              {modalTab === 'folder' ? (
+                folderSignaling.isSupported() ? (
+                  <>
+                    <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2.5">
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500 font-semibold">Tên thư mục đã chọn:</span>
+                        <span className="font-bold text-slate-800 font-mono bg-white px-2 py-0.5 rounded border border-slate-200">
+                          {folderName || 'HR_Signaling_Data'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500 font-semibold">Quyền đọc/ghi (Edge):</span>
+                        <span className="font-bold text-emerald-600 flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Đã cấp quyền hoạt động
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500 font-semibold">Trạng thái Host Kiều:</span>
+                        {folderHostCheck?.online ? (
+                          <span className="font-bold text-emerald-600 flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                            Đang Online (Sẵn Sàng)
+                          </span>
+                        ) : (
+                          <span className="font-bold text-amber-600 flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-amber-500" />
+                            Chưa online hoặc đang chờ tín hiệu
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-indigo-50/60 rounded-2xl border border-indigo-100 text-slate-600 space-y-1">
+                      <p className="font-bold text-indigo-900">💡 Tự Động Trao Đổi File Tín Hiệu:</p>
+                      <p>• Khi Host Kiều bật, file trạng thái <code>host_status.json</code> được duy trì liên tục.</p>
+                      <p>• Máy Client ghi tín hiệu bắt tay vào <code>HR_Signaling_Data</code> để tự động kết nối P2P WebRTC.</p>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const picked = await folderSignaling.pickDirectory();
+                          if (picked) {
+                            success('Đã đổi thư mục', `Đã liên kết với thư mục "${folderSignaling.getFolderName()}"`);
+                            setIsFolderModalOpen(false);
+                          }
+                        }}
+                        className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition"
+                      >
+                        Chọn Thư Mục Khác
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setIsFolderModalOpen(false);
+                          await handleOneTouchConnect();
+                        }}
+                        className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold rounded-xl transition shadow-sm"
+                      >
+                        ⚡ Bắt Tay Kết Nối Lại
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="p-3.5 bg-amber-50 rounded-2xl border border-amber-200 space-y-2 text-amber-900">
+                      <p className="font-bold flex items-center gap-1.5">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                        Đang mở file trực tiếp (file:///)
+                      </p>
+                      <p className="leading-relaxed text-[11px] text-amber-800">
+                        Chính sách bảo mật của Chromium/Edge chặn API Chọn Thư Mục khi mở file <code>file:///</code> để chống tấn công sandbox.
+                      </p>
+                    </div>
+                    <div className="p-3 bg-indigo-50/70 rounded-2xl border border-indigo-100 space-y-2 text-indigo-950">
+                      <p className="font-bold">2 Lựa chọn kết nối khuyên dùng:</p>
+                      <div className="space-y-1.5 text-[11px]">
+                        <p>
+                          <b>1. Ghép nối tức thời bằng Mã Token:</b> Bấm tab <b>"Ghép Nối Mã Offline"</b> ở trên để trao đổi mã một lần là kết nối WebRTC ngay lập tức mà không cần web server.
+                        </p>
+                        <p>
+                          <b>2. Sử dụng thư mục OneDrive tự động:</b> Mở ứng dụng qua máy chủ nội bộ (ví dụ: <code>http://localhost:3000</code> hoặc chạy <code>npm run serve</code>). Khi mở bằng URL <code>http://...</code>, trình duyệt Edge sẽ mở khoá toàn diện API Thư Mục.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex justify-end pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setModalTab('token')}
+                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition shadow-sm flex items-center gap-1.5"
+                      >
+                        <Link2 className="w-3.5 h-3.5" />
+                        <span>Chuyển Sang Ghép Nối Mã Token</span>
+                      </button>
+                    </div>
+                  </div>
+                )
+              ) : (
+                /* Tab 2: Token Offline Pairing */
+                <div className="space-y-4">
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Dành cho môi trường mở trực tiếp file <code>dist/index.html</code> (không qua web server). Hai máy chỉ cần sao chép mã token qua Zalo/Teams để bắt tay RTCDataChannel tức thời.
+                  </p>
+
+                  {isClusterHost ? (
+                    <div className="space-y-4">
+                      <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl space-y-2">
+                        <div className="text-xs font-bold text-amber-900 flex items-center justify-between">
+                          <span>1. Chọn máy Client muốn kết nối:</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={pairClientId}
+                            onChange={(e) => setPairClientId(e.target.value)}
+                            className="px-3 py-1.5 bg-white border border-amber-300 rounded-xl text-xs font-bold text-slate-800 grow"
+                          >
+                            {clusterService.getConfig().nodes.filter(n => n.role !== 'HOST').map(n => (
+                              <option key={n.id} value={n.id}>{n.name} ({n.id})</option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              setIsPairWorking(true);
+                              try {
+                                const tok = await clusterService.createPairingOfferToken(pairClientId);
+                                setGeneratedPairToken(tok);
+                                success('Đã tạo mã kết nối Host', 'Vui lòng sao chép gửi cho Client.');
+                              } catch (err: any) {
+                                error('Lỗi tạo mã', err.message);
+                              } finally {
+                                setIsPairWorking(false);
+                              }
+                            }}
+                            disabled={isPairWorking}
+                            className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs rounded-xl transition shrink-0 disabled:opacity-50"
+                          >
+                            {isPairWorking ? 'Đang tạo...' : 'Tạo Mã Gửi Client'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {generatedPairToken && (
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                            <span>Mã Token gửi máy Client:</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(generatedPairToken);
+                                setHasCopiedPairToken(true);
+                                setTimeout(() => setHasCopiedPairToken(false), 2000);
+                                success('Đã sao chép mã token vào bộ nhớ tạm');
+                              }}
+                              className="flex items-center gap-1 text-[11px] text-indigo-600 hover:text-indigo-700 font-bold"
+                            >
+                              {hasCopiedPairToken ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                              <span>{hasCopiedPairToken ? 'Đã sao chép' : 'Sao chép mã'}</span>
+                            </button>
+                          </div>
+                          <textarea
+                            readOnly
+                            value={generatedPairToken}
+                            rows={3}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-mono text-slate-700 break-all select-all"
+                          />
+                        </div>
+                      )}
+
+                      <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                        <label className="block text-xs font-bold text-slate-700">
+                          2. Dán Mã Phản Hồi (Answer Token) từ Client gửi về:
+                        </label>
+                        <textarea
+                          value={inputPairToken}
+                          onChange={(e) => setInputPairToken(e.target.value)}
+                          placeholder="Dán mã phản hồi do máy trạm Client tạo ra vào đây..."
+                          rows={3}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-mono text-slate-800"
+                        />
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!inputPairToken.trim()) return;
+                            setIsPairWorking(true);
+                            try {
+                              await clusterService.acceptAnswerToken(pairClientId, inputPairToken);
+                              success('Kết nối thành công!', `Máy chủ Host đã bắt tay thành công với ${pairClientId}.`);
+                              setIsFolderModalOpen(false);
+                            } catch (err: any) {
+                              error('Lỗi nạp mã phản hồi', err.message);
+                            } finally {
+                              setIsPairWorking(false);
+                            }
+                          }}
+                          disabled={isPairWorking || !inputPairToken.trim()}
+                          className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition shadow-sm disabled:opacity-50"
+                        >
+                          {isPairWorking ? 'Đang bắt tay...' : 'Chốt Bắt Tay Kết Nối'}
+                        </button>
+                      </div>
+                    </div>
                   ) : (
-                    <span className="font-bold text-amber-600 flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-amber-500" />
-                      Chưa online hoặc đang chờ tín hiệu
-                    </span>
+                    <div className="space-y-4">
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-bold text-slate-700">
+                          1. Dán Mã Token nhận được từ Host Kiều:
+                        </label>
+                        <textarea
+                          value={inputPairToken}
+                          onChange={(e) => setInputPairToken(e.target.value)}
+                          placeholder="Dán mã token từ máy Host Kiều vào đây..."
+                          rows={3}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-mono text-slate-800"
+                        />
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!inputPairToken.trim()) return;
+                            setIsPairWorking(true);
+                            try {
+                              const ans = await clusterService.acceptOfferTokenAndCreateAnswer(inputPairToken);
+                              setGeneratedPairToken(ans);
+                              success('Đã tạo mã phản hồi!', 'Hãy sao chép mã này gửi lại cho Host Kiều để hoàn tất kết nối.');
+                            } catch (err: any) {
+                              error('Lỗi xử lý mã Host', err.message);
+                            } finally {
+                              setIsPairWorking(false);
+                            }
+                          }}
+                          disabled={isPairWorking || !inputPairToken.trim()}
+                          className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition shadow-sm disabled:opacity-50"
+                        >
+                          {isPairWorking ? 'Đang tạo mã phản hồi...' : 'Tạo Mã Phản Hồi Gửi Lại Cho Host'}
+                        </button>
+                      </div>
+
+                      {generatedPairToken && (
+                        <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                          <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                            <span>2. Mã phản hồi gửi lại cho Host Kiều:</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(generatedPairToken);
+                                setHasCopiedPairToken(true);
+                                setTimeout(() => setHasCopiedPairToken(false), 2000);
+                                success('Đã sao chép mã phản hồi vào bộ nhớ tạm');
+                              }}
+                              className="flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-700 font-bold"
+                            >
+                              {hasCopiedPairToken ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                              <span>{hasCopiedPairToken ? 'Đã sao chép' : 'Sao chép mã'}</span>
+                            </button>
+                          </div>
+                          <textarea
+                            readOnly
+                            value={generatedPairToken}
+                            rows={3}
+                            className="w-full px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] font-mono text-emerald-900 break-all select-all"
+                          />
+                          <p className="text-[11px] text-emerald-700">
+                            Sau khi Host Kiều dán mã này vào máy chủ, kênh RTCDataChannel sẽ lập tức mở và chuyển sang màu xanh 🟢!
+                          </p>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
-              </div>
-
-              <div className="p-3 bg-indigo-50/60 rounded-2xl border border-indigo-100 text-slate-600 space-y-1">
-                <p className="font-bold text-indigo-900">💡 Kiến trúc P2P Offline chuẩn:</p>
-                <p>• Trao đổi tín hiệu SDP qua file JSON trong OneDrive mà không cần Web Server hay mở cổng OS.</p>
-                <p>• Hoạt động an toàn 100% trong môi trường máy tính nhà máy Leggett & Platt có CrowdStrike EDR.</p>
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const picked = await folderSignaling.pickDirectory();
-                    if (picked) {
-                      success('Đã đổi thư mục', `Đã liên kết với thư mục "${folderSignaling.getFolderName()}"`);
-                      setIsFolderModalOpen(false);
-                    }
-                  }}
-                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition"
-                >
-                  Chọn Thư Mục Khác
-                </button>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setIsFolderModalOpen(false);
-                    await handleOneTouchConnect();
-                  }}
-                  className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold rounded-xl transition shadow-sm"
-                >
-                  ⚡ Bắt Tay Kết Nối Lại
-                </button>
-              </div>
+              )}
             </div>
           </div>
         </div>

@@ -43,6 +43,7 @@ class WebRTCClusterService {
   private messageListeners = new Set<MessageHandler>();
   private statusListeners = new Set<StatusChangeHandler>();
   private currentStatus: NodeConnectionStatus = 'IDLE';
+  private processedSignals = new Set<string>();
 
   private signalingChannel: BroadcastChannel | null = null;
   private connectTimeoutTimer: any = null;
@@ -147,13 +148,34 @@ class WebRTCClusterService {
   private async handleSignalingMessage(signal: ISignalEnvelope): Promise<void> {
     if (!signal || !signal.type) return;
 
+    // Lọc trùng lặp tín hiệu dựa theo loại, id và timestamp
+    const sigKey = `${signal.type}_${signal.clientId || signal.targetClient || signal.fromHost}_${signal.timestamp}`;
+    if (signal.type !== 'HOST_ANNOUNCE') {
+      if (this.processedSignals.has(sigKey)) return;
+      this.processedSignals.add(sigKey);
+      if (this.processedSignals.size > 200) {
+        const first = this.processedSignals.values().next().value;
+        if (first) this.processedSignals.delete(first);
+      }
+    }
+
     // 1. Host nhận tín hiệu chào hỏi từ máy Client
     if (this.config.nodeRole === 'HOST' && signal.type === 'CLIENT_HELLO') {
       const clientId = signal.clientId;
       if (!clientId || clientId === this.config.nodeId) return;
 
-      // Tiêu thụ file hello
-      folderSignaling.consumeFile(`hello_${clientId}.json`).catch(() => {});
+      // Nếu Client này đã có RTCDataChannel đang mở và hoạt động tốt, tuyệt đối không ngắt kết nối!
+      const existingDc = this.dataChannels.get(clientId);
+      if (existingDc && existingDc.readyState === 'open') {
+        this.sendMessage(clientId, {
+          id: `ack_${Date.now()}`,
+          type: 'HANDSHAKE_ACK',
+          senderId: this.config.nodeId,
+          senderName: this.config.displayName,
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
 
       try {
         const offerJson = await this.createOfferForClient(clientId);
@@ -172,8 +194,11 @@ class WebRTCClusterService {
     // 2. Client nhận gói Offer SDP từ Host
     if (this.config.nodeRole === 'CLIENT' && signal.type === 'OFFER_SDP') {
       if (signal.targetClient === this.config.nodeId && signal.offer) {
-        // Tiêu thụ file offer
-        folderSignaling.consumeFile(`offer_${this.config.nodeId}.json`).catch(() => {});
+        // Nếu đã có RTCDataChannel với Host đang mở, giữ nguyên kết nối
+        const existingDc = this.dataChannels.get('HOST');
+        if (existingDc && existingDc.readyState === 'open') {
+          return;
+        }
 
         try {
           const answerJson = await this.receiveOfferAndCreateAnswer(signal.offer);
@@ -194,8 +219,10 @@ class WebRTCClusterService {
     if (this.config.nodeRole === 'HOST' && signal.type === 'ANSWER_SDP') {
       const clientId = signal.clientId;
       if (clientId && signal.answer) {
-        // Tiêu thụ file answer
-        folderSignaling.consumeFile(`answer_${clientId}.json`).catch(() => {});
+        const existingDc = this.dataChannels.get(clientId);
+        if (existingDc && existingDc.readyState === 'open') {
+          return;
+        }
 
         try {
           await this.receiveAnswer(clientId, signal.answer);
@@ -551,6 +578,23 @@ class WebRTCClusterService {
   private handleIncomingMessage(senderNodeId: string, msg: IClusterMessage): void {
     this.messageListeners.forEach(fn => fn(msg));
 
+    // Xử lý P2P Ping/Pong giữ nhịp RTCDataChannel liên tục
+    if (msg.type === 'PING') {
+      this.sendMessage(senderNodeId, {
+        id: `pong_${Date.now()}`,
+        type: 'PONG',
+        senderId: this.config.nodeId,
+        senderName: this.config.displayName,
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    if (msg.type === 'PONG') {
+      this.updateNodeStatus(senderNodeId, 'CONNECTED');
+      return;
+    }
+
     // Xử lý Handshake & Handshake ACK
     if (msg.type === 'HANDSHAKE') {
       this.updateNodeStatus(senderNodeId, 'CONNECTED');
@@ -624,7 +668,15 @@ class WebRTCClusterService {
         };
         this.broadcast(msg);
       }
-    }, 8000);
+      // Bắn nhịp Ping giữ kết nối DataChannel không bao giờ bị rơi vào trạng thái ngủ
+      this.broadcast({
+        id: `ping_${Date.now()}`,
+        type: 'PING',
+        senderId: this.config.nodeId,
+        senderName: this.config.displayName,
+        timestamp: new Date().toISOString()
+      });
+    }, 4000);
   }
 
   private async processClientActionAtHost(senderNodeId: string, msg: IClusterMessage): Promise<void> {
