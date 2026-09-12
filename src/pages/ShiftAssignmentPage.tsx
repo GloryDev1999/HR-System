@@ -119,7 +119,8 @@ export const ShiftAssignmentPage: React.FC = () => {
   const [selectedDeptReview, setSelectedDeptReview] = useState<string>('ALL');
 
   // Trạng thái cho chế độ sắp ca thủ công
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchManualTerm, setSearchManualTerm] = useState('');
+  const [searchReviewTerm, setSearchReviewTerm] = useState('');
   const [selectedDept, setSelectedDept] = useState<string>(departmentScope || 'Production');
   const [mode, setMode] = useState<'day' | 'week' | 'month'>('day');
   const [baseDate, setBaseDate] = useState<string>(toDateStr(new Date()));
@@ -134,11 +135,12 @@ export const ShiftAssignmentPage: React.FC = () => {
   const shiftSubmissionsSetting = useLiveQuery(() => db.settings.get('shift_submissions'), []);
   const shiftSubmissions: any[] = shiftSubmissionsSetting?.value || [];
 
-  // Thống kê tiến độ nộp ca của 3 bộ phận trọng yếu
+  // Thống kê tiến độ nộp ca của 3 bộ phận trọng yếu theo ngày được chọn (baseDate)
   const deptStats = useMemo(() => {
     const getDeptInfo = (dept: string, adminName: string, adminUser: string) => {
       const deptEmployees = employees.filter(e => e.department === dept && e.shiftClassId !== OFFICE_EXCLUDED_SHIFT);
-      const deptRosters = shiftRosters.filter(r => r.department === dept);
+      // Lọc chính xác theo ngày đang đối soát (baseDate) để số liệu không bị cộng dồn toàn thời gian
+      const deptRosters = shiftRosters.filter(r => r.department === dept && (!baseDate || r.date === baseDate));
       const assignedEmpIds = new Set(deptRosters.map(r => r.employeeId));
       const shift1 = deptRosters.filter(r => r.shiftCode === 'SHIFT_1').length;
       const shift2 = deptRosters.filter(r => r.shiftCode === 'SHIFT_2').length;
@@ -166,7 +168,7 @@ export const ShiftAssignmentPage: React.FC = () => {
       qc: getDeptInfo('QC', 'Nguyệt Ánh (QC Admin)', 'nguyetanh'),
       prd: getDeptInfo('Production', 'Hân (Production Admin)', 'han'),
     };
-  }, [employees, shiftRosters, shiftSubmissions]);
+  }, [employees, shiftRosters, shiftSubmissions, baseDate]);
 
   // Danh sách nhân viên trong chế độ sắp ca thủ công
   const visibleEmployees = useMemo(() => {
@@ -178,12 +180,12 @@ export const ShiftAssignmentPage: React.FC = () => {
     } else if (selectedDept !== 'ALL') {
       list = list.filter(e => e.department === selectedDept);
     }
-    if (searchTerm) {
-      const q = searchTerm.toLowerCase();
+    if (searchManualTerm) {
+      const q = searchManualTerm.toLowerCase();
       list = list.filter(e => e.employeeId.toLowerCase().includes(q) || e.fullName.toLowerCase().includes(q));
     }
     return list;
-  }, [employees, departmentScope, selectedDept, searchTerm]);
+  }, [employees, departmentScope, selectedDept, searchManualTerm]);
 
   // Lấy ca hiện tại cho mỗi NV vào ngày baseDate
   const currentShiftMap = useMemo(() => {
@@ -201,13 +203,13 @@ export const ShiftAssignmentPage: React.FC = () => {
     return shiftRosters.filter(r => {
       if (selectedDeptReview !== 'ALL' && r.department !== selectedDeptReview) return false;
       if (baseDate && r.date !== baseDate) return false;
-      if (searchTerm) {
-        const q = searchTerm.toLowerCase();
+      if (searchReviewTerm) {
+        const q = searchReviewTerm.toLowerCase();
         if (!r.employeeId.toLowerCase().includes(q) && !r.fullName.toLowerCase().includes(q)) return false;
       }
       return true;
     });
-  }, [shiftRosters, selectedDeptReview, baseDate, searchTerm]);
+  }, [shiftRosters, selectedDeptReview, baseDate, searchReviewTerm]);
 
   const toggleSelectAll = () => {
     if (selectedEmployeeIds.size === visibleEmployees.length) {
@@ -265,15 +267,20 @@ export const ShiftAssignmentPage: React.FC = () => {
         let restHours = 16;
         let violationDetails: string | undefined;
 
-        if (prevEnd === '22:00') {
-          if (shiftCode === 'SHIFT_1') {
-            isViolating = true;
-            restHours = 8;
-            violationDetails = 'Nghỉ 8 giờ giữa Ca 2 (kết thúc 22h) và Ca 1 (bắt đầu 06h) < 12h';
-          } else if (shiftCode === 'OFFICE_M_F' || (shiftCode as any) === 'OFFICE_M_S') {
-            isViolating = true;
-            restHours = 9.5;
-            violationDetails = 'Nghỉ 9.5 giờ giữa Ca 2 (kết thúc 22h) và Giờ hành chính (bắt đầu 07h30) < 12h';
+        if (prevEnd && start) {
+          try {
+            const prevEndIso = `${prevDate}T${prevEnd.length === 5 ? prevEnd : prevEnd.slice(0, 5)}:00`;
+            const curStartIso = `${dateStr}T${start.length === 5 ? start : start.slice(0, 5)}:00`;
+            const diffMs = new Date(curStartIso).getTime() - new Date(prevEndIso).getTime();
+            if (!isNaN(diffMs) && diffMs > 0) {
+              restHours = Math.round((diffMs / (1000 * 60 * 60)) * 10) / 10;
+              if (restHours < 12) {
+                isViolating = true;
+                violationDetails = `Nghỉ ${restHours}h giữa ca trước (${prevEnd}) và ca mới (${start}) < 12h theo quy định BLLĐ`;
+              }
+            }
+          } catch {
+            restHours = 16;
           }
         }
 
@@ -650,8 +657,8 @@ export const ShiftAssignmentPage: React.FC = () => {
                 <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  value={searchReviewTerm}
+                  onChange={(e) => setSearchReviewTerm(e.target.value)}
                   placeholder="Tìm mã NV, tên NV..."
                   className="pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs w-48 focus:outline-none focus:border-indigo-500"
                 />
@@ -783,8 +790,8 @@ export const ShiftAssignmentPage: React.FC = () => {
                   <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
+                    value={searchManualTerm}
+                    onChange={(e) => setSearchManualTerm(e.target.value)}
                     placeholder="Tìm tên, mã NV..."
                     className="pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs w-56 focus:outline-none focus:border-orange-500"
                   />

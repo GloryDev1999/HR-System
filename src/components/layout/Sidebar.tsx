@@ -113,7 +113,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
         )}
 
         {/* Tỷ Lệ Đạt Năng Suất & Chất Lượng */}
-        {(hasPermission('VIEW_PRODUCTIVITY_QUALITY') || hasPermission('MANAGE_EMPLOYEES') || hasPermission('MANAGE_TIMESHEET')) && (
+        {hasPermission('VIEW_PRODUCTIVITY_QUALITY') && (
           <button
             onClick={() => onSelectPage('productivityQuality')}
             className={menuItemClass(activePage === 'productivityQuality')}

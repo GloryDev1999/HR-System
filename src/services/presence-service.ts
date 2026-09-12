@@ -191,6 +191,19 @@ class PresenceManager {
     }
 
     if (changed) {
+      // Đọc lại fresh từ localStorage để hòa trộn, bảo vệ các presence mới mà tab khác vừa cập nhật
+      const fresh = this.getAllPresences();
+      for (const [key, user] of Object.entries(all)) {
+        if (fresh[key] && fresh[key].lastActive > user.lastActive) {
+          all[key] = fresh[key];
+        }
+      }
+      // Giữ lại các user mới mà fresh có nhưng all chưa kịp có
+      for (const [key, user] of Object.entries(fresh)) {
+        if (!all[key] && now - user.lastActive <= OFFLINE_THRESHOLD_MS) {
+          all[key] = user;
+        }
+      }
       this.savePresences(all);
     }
     this.notifyListeners();
@@ -224,11 +237,16 @@ class PresenceManager {
   public recordRemotePresence(presence: ActiveUserPresence): void {
     if (!presence?.username) return;
     const all = this.getAllPresences();
-    all[presence.username.toLowerCase()] = {
-      ...presence,
-      lastActive: Date.now()
-    };
-    this.savePresences(all);
+    const key = presence.username.toLowerCase();
+    const existing = all[key];
+    const newActive = presence.lastActive || Date.now();
+    if (!existing || newActive >= existing.lastActive) {
+      all[key] = {
+        ...presence,
+        lastActive: newActive
+      };
+      this.savePresences(all);
+    }
     this.notifyListeners();
   }
 

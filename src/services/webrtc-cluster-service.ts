@@ -405,14 +405,21 @@ class WebRTCClusterService {
       if (this.currentStatus === 'SIGNALING') {
         const recheck = await folderSignaling.checkHostStatus();
         if (recheck.online) {
-          // Host thực tế đang online trong thư mục! Gia hạn và phát lại CLIENT_HELLO
-          this.setStatus('SIGNALING', 'Host Kiều đang Online. Đang hoàn tất bắt tay SDP...');
+          // Host thực tế đang online trong thư mục! Gia hạn thêm 10s và phát lại CLIENT_HELLO
+          this.setStatus('SIGNALING', 'Host Kiều đang Online. Đang chờ hoàn tất bắt tay SDP...');
           this.emitSignal({
             type: 'CLIENT_HELLO',
             clientId: this.config.nodeId,
             clientName: this.config.displayName,
             timestamp: Date.now()
           });
+
+          // Gia hạn timeout dứt điểm (10s tiếp theo nếu vẫn không mở được RTCDataChannel)
+          this.connectTimeoutTimer = setTimeout(() => {
+            if (this.currentStatus === 'SIGNALING') {
+              this.setStatus('HOST_OFFLINE', 'Không thể hoàn tất bắt tay WebRTC với Host Kiều. Hệ thống hoạt động ở chế độ Cục Bộ (Local-First).');
+            }
+          }, 10000);
           return;
         }
         this.setStatus('HOST_OFFLINE', 'Host Kiều chưa online hoặc chưa khởi chạy. Hệ thống đang hoạt động ở chế độ Cục Bộ (Local-First).');
@@ -575,6 +582,10 @@ class WebRTCClusterService {
     channel.onclose = () => {
       this.updateNodeStatus(remoteNodeId, 'DISCONNECTED');
       this.dataChannels.delete(remoteNodeId);
+      const pc = this.peerConnections.get(remoteNodeId);
+      if (pc) {
+        try { pc.close(); } catch {}
+      }
       this.peerConnections.delete(remoteNodeId);
 
       if (this.config.nodeRole === 'CLIENT') {

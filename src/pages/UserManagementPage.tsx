@@ -389,7 +389,7 @@ export const UserManagementPage: React.FC = () => {
                       {/* Active / Lock State */}
                       <td className="py-3 px-4">
                         <div className="flex flex-col gap-1">
-                          {acc.isLocked || (acc.failedLoginAttempts && acc.failedLoginAttempts >= 10) ? (
+                          {Boolean(acc.isLocked || ((acc.failedLoginAttempts || 0) >= 10)) ? (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-100 text-rose-700 border border-rose-200">
                               <Lock className="w-3 h-3 text-rose-600" />
                               <span>Đã khóa ({acc.failedLoginAttempts || 10}/10 lần sai)</span>
@@ -443,7 +443,7 @@ export const UserManagementPage: React.FC = () => {
                               <span>Sửa</span>
                             </button>
 
-                            {(acc.isLocked || (acc.failedLoginAttempts && acc.failedLoginAttempts >= 10) || !acc.active) && (
+                            {Boolean(acc.isLocked || ((acc.failedLoginAttempts || 0) >= 10) || !acc.active) && (
                               <button
                                 onClick={() => handleDirectUnlock(acc)}
                                 className="flex items-center gap-1 px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg font-bold text-xs transition"
