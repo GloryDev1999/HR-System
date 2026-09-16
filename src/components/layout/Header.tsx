@@ -14,17 +14,12 @@ import {
   AlertTriangle,
   CalendarClock,
   Sparkles,
-  Radio,
-  Server,
-  Wifi,
-  WifiOff,
+  RefreshCw,
   KeyRound,
   X,
   Lock,
   Folder,
-  Link2,
-  Copy,
-  Check
+  FileJson
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
@@ -32,14 +27,12 @@ import { useToast } from '../../context/ToastContext';
 import { useModal } from '../../context/ModalContext';
 import { exportTimesheetToExcel } from '../../services/excel-exporter';
 import { exportDatabaseToSnapshot, importDatabaseFromSnapshot } from '../../services/db-sync';
+import { jsonSyncService, ScanResult } from '../../services/json-sync-service';
 import { db } from '../../db';
 import { parseTimesheetFile } from '../../services/timesheet-parser-service';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { daysUntil as calcDaysUntil } from '../../services/pay-period';
 import { PresenceBar } from './PresenceBar';
-import { clusterService } from '../../services/webrtc-cluster-service';
-import { folderSignaling } from '../../services/folder-signaling-service';
-import { NodeConnectionStatus } from '../../types/cluster';
 
 export const Header: React.FC = () => {
   const { session, currentRole, hasPermission, logout, refreshPermissions, departmentScope } = useAuth();
@@ -58,106 +51,119 @@ export const Header: React.FC = () => {
   // Chỉ riêng phòng Nhân sự (HR Manager / HR Admin) mới được xem thông báo hợp đồng
   const isHR = currentRole === 'HR Manager' || currentRole === 'HR Admin';
 
-  // Quản trị trạng thái Cụm Mạng P2P WebRTC (Star-Topology)
-  const [clusterStatus, setClusterStatus] = useState<NodeConnectionStatus>(() => clusterService.getStatus());
-  
-  // Quản lý Thư Mục Tín Hiệu WebRTC (HR_Signaling_Data trên OneDrive)
-  const [hasFolderHandle, setHasFolderHandle] = useState(() => folderSignaling.hasDirectoryHandle());
-  const [isFolderGranted, setIsFolderGranted] = useState(() => folderSignaling.isPermissionGranted());
-  const [folderName, setFolderName] = useState(() => folderSignaling.getFolderName());
-  const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
-  const [folderHostCheck, setFolderHostCheck] = useState<{ online: boolean; hostInfo?: any; lastSeen?: number } | null>(null);
-  const [modalTab, setModalTab] = useState<'folder' | 'token'>('folder');
-  const [pairClientId, setPairClientId] = useState('CLIENT_01');
-  const [generatedPairToken, setGeneratedPairToken] = useState('');
-  const [inputPairToken, setInputPairToken] = useState('');
-  const [isPairWorking, setIsPairWorking] = useState(false);
-  const [hasCopiedPairToken, setHasCopiedPairToken] = useState(false);
+  // Đồng bộ thuần JSON qua thư mục OneDrive HR_Data (thay Star-Topology RTC)
+  const [syncSupported] = useState(() => jsonSyncService.folder.isSupported());
+  const [hasSyncHandle, setHasSyncHandle] = useState(() => jsonSyncService.folder.hasHandle());
+  const [isSyncGranted, setIsSyncGranted] = useState(() => jsonSyncService.folder.isGranted());
+  const [syncFolderName, setSyncFolderName] = useState(() => jsonSyncService.folder.getFolderName());
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  const [scanResult, setScanResult] = useState<ScanResult | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+
+  const pendingCount = (scanResult?.pendingDept.length || 0) + (scanResult?.pendingMaster.length || 0);
 
   useEffect(() => {
-    return folderSignaling.onStatusChange((has, name, isGranted) => {
-      setHasFolderHandle(has);
-      setFolderName(name);
-      setIsFolderGranted(isGranted);
+    return jsonSyncService.folder.onStatus((s) => {
+      setHasSyncHandle(s.hasHandle);
+      setSyncFolderName(s.folderName);
+      setIsSyncGranted(s.granted);
     });
   }, []);
 
-  // Xác định chính xác quyền Host: Mặc định là 'kieu' (hoặc 'glory' nếu được cấu hình trong Cài Đặt)
-  // Các tài khoản trạm (vinh, nguyetanh, han, hoa...) tuyệt đối không bị nhận nhầm làm Host
-  const isClusterHost = session ? (
-    session.username.toLowerCase() === 'kieu' ||
-    (session.username.toLowerCase() === 'glory' && clusterService.isHostConfigured())
-  ) : false;
-
+  // Tự động quét thư mục HR_Data mỗi 8s khi đã cấp quyền (OneDrive sync nền)
   useEffect(() => {
-    return clusterService.onStatusChange((status) => {
-      setClusterStatus(status);
-    });
-  }, []);
+    if (!hasSyncHandle || !isSyncGranted) return;
+    return jsonSyncService.startAutoScan((r) => setScanResult(r), 8000);
+  }, [hasSyncHandle, isSyncGranted]);
 
-  // Tự động kích hoạt: Kieu tự động host Master DB; Máy trạm tự động tìm kiếm kết nối tới Kieu
-  useEffect(() => {
-    if (session) {
-      if (isClusterHost) {
-        clusterService.quickStartAsHost().catch(console.error);
-      } else {
-        // Tự động kết nối 1-chạm tới Host Kiều khi đăng nhập máy trạm
-        clusterService.quickConnectAsClient(session.username, session.displayName).catch(console.error);
-      }
-    }
-  }, [session, isClusterHost]);
+  const isMasterUser = session ? jsonSyncService.isMasterUser(session.username) : false;
+  const isDeptUser = session ? !!jsonSyncService.getDeptFilename(session.username) : false;
 
-  const handlePickOrGrantFolder = async () => {
+  const handleConnectSyncFolder = async () => {
     try {
-      let ok = false;
-      if (hasFolderHandle && !isFolderGranted) {
-        ok = await folderSignaling.requestPermission();
-      } else {
-        ok = await folderSignaling.pickDirectory();
-      }
-
+      const ok = await jsonSyncService.folder.connect();
       if (ok) {
-        success('Đã cấp quyền thư mục', `Đã liên kết thành công với thư mục "${folderSignaling.getFolderName()}".`);
-        if (isClusterHost) {
-          clusterService.quickStartAsHost().catch(console.error);
-        } else if (session) {
-          clusterService.quickConnectAsClient(session.username, session.displayName).catch(console.error);
-        }
+        success('Đã kết nối thư mục', `Đã liên kết "${jsonSyncService.folder.getFolderName()}". Chỉ cần cấp quyền 1 lần, các lần sau bấm 1 nút.`);
+        await handleScanNow();
       }
     } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        error('Lỗi chọn thư mục', err.message || 'Không thể liên kết thư mục.');
-      }
+      if (err?.name !== 'AbortError') error('Lỗi thư mục', err?.message || 'Không thể liên kết thư mục.');
     }
   };
 
-  const handleOpenFolderModal = async () => {
-    const check = await folderSignaling.checkHostStatus();
-    setFolderHostCheck(check);
-    setIsFolderModalOpen(true);
+  const handleScanNow = async () => {
+    setIsScanning(true);
+    try {
+      const r = await jsonSyncService.scanFolder();
+      setScanResult(r);
+      if ((r.pendingDept.length + r.pendingMaster.length) === 0) info('Không có gì mới', 'Thư mục HR_Data đã đồng bộ.');
+    } catch (err: any) {
+      error('Quét thất bại', err?.message || 'Không đọc được thư mục.');
+    } finally {
+      setIsScanning(false);
+    }
   };
 
-  const handleOneTouchConnect = async () => {
+  const handleOpenSyncModal = async () => {
+    setIsSyncModalOpen(true);
+    await handleScanNow();
+  };
+
+  const [ingestingFile, setIngestingFile] = useState<string | null>(null);
+  const syncImportRef = useRef<HTMLInputElement>(null);
+
+  const handleIngest = async (file: string, kind: 'dept' | 'master') => {
     if (!session) return;
-
-    // Hỗ trợ tự động cấp quyền thư mục HR_Signaling_Data nếu chưa cấp
-    if (folderSignaling.isSupported() && (!folderSignaling.hasDirectoryHandle() || !folderSignaling.isPermissionGranted())) {
-      try {
-        const ok = await folderSignaling.requestPermission();
-        if (ok) {
-          success('Đã cấp quyền thư mục', `Đã liên kết HR_Signaling_Data. File JSON tín hiệu sẽ tự động trao đổi qua OneDrive.`);
-        }
-      } catch (err) {
-        console.warn('Chưa cấp quyền thư mục:', err);
+    setIngestingFile(file);
+    try {
+      const res = kind === 'dept'
+        ? await jsonSyncService.ingestDeptFile(file, { username: session.username, displayName: session.displayName })
+        : await jsonSyncService.ingestMasterFile(file, { username: session.username, displayName: session.displayName });
+      if (res.blocked.length > 0) {
+        warning('Tiếp nhận có chặn', `${res.note}. Áp dụng ${res.applied}, chặn ${res.blocked.length} NV trùng ERP — cần kieu xử lý tay.`);
+      } else if (res.conflicts.length > 0) {
+        warning('Tiếp nhận có conflict', `${res.note}. Áp dụng ${res.applied}, conflict ${res.conflicts.length} (đã auto tie-break kieu>hoa).`);
+      } else {
+        success('Tiếp nhận xong', `${res.note}. Áp dụng ${res.applied}, bỏ qua ${res.skipped}.`);
       }
+      await handleScanNow();
+    } catch (err: any) {
+      error('Tiếp nhận thất bại', err?.message || 'Không merge được file.');
+    } finally {
+      setIngestingFile(null);
     }
+  };
 
-    if (isClusterHost) {
-      await clusterService.quickStartAsHost();
-      success('Host Master DB đang hoạt động', 'Máy chủ Kieu sẵn sàng tiếp nhận kết nối RTCDataChannel.');
-    } else {
-      await clusterService.quickConnectAsClient(session.username, session.displayName);
-      info('Đang kết nối tới Host Kiều', `Máy trạm ${session.displayName} đang phát tín hiệu bắt tay qua mạng P2P...`);
+  const handleExportSyncDownload = async (kind: 'dept' | 'master') => {
+    if (!session) return;
+    try {
+      if (kind === 'dept') {
+        const { filename, payload } = await jsonSyncService.buildDeptPayloadForDownload(session.username);
+        jsonSyncService.downloadJson(filename, payload);
+        success('Đã xuất file dept', `Gửi file ${filename} cho kieu/hoa qua OneDrive/Zalo.`);
+      } else {
+        const { filename, payload } = await jsonSyncService.buildMasterPayloadForDownload(session.username);
+        jsonSyncService.downloadJson(filename, payload);
+        success('Đã xuất file master', `File ${filename} đã tải xuống. Copy vào HR_Data để máy kia quét.`);
+      }
+    } catch (err: any) {
+      error('Xuất thất bại', err?.message || 'Không tạo được file JSON.');
+    }
+  };
+
+  const handleSyncImportChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f || !session) return;
+    try {
+      const text = await f.text();
+      const raw = JSON.parse(text);
+      const res = await jsonSyncService.importFromJsonObject(raw, { username: session.username, displayName: session.displayName });
+      success('Import tay xong', `${res.note}. Áp dụng ${res.applied}.`);
+      await handleScanNow();
+    } catch (err: any) {
+      error('Import thất bại', err?.message || 'File không hợp lệ.');
+    } finally {
+      if (syncImportRef.current) syncImportRef.current.value = '';
     }
   };
 
@@ -791,97 +797,57 @@ export const Header: React.FC = () => {
           loading="eager"
         />
 
-        {/* Nút Chọn & Quản lý Thư Mục HR_Signaling_Data / Ghép Nối Mã Offline */}
-        {folderSignaling.isSupported() ? (
-          !hasFolderHandle ? (
+        {/* Nút thư mục đồng bộ JSON HR_Data — cấp quyền 1 lần, dùng lại nhiều lần */}
+        {syncSupported ? (
+          !hasSyncHandle ? (
             <button
-              onClick={handlePickOrGrantFolder}
+              onClick={handleConnectSyncFolder}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-sm border border-amber-400 animate-pulse transition shrink-0"
-              title="Nhấn để chọn thư mục HR_Signaling_Data (OneDrive) để đồng bộ mạng P2P với Host Kiều"
+              title="Chọn 1 lần thư mục HR_Data trên OneDrive để đồng bộ JSON thuần"
             >
               <Folder className="w-3.5 h-3.5" />
-              <span>📁 Chọn HR_Signaling_Data</span>
+              <span>📁 Chọn HR_Data</span>
             </button>
-          ) : !isFolderGranted ? (
+          ) : !isSyncGranted ? (
             <button
-              onClick={handlePickOrGrantFolder}
+              onClick={handleConnectSyncFolder}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 shadow-sm transition shrink-0"
-              title="Trình duyệt cần bạn bấm để cấp quyền đọc/ghi thư mục HR_Signaling_Data"
+              title="Bấm 1 lần để cấp lại quyền đọc/ghi (trình duyệt yêu cầu sau mỗi lần mở)"
             >
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 animate-bounce" />
-              <span>Cấp Quyền {folderName || 'Thư Mục'}</span>
+              <Folder className="w-3.5 h-3.5 text-amber-600 animate-bounce" />
+              <span>Cấp Quyền {syncFolderName || 'HR_Data'}</span>
             </button>
           ) : (
             <button
-              onClick={handleOpenFolderModal}
+              onClick={handleOpenSyncModal}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 shadow-xs transition shrink-0"
-              title="Thư mục tín hiệu WebRTC P2P đã sẵn sàng. Bấm để xem thông tin hoặc đổi thư mục."
+              title="Thư mục JSON đã sẵn sàng. Bấm để quét file dept/master mới."
             >
               <Folder className="w-3.5 h-3.5 text-amber-500" />
-              <span className="font-mono text-[11px] max-w-[120px] truncate">{folderName || 'HR_Signaling_Data'}</span>
+              <span className="font-mono text-[11px] max-w-[120px] truncate">{syncFolderName || 'HR_Data'}</span>
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              {pendingCount > 0 && (
+                <span className="min-w-[18px] h-[18px] px-1 bg-rose-600 text-white text-[10px] font-black rounded-full flex items-center justify-center">
+                  {pendingCount}
+                </span>
+              )}
             </button>
           )
         ) : (
-          <button
-            onClick={() => {
-              setModalTab('token');
-              handleOpenFolderModal();
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 shadow-xs transition shrink-0"
-            title="Đang mở trực tiếp file://. Bấm để mở hộp thoại Ghép Nối Bằng Mã Offline (không cần web server)"
-          >
-            <Link2 className="w-3.5 h-3.5 text-indigo-600" />
-            <span>Ghép Nối Mã Offline</span>
-          </button>
+          <span className="text-[11px] text-slate-400 font-semibold shrink-0" title="Dùng tải file / upload file thủ công trong Cài đặt > Đồng bộ JSON">
+            Đồng bộ file tay
+          </span>
         )}
 
-        {/* Nút Kết Nối 1-Chạm (1-Touch WebRTC Cluster Connect) */}
-        {isClusterHost ? (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-bold shadow-sm shrink-0">
-            <span className={`w-2 h-2 rounded-full ${clusterStatus === 'CONNECTED' ? 'bg-emerald-500' : 'bg-amber-500'} animate-pulse`} />
-            <Server className="w-3.5 h-3.5 text-orange-600" />
-            <span>{clusterStatus === 'CONNECTED' ? 'Host Master DB (Đang Phục Vụ)' : 'Host Master DB (Sẵn Sàng)'}</span>
-          </div>
-        ) : (
-          <button
-            onClick={handleOneTouchConnect}
-            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition shadow-sm border shrink-0 ${
-              clusterStatus === 'CONNECTED'
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                : clusterStatus === 'SIGNALING'
-                ? 'bg-indigo-50 text-indigo-700 border-indigo-200 animate-pulse'
-                : clusterStatus === 'HOST_OFFLINE'
-                ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
-                : 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white border-orange-400'
-            }`}
-            title="Kết nối thời gian thực tới Máy Chủ Master DB (Kieu) qua WebRTC RTCDataChannel"
-          >
-            {clusterStatus === 'CONNECTED' ? (
-              <>
-                <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                <Wifi className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Đã kết nối Host Kieu</span>
-              </>
-            ) : clusterStatus === 'SIGNALING' ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
-                <span>Đang bắt tay Host Kieu...</span>
-              </>
-            ) : clusterStatus === 'HOST_OFFLINE' ? (
-              <>
-                <span className="w-2 h-2 rounded-full bg-amber-500" />
-                <Radio className="w-3.5 h-3.5 text-amber-700" />
-                <span>Host Kieu Chưa Bật (Lưu Cục Bộ)</span>
-              </>
-            ) : (
-              <>
-                <Radio className="w-3.5 h-3.5 text-white" />
-                <span>⚡ Kết Nối Host Kieu</span>
-              </>
-            )}
-          </button>
-        )}
+        {/* Nút quét JSON 1-chạm */}
+        <button
+          onClick={handleOpenSyncModal}
+          className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition shadow-sm border shrink-0 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white border-emerald-500"
+          title={isMasterUser ? 'kieu/hoa: quét 3 file dept + master của nhau' : isDeptUser ? 'Quét và nộp file dept của bạn' : 'Quét thư mục đồng bộ JSON'}
+        >
+          {isScanning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <FileJson className="w-3.5 h-3.5" />}
+          <span>{pendingCount > 0 ? `JSON Sync (${pendingCount} mới)` : '⚡ Quét JSON'}</span>
+        </button>
 
         {/* Chuông thông báo hợp đồng sắp hết hạn - CHỈ HIỂN THỊ VỚI PHÒNG NHÂN SỰ (HR) */}
         {isHR && (
@@ -1089,329 +1055,108 @@ export const Header: React.FC = () => {
         </div>
       )}
 
-      {/* Modal Quản Lý Thư Mục HR_Signaling_Data & Ghép Nối Mã Offline */}
-      {isFolderModalOpen && (
+      {/* Modal Đồng bộ JSON thuần HR_Data (thay Star-Topology RTC) */}
+      {isSyncModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full border border-slate-100 overflow-hidden space-y-0">
-            {/* Modal Header */}
-            <div className="p-4 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white flex items-center justify-between">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full border border-slate-100 overflow-hidden space-y-0 max-h-[90vh] flex flex-col">
+            <div className="p-4 bg-gradient-to-r from-emerald-950 via-teal-900 to-emerald-950 text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-amber-500/20 rounded-xl border border-amber-500/30 text-amber-400">
-                  {modalTab === 'folder' ? <Folder className="w-5 h-5" /> : <Link2 className="w-5 h-5 text-indigo-300" />}
+                <div className="p-2 bg-emerald-500/20 rounded-xl border border-emerald-500/30 text-emerald-300">
+                  <FileJson className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold">
-                    {modalTab === 'folder' ? 'Thư Mục Tín Hiệu P2P (OneDrive)' : 'Ghép Nối WebRTC P2P Bằng Mã (Offline)'}
-                  </h3>
-                  <p className="text-[11px] text-slate-300">
-                    {modalTab === 'folder' ? 'HR_Signaling_Data (Tự động trao đổi file)' : 'Dành cho tệp offline file:/// hoặc mạng không thư mục'}
+                  <h3 className="text-sm font-bold">Đồng Bộ JSON Thuần (HR_Data)</h3>
+                  <p className="text-[11px] text-emerald-200/80">
+                    {isMasterUser ? 'kieu/hoa: quét 3 file dept + master của nhau' : isDeptUser ? 'Nộp file dept của bạn cho kieu/hoa' : 'Quét thư mục OneDrive dùng chung'}
                   </p>
                 </div>
               </div>
-              <button
-                onClick={() => {
-                  setIsFolderModalOpen(false);
-                  setGeneratedPairToken('');
-                  setInputPairToken('');
-                  setHasCopiedPairToken(false);
-                }}
-                className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-white/10 transition"
-              >
+              <button onClick={() => setIsSyncModalOpen(false)} className="p-1.5 text-slate-300 hover:text-white rounded-xl hover:bg-white/10 transition">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Tab Navigation */}
-            <div className="flex border-b border-slate-100 bg-slate-50 px-3 pt-2 gap-1 text-xs">
-              <button
-                type="button"
-                onClick={() => setModalTab('folder')}
-                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-t-xl font-bold transition border-b-2 ${
-                  modalTab === 'folder'
-                    ? 'bg-white text-indigo-700 border-indigo-600 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-800 border-transparent'
-                }`}
-              >
-                <Folder className="w-3.5 h-3.5" />
-                <span>Thư Mục Tín Hiệu (OneDrive)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setModalTab('token')}
-                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-t-xl font-bold transition border-b-2 ${
-                  modalTab === 'token'
-                    ? 'bg-white text-indigo-700 border-indigo-600 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-800 border-transparent'
-                }`}
-              >
-                <Link2 className="w-3.5 h-3.5" />
-                <span>Ghép Nối Mã Offline</span>
-              </button>
-            </div>
+            <div className="p-5 space-y-4 text-xs overflow-y-auto">
+              <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500 font-semibold">Thư mục:</span>
+                  <span className="font-bold text-slate-800 font-mono bg-white px-2 py-0.5 rounded border border-slate-200">{syncFolderName || 'Chưa chọn'}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500 font-semibold">Quyền (cấp 1 lần):</span>
+                  <span className={`font-bold ${isSyncGranted ? 'text-emerald-600' : 'text-amber-600'}`}>{isSyncGranted ? 'Đã cấp — tự quét 8s/lần' : 'Chưa cấp'}</span>
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  {!isSyncGranted && (
+                    <button type="button" onClick={handleConnectSyncFolder} className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl transition">Kết Nối Thư Mục (1 click)</button>
+                  )}
+                  <button type="button" onClick={handleScanNow} disabled={isScanning} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl transition disabled:opacity-50">
+                    {isScanning ? 'Đang quét...' : 'Quét Ngay'}
+                  </button>
+                </div>
+              </div>
 
-            {/* Modal Body */}
-            <div className="p-5 space-y-4 text-xs">
-              {modalTab === 'folder' ? (
-                folderSignaling.isSupported() ? (
-                  <>
-                    <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2.5">
-                      <div className="flex justify-between items-center">
-                        <span className="text-slate-500 font-semibold">Tên thư mục đã chọn:</span>
-                        <span className="font-bold text-slate-800 font-mono bg-white px-2 py-0.5 rounded border border-slate-200">
-                          {folderName || 'HR_Signaling_Data'}
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center">
-                        <span className="text-slate-500 font-semibold">Quyền đọc/ghi (Edge):</span>
-                        <span className="font-bold text-emerald-600 flex items-center gap-1">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          Đã cấp quyền hoạt động
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center">
-                        <span className="text-slate-500 font-semibold">Trạng thái Host Kiều:</span>
-                        {folderHostCheck?.online ? (
-                          <span className="font-bold text-emerald-600 flex items-center gap-1.5">
-                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                            Đang Online (Sẵn Sàng)
-                          </span>
-                        ) : (
-                          <span className="font-bold text-amber-600 flex items-center gap-1.5">
-                            <span className="w-2 h-2 rounded-full bg-amber-500" />
-                            Chưa online hoặc đang chờ tín hiệu
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="p-3 bg-indigo-50/60 rounded-2xl border border-indigo-100 text-slate-600 space-y-1">
-                      <p className="font-bold text-indigo-900">💡 Tự Động Trao Đổi File Tín Hiệu:</p>
-                      <p>• Khi Host Kiều bật, file trạng thái <code>host_status.json</code> được duy trì liên tục.</p>
-                      <p>• Máy Client ghi tín hiệu bắt tay vào <code>HR_Signaling_Data</code> để tự động kết nối P2P WebRTC.</p>
-                    </div>
-
-                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const picked = await folderSignaling.pickDirectory();
-                          if (picked) {
-                            success('Đã đổi thư mục', `Đã liên kết với thư mục "${folderSignaling.getFolderName()}"`);
-                            setIsFolderModalOpen(false);
-                          }
-                        }}
-                        className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition"
-                      >
-                        Chọn Thư Mục Khác
-                      </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          setIsFolderModalOpen(false);
-                          await handleOneTouchConnect();
-                        }}
-                        className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold rounded-xl transition shadow-sm"
-                      >
-                        ⚡ Bắt Tay Kết Nối Lại
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="p-3.5 bg-amber-50 rounded-2xl border border-amber-200 space-y-2 text-amber-900">
-                      <p className="font-bold flex items-center gap-1.5">
-                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                        Trình duyệt hiện tại chưa hỗ trợ chọn thư mục
-                      </p>
-                      <p className="leading-relaxed text-[11px] text-amber-800">
-                        Tính năng quét thư mục tự động yêu cầu trình duyệt Microsoft Edge hoặc Google Chrome.
-                      </p>
-                    </div>
-                    <div className="flex justify-end pt-2">
-                      <button
-                        type="button"
-                        onClick={() => setModalTab('token')}
-                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition shadow-sm flex items-center gap-1.5"
-                      >
-                        <Link2 className="w-3.5 h-3.5" />
-                        <span>Chuyển Sang Ghép Nối Bằng Mã</span>
-                      </button>
-                    </div>
-                  </div>
-                )
-              ) : (
-                /* Tab 2: Token Offline Pairing */
-                <div className="space-y-4">
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Dành cho môi trường mở trực tiếp file <code>dist/index.html</code> (không qua web server). Hai máy chỉ cần sao chép mã token qua Zalo/Teams để bắt tay RTCDataChannel tức thời.
-                  </p>
-
-                  {isClusterHost ? (
-                    <div className="space-y-4">
-                      <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl space-y-2">
-                        <div className="text-xs font-bold text-amber-900 flex items-center justify-between">
-                          <span>1. Chọn máy Client muốn kết nối:</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <select
-                            value={pairClientId}
-                            onChange={(e) => setPairClientId(e.target.value)}
-                            className="px-3 py-1.5 bg-white border border-amber-300 rounded-xl text-xs font-bold text-slate-800 grow"
-                          >
-                            {clusterService.getConfig().nodes.filter(n => n.role !== 'HOST').map(n => (
-                              <option key={n.id} value={n.id}>{n.name} ({n.id})</option>
-                            ))}
-                          </select>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              setIsPairWorking(true);
-                              try {
-                                const tok = await clusterService.createPairingOfferToken(pairClientId);
-                                setGeneratedPairToken(tok);
-                                success('Đã tạo mã kết nối Host', 'Vui lòng sao chép gửi cho Client.');
-                              } catch (err: any) {
-                                error('Lỗi tạo mã', err.message);
-                              } finally {
-                                setIsPairWorking(false);
-                              }
-                            }}
-                            disabled={isPairWorking}
-                            className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs rounded-xl transition shrink-0 disabled:opacity-50"
-                          >
-                            {isPairWorking ? 'Đang tạo...' : 'Tạo Mã Gửi Client'}
-                          </button>
-                        </div>
-                      </div>
-
-                      {generatedPairToken && (
-                        <div className="space-y-1.5">
-                          <div className="flex items-center justify-between text-xs font-bold text-slate-700">
-                            <span>Mã Token gửi máy Client:</span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                navigator.clipboard.writeText(generatedPairToken);
-                                setHasCopiedPairToken(true);
-                                setTimeout(() => setHasCopiedPairToken(false), 2000);
-                                success('Đã sao chép mã token vào bộ nhớ tạm');
-                              }}
-                              className="flex items-center gap-1 text-[11px] text-indigo-600 hover:text-indigo-700 font-bold"
-                            >
-                              {hasCopiedPairToken ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                              <span>{hasCopiedPairToken ? 'Đã sao chép' : 'Sao chép mã'}</span>
-                            </button>
-                          </div>
-                          <textarea
-                            readOnly
-                            value={generatedPairToken}
-                            rows={3}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-mono text-slate-700 break-all select-all"
-                          />
-                        </div>
-                      )}
-
-                      <div className="space-y-1.5 pt-2 border-t border-slate-100">
-                        <label className="block text-xs font-bold text-slate-700">
-                          2. Dán Mã Phản Hồi (Answer Token) từ Client gửi về:
-                        </label>
-                        <textarea
-                          value={inputPairToken}
-                          onChange={(e) => setInputPairToken(e.target.value)}
-                          placeholder="Dán mã phản hồi do máy trạm Client tạo ra vào đây..."
-                          rows={3}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-mono text-slate-800"
-                        />
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            if (!inputPairToken.trim()) return;
-                            setIsPairWorking(true);
-                            try {
-                              await clusterService.acceptAnswerToken(pairClientId, inputPairToken);
-                              success('Kết nối thành công!', `Máy chủ Host đã bắt tay thành công với ${pairClientId}.`);
-                              setIsFolderModalOpen(false);
-                            } catch (err: any) {
-                              error('Lỗi nạp mã phản hồi', err.message);
-                            } finally {
-                              setIsPairWorking(false);
-                            }
-                          }}
-                          disabled={isPairWorking || !inputPairToken.trim()}
-                          className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition shadow-sm disabled:opacity-50"
-                        >
-                          {isPairWorking ? 'Đang bắt tay...' : 'Chốt Bắt Tay Kết Nối'}
-                        </button>
-                      </div>
+              {scanResult && (
+                <>
+                  {(scanResult.pendingDept.length + scanResult.pendingMaster.length) === 0 && scanResult.conflictCopies.length === 0 ? (
+                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-800 font-semibold">
+                      <CheckCircle2 className="w-4 h-4 inline mr-1" />
+                      Không có file mới. Hệ thống đã đồng bộ.
                     </div>
                   ) : (
-                    <div className="space-y-4">
-                      <div className="space-y-1.5">
-                        <label className="block text-xs font-bold text-slate-700">
-                          1. Dán Mã Token nhận được từ Host Kiều:
-                        </label>
-                        <textarea
-                          value={inputPairToken}
-                          onChange={(e) => setInputPairToken(e.target.value)}
-                          placeholder="Dán mã token từ máy Host Kiều vào đây..."
-                          rows={3}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-mono text-slate-800"
-                        />
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            if (!inputPairToken.trim()) return;
-                            setIsPairWorking(true);
-                            try {
-                              const ans = await clusterService.acceptOfferTokenAndCreateAnswer(inputPairToken);
-                              setGeneratedPairToken(ans);
-                              success('Đã tạo mã phản hồi!', 'Hãy sao chép mã này gửi lại cho Host Kiều để hoàn tất kết nối.');
-                            } catch (err: any) {
-                              error('Lỗi xử lý mã Host', err.message);
-                            } finally {
-                              setIsPairWorking(false);
-                            }
-                          }}
-                          disabled={isPairWorking || !inputPairToken.trim()}
-                          className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition shadow-sm disabled:opacity-50"
-                        >
-                          {isPairWorking ? 'Đang tạo mã phản hồi...' : 'Tạo Mã Phản Hồi Gửi Lại Cho Host'}
-                        </button>
-                      </div>
-
-                      {generatedPairToken && (
-                        <div className="space-y-1.5 pt-2 border-t border-slate-100">
-                          <div className="flex items-center justify-between text-xs font-bold text-slate-700">
-                            <span>2. Mã phản hồi gửi lại cho Host Kiều:</span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                navigator.clipboard.writeText(generatedPairToken);
-                                setHasCopiedPairToken(true);
-                                setTimeout(() => setHasCopiedPairToken(false), 2000);
-                                success('Đã sao chép mã phản hồi vào bộ nhớ tạm');
-                              }}
-                              className="flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-700 font-bold"
-                            >
-                              {hasCopiedPairToken ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                              <span>{hasCopiedPairToken ? 'Đã sao chép' : 'Sao chép mã'}</span>
-                            </button>
+                    <div className="space-y-2">
+                      {scanResult.pendingDept.map((it) => (
+                        <div key={it.file} className="p-3 bg-white border border-slate-200 rounded-2xl flex items-center justify-between gap-2">
+                          <div>
+                            <div className="font-bold text-slate-900 font-mono text-[11px]">{it.file}</div>
+                            <div className="text-[11px] text-slate-500">{it.note}</div>
                           </div>
-                          <textarea
-                            readOnly
-                            value={generatedPairToken}
-                            rows={3}
-                            className="w-full px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] font-mono text-emerald-900 break-all select-all"
-                          />
-                          <p className="text-[11px] text-emerald-700">
-                            Sau khi Host Kiều dán mã này vào máy chủ, kênh RTCDataChannel sẽ lập tức mở và chuyển sang màu xanh 🟢!
-                          </p>
+                          {isMasterUser ? (
+                            <button type="button" disabled={ingestingFile === it.file} onClick={() => handleIngest(it.file, 'dept')} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] rounded-xl transition shrink-0 disabled:opacity-50">
+                              {ingestingFile === it.file ? 'Đang nhận...' : 'Tiếp Nhận'}
+                            </button>
+                          ) : (
+                            <span className="text-[11px] text-slate-400 font-semibold shrink-0">Chờ kieu/hoa nhận</span>
+                          )}
                         </div>
-                      )}
+                      ))}
+                      {scanResult.pendingMaster.map((it) => (
+                        <div key={it.file} className="p-3 bg-indigo-50/60 border border-indigo-200 rounded-2xl flex items-center justify-between gap-2">
+                          <div>
+                            <div className="font-bold text-indigo-900 font-mono text-[11px]">{it.file}</div>
+                            <div className="text-[11px] text-slate-500">{it.note}</div>
+                          </div>
+                          <button type="button" disabled={ingestingFile === it.file} onClick={() => handleIngest(it.file, 'master')} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] rounded-xl transition shrink-0 disabled:opacity-50">
+                            {ingestingFile === it.file ? 'Đang merge...' : 'Merge Master'}
+                          </button>
+                        </div>
+                      ))}
+                      {scanResult.conflictCopies.map((f) => (
+                        <div key={f} className="p-3 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 text-[11px] font-semibold">
+                          OneDrive conflict copy: <code className="font-mono">{f}</code> — nhờ kieu mở 2 file so tay rồi xóa bản thừa.
+                        </div>
+                      ))}
                     </div>
                   )}
-                </div>
+                </>
               )}
+
+              <div className="pt-2 border-t border-slate-100 space-y-2">
+                <p className="font-bold text-slate-700">Fallback không cần thư mục (tải file / upload file tay):</p>
+                <input ref={syncImportRef} type="file" accept=".json,application/json" onChange={handleSyncImportChange} className="hidden" />
+                <div className="flex flex-wrap gap-2">
+                  {isDeptUser && (
+                    <button type="button" onClick={() => handleExportSyncDownload('dept')} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] rounded-xl transition">Tải file dept của tôi</button>
+                  )}
+                  {isMasterUser && (
+                    <button type="button" onClick={() => handleExportSyncDownload('master')} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] rounded-xl transition">Tải file master của tôi</button>
+                  )}
+                  <button type="button" onClick={() => syncImportRef.current?.click()} className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-[11px] rounded-xl transition">Upload file JSON...</button>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  5 file chuẩn: master_kieu.json, master_hoa.json, dept_WH_vinh.json, dept_QC_nguyetanh.json, dept_PRD_han.json. Mỗi user chỉ ghi file của mình.
+                </p>
+              </div>
             </div>
           </div>
         </div>

@@ -20,6 +20,7 @@ import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 import { useAuth } from '../context/AuthContext';
 import { logUserAction } from '../services/audit-log-service';
+import { stampRateFieldMeta, stampSyncMeta } from '../services/json-sync-service';
 
 export const ProductivityQualityPage: React.FC = () => {
   const { success, warning, error } = useToast();
@@ -105,6 +106,8 @@ export const ProductivityQualityPage: React.FC = () => {
 
     const key = `${lineId}_${dateStr}`;
     const existing = rateMap.get(key);
+    const at = new Date().toISOString();
+    const by = (session?.username || 'unknown').toLowerCase();
     const newRate: IProductivityQualityRate = {
       lineId_date: key,
       lineId,
@@ -113,8 +116,17 @@ export const ProductivityQualityPage: React.FC = () => {
       year: day.yearNum,
       productivityRate: type === 'NS' ? val : (existing?.productivityRate ?? 100),
       qualityRate: type === 'CL' ? val : (existing?.qualityRate ?? 98),
-      updatedAt: new Date().toISOString()
+      updatedAt: at,
+      updatedBy: by,
     };
+    // Truy vết field-level để merge JSON không mất dữ liệu han (NS) / nguyetanh (CL)
+    stampSyncMeta(newRate as any, by, at);
+    stampRateFieldMeta(newRate as any, type, by, at);
+    if (existing) {
+      // Giữ lại stamp field đối diện để không mất mốc của người kia
+      const keepKey = type === 'NS' ? '_syncCL' : '_syncNS';
+      if ((existing as any)[keepKey] && !(newRate as any)[keepKey]) (newRate as any)[keepKey] = (existing as any)[keepKey];
+    }
 
     try {
       await db.productivityQualityRates.put(newRate);

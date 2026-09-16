@@ -3,9 +3,9 @@
     "project_name": "SmartHR - Single-File In-Browser HRMS & Timekeeping System",
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
-    "last_updated": "2026-09-12T06:29:40Z",
-    "current_phase": "Phase 27: Eliminate Timesheet Web Worker in favor of Non-Blocking Pure In-Memory Parser (Zero Worker Errors on local Edge/file://, 134/134 tests green, build OK)",
-    "version": "2.7.0"
+    "last_updated": "2026-09-16T09:20:56Z",
+    "current_phase": "Phase 28: Migrate WebRTC Star-Cluster/Folder-Signaling to Pure JSON Sync Dual-Master Phuong an A (139/139 tests green, tsc clean)",
+    "version": "2.8.0"
   },
   "agent_profile": {
     "role": "Senior Principal System Designer & Staff IT Software Engineer",
@@ -274,6 +274,18 @@
         "Menu mới 'Người Dùng & Nhật Ký' (UserManagementPage.tsx) tích hợp 2 phân hệ: Quản lý danh sách User (thêm user mới với pass mặc định 123, đổi tên hiển thị, đổi vai trò, bật/khóa tài khoản, không thể xem hoặc sửa mật khẩu của user khác) và Bảng Transaction Hoạt Động (User Audit Trail)",
         "Service audit-log-service.ts tự động ghi nhận mọi giao dịch và thao tác của người dùng: Đăng nhập (AUTH_LOGIN), Đăng xuất (AUTH_LOGOUT), Sắp ca (ASSIGN_SHIFT), Cập nhật % Năng suất (UPDATE_RATE_NS), Cập nhật % Chất lượng (UPDATE_RATE_CL), Tạo user (CREATE_USER), Đổi tên (UPDATE_USER_NAME), Bật/Khóa tài khoản (TOGGLE_USER_ACTIVE)",
         "Kiểm thử tự động vitest 127/127 tests passed 100%, tsc --noEmit sạch lỗi 0 warning, production build thành công 100%"
+      ]
+    },
+    "M19_Json_Sync_DualMaster_2026_09_16": {
+      "status": "IN_PROGRESS",
+      "completion_pct": 70,
+      "features": [
+        "Loai bo WebRTC Star-Cluster (webrtc-cluster-service.ts 995 dong), folder-signaling-service.ts, types/cluster.ts, webrtc-cluster.test.ts de tranh CSP/EDR chan blob Worker tren Edge doanh nghiep",
+        "Service moi src/services/json-sync-service.ts (Phuong an A Dual-master): master_kieu.json / master_hoa.json / master_glory.json + dept_WH_vinh.json / dept_QC_nguyetanh.json / dept_PRD_han.json",
+        "Merge LWW theo PK voi _sync {at,by} + tie-break kieu > hoa > glory, employees khong bao gio xoa + chan trung erpId, productivityQualityRates merge theo field NS/CL rieng, auditLogs union append-only",
+        "Folder Access 1-click: luu DirectoryHandle vao IndexedDB (smarthr_json_sync_db), scan/ingest/export dept+master, phat hien conflict-copy OneDrive",
+        "Verify 2026-09-16: vitest 139/139 pass (10 files, gom 9 tests json-sync moi), tsc --noEmit 0 loi",
+        "Con lai: commit + rebuild dist/index.html + test Edge file:// thu muc OneDrive that"
       ]
     }
   }

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Briefcase,
   Search,
@@ -28,20 +28,13 @@ import { ShiftClassType, IEmployee } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { logUserAction } from '../services/audit-log-service';
-import { clusterService } from '../services/webrtc-cluster-service';
+import { jsonSyncService, ScanResult, stampSyncMeta } from '../services/json-sync-service';
 
 /**
- * Sắp Xếp Ca Làm Việc & Tiếp Nhận Sắp Ca Từ Các Trạm (Local-First WebRTC Cluster)
- * - Đối với Host Kiều & Hoa (HR): Mặc định là màn hình "Tiếp Nhận Dữ Liệu Sắp Ca" từ 3 trạm:
- *     1. Kho WH (Vinh)
- *     2. Quản Lý QC (Nguyệt Ánh)
- *     3. Sản Xuất / Production (Hân)
- *   Cho phép theo dõi tiến độ nộp ca, số lượng nhân viên, phát hiện vi phạm nghỉ 12h, đối soát ma trận ca.
- *   Có nút chuyển sang chế độ sắp ca thủ công khi HR muốn can thiệp trực tiếp.
- * - Đối với các máy trạm Client (Vinh, Nguyệt Ánh, Hân):
- *   Giao diện sắp ca cho nhân viên thuộc bộ phận mình quản lý.
- *   Khi bấm "Lưu & Gửi Dữ Liệu Sắp Ca Lên Host", hệ thống lưu local DB và lập tức truyền
- *   dữ liệu qua kênh WebRTC RTCDataChannel (hoặc dự phòng qua OneDrive HR_Signaling_Data) tới Host Kiều.
+ * Sắp Xếp Ca & Tiếp Nhận Ca qua JSON thuần (thay WebRTC Cluster):
+ * - vinh/nguyetanh/han (Dept Admin): sắp ca phòng mình -> lưu local + ghi đè file dept riêng
+ *   (dept_WH_vinh.json / dept_QC_nguyetanh.json / dept_PRD_han.json) trong HR_Data.
+ * - kieu/hoa (Master): quét 3 file dept -> preview -> Tiếp nhận (merge LWW, audit đầy đủ).
  */
 
 const SHIFT_ELIGIBLE_DEPARTMENTS: string[] = ['Production', 'QC', 'WH'];
@@ -111,8 +104,8 @@ export const ShiftAssignmentPage: React.FC = () => {
     currentRole === 'HR Manager'
   );
 
-  // Chế độ xem: Host Kiều và Hoa mặc định ở chế độ 'received' (Tiếp nhận ca từ các trạm)
-  // Các máy trạm con (Vinh, Nguyệt Ánh, Hân) mặc định ở chế độ 'manual' (Sắp xếp ca cho bộ phận mình)
+  // Chế độ xem: kieu và hoa mặc định ở 'received' (tiếp nhận 3 file dept JSON)
+  // vinh/nguyetanh/han mặc định ở 'manual' (sắp ca phòng mình -> ghi file dept riêng)
   const [viewMode, setViewMode] = useState<'received' | 'manual'>(isHostOrHR ? 'received' : 'manual');
 
   // Bộ lọc cho chế độ tiếp nhận (Host/HR review)
@@ -128,6 +121,46 @@ export const ShiftAssignmentPage: React.FC = () => {
   const [shiftSelections, setShiftSelections] = useState<Record<string, ShiftClassType>>({});
   const [bulkShift, setBulkShift] = useState<ShiftClassType>('SHIFT_1');
   const [isSubmittingToHost, setIsSubmittingToHost] = useState(false);
+
+  // Hộp thư file dept JSON chờ tiếp nhận (chỉ kieu/hoa)
+  const [deptScan, setDeptScan] = useState<ScanResult | null>(null);
+  const [isDeptScanning, setIsDeptScanning] = useState(false);
+  const [ingestingDept, setIngestingDept] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isHostOrHR) return;
+    if (!jsonSyncService.folder.hasHandle() || !jsonSyncService.folder.isGranted()) return;
+    let stop: (() => void) | undefined;
+    stop = jsonSyncService.startAutoScan((r) => setDeptScan(r), 10000);
+    return () => stop?.();
+  }, [isHostOrHR]);
+
+  const handleScanDept = async () => {
+    setIsDeptScanning(true);
+    try {
+      setDeptScan(await jsonSyncService.scanFolder());
+    } catch (err: any) {
+      error('Quét thất bại', err?.message || 'Chưa kết nối HR_Data.');
+    } finally {
+      setIsDeptScanning(false);
+    }
+  };
+
+  const handleIngestDept = async (file: string) => {
+    if (!session) return;
+    setIngestingDept(file);
+    try {
+      const res = await jsonSyncService.ingestDeptFile(file, { username: session.username, displayName: session.displayName });
+      if (res.blocked.length > 0) warning('Có chặn NV', `${res.note}. Chặn ${res.blocked.length} dòng.`);
+      else if (res.conflicts.length > 0) warning('Có conflict', `${res.note}. Conflict ${res.conflicts.length}.`);
+      else success('Tiếp nhận xong', `${res.note}. Áp dụng ${res.applied}.`);
+      setDeptScan(await jsonSyncService.scanFolder());
+    } catch (err: any) {
+      error('Tiếp nhận thất bại', err?.message || 'Không merge được.');
+    } finally {
+      setIngestingDept(null);
+    }
+  };
 
   // Live queries từ Dexie
   const employees = useLiveQuery(() => db.employees.toArray(), []) || [];
@@ -236,10 +269,10 @@ export const ShiftAssignmentPage: React.FC = () => {
       next[id] = bulkShift;
     });
     setShiftSelections(next);
-    info('Đã áp dụng ca hàng loạt', `Đã gán ${bulkShift} cho ${selectedEmployeeIds.size} nhân viên đã chọn. Bấm "Lưu & Gửi Lên Host" để đồng bộ.`);
+    info('Đã áp dụng ca hàng loạt', `Đã gán ${bulkShift} cho ${selectedEmployeeIds.size} nhân viên đã chọn. Bấm "Lưu & Nộp File Dept" để đồng bộ.`);
   };
 
-  // Lưu ca & Đồng bộ lên Host Kiều
+  // Lưu ca & ghi file dept JSON (dept admin) hoặc lưu master (kieu/hoa)
   const handleSaveAndSync = async () => {
     if (!hasPermission('MANAGE_ROSTER') && !hasPermission('MANAGE_DEPT_ROSTER')) {
       error('Không đủ quyền', 'Bạn không có quyền sắp xếp ca (MANAGE_ROSTER).');
@@ -304,46 +337,46 @@ export const ShiftAssignmentPage: React.FC = () => {
 
     setIsSubmittingToHost(true);
     try {
+      const targetDept = departmentScope || selectedDept;
+      const syncUser = (session?.username || '').toLowerCase();
+      const syncName = session?.displayName || session?.username || 'unknown';
+      const stampAt = new Date().toISOString();
+
+      // Gắn _sync truy vết tác giả trước khi lưu (phục vụ merge kieu<->hoa LWW)
+      const stamped = toSave.map((r: any) => stampSyncMeta({ ...r, department: r.department || targetDept }, syncUser || 'unknown', stampAt));
+
       // 1. Lưu vào Database cục bộ (Local-First)
       await db.transaction('rw', db.shiftRosters, db.employees, async () => {
-        await db.shiftRosters.bulkPut(toSave);
+        await db.shiftRosters.bulkPut(stamped as any);
         for (const [empId, shiftCode] of entries) {
-          await db.employees.update(empId, { shiftClassId: shiftCode });
+          try {
+            await db.employees.update(empId, { shiftClassId: shiftCode } as any);
+          } catch { /* ignore */ }
         }
       });
 
-      // 2. Nếu là máy Client, truyền đợt sắp ca này lên máy chủ Host Kiều
-      const targetDept = departmentScope || selectedDept;
+      // 2. Dept Admin (vinh/nguyetanh/han): ghi đè file dept riêng trong HR_Data
       if (!isHostOrHR) {
-        const syncRes = await clusterService.sendShiftBatchToHost({
+        const res = await jsonSyncService.submitDeptShifts({
+          username: syncUser,
+          displayName: syncName,
           department: targetDept,
-          rosters: toSave,
+          rosters: stamped as any,
           entries,
           dateRange,
-          username: session?.username,
-          displayName: session?.displayName
         });
 
-        if (syncRes.sentViaWebRTC) {
-          success(
-            'Đã gửi trực tiếp lên Host Kiều',
-            `Kênh WebRTC P2P đã truyền thành công ${toSave.length} ca làm việc (${entries.length} NV) lên máy chủ Host Kiều tức thời!`
-          );
-        } else if (syncRes.sentViaFolder) {
-          success(
-            'Đã đồng bộ qua OneDrive',
-            `Đã lưu file nộp ca shifts_${clusterService.getConfig().nodeId}.json vào thư mục HR_Signaling_Data. Host Kiều sẽ tự động nạp khi quét!`
-          );
+        if (res.viaFolder && res.file) {
+          success('Đã nộp file dept', `Đã ghi ${res.localCount} ca vào ${res.file} trong HR_Data. kieu/hoa sẽ quét và tiếp nhận.`);
+        } else if (res.file) {
+          info('Đã lưu cục bộ', `Đã lưu ${res.localCount} ca. Chưa kết nối HR_Data — bấm “Quét JSON” ở header để nộp file ${res.file}, hoặc tải tay trong Cài đặt.`);
         } else {
-          info(
-            'Đã lưu cục bộ an toàn',
-            `Đã lưu ${toSave.length} ca làm việc trên máy trạm. Dữ liệu sẽ tự động đồng bộ khi bạn kết nối tới Host Kiều.`
-          );
+          info('Đã lưu cục bộ an toàn', `Đã lưu ${stamped.length} ca làm việc trên máy này.`);
         }
       } else {
         success(
-          'Đã lưu ca trên Master DB',
-          `Đã lưu thành công ${toSave.length} ca làm việc (${entries.length} NV × ${dateRange.length} ngày) vào cơ sở dữ liệu trung tâm.`
+          'Đã lưu ca (Master)',
+          `Đã lưu ${stamped.length} ca (${entries.length} NV × ${dateRange.length} ngày). Nhớ “Xuất Master” trong Cài đặt > Đồng bộ JSON để máy kia merge.`
         );
       }
 
@@ -354,7 +387,7 @@ export const ShiftAssignmentPage: React.FC = () => {
           role: session.role,
           actionType: 'ASSIGN_SHIFT',
           targetEntity: `${targetDept} (${entries.length} NV, ${toSave.length} ca)`,
-          details: `Sắp ca ${dateRange[0]} -> ${dateRange[dateRange.length - 1]} và gửi đồng bộ sang Host Kiều`
+          details: `Sắp ca ${dateRange[0]} -> ${dateRange[dateRange.length - 1]} (file dept JSON, ${entries.length} NV)`
         }).catch(console.error);
       }
     } catch (err: any) {
@@ -377,23 +410,23 @@ export const ShiftAssignmentPage: React.FC = () => {
             </div>
             <div>
               <h2 className="text-xl font-extrabold text-slate-900 flex items-center gap-2">
-                <span>{isHostOrHR && viewMode === 'received' ? 'Tiếp Nhận Dữ Liệu Sắp Ca Từ Các Trạm' : 'Sắp Xếp Ca Làm Việc'}</span>
+                <span>{isHostOrHR && viewMode === 'received' ? 'Tiếp Nhận File Dept JSON (3 Phòng)' : 'Sắp Xếp Ca Làm Việc'}</span>
                 {isHostOrHR && (
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                    Host & HR Management
+                    kieu & Hoa — Master
                   </span>
                 )}
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
                 {isHostOrHR && viewMode === 'received'
-                  ? 'Theo dõi, đối soát và tiếp nhận dữ liệu phân ca tự động từ 3 trạm: Kho WH (Vinh), Quản Lý QC (Nguyệt Ánh), Sản Xuất (Hân).'
-                  : 'Sắp ca cho nhân viên theo ngày/tuần/tháng. Dữ liệu sẽ được tự động gửi và đồng bộ sang máy chủ Host Kiều.'}
+                  ? 'Quét và tiếp nhận 3 file dept riêng: dept_WH_vinh.json, dept_QC_nguyetanh.json, dept_PRD_han.json trong HR_Data.'
+                  : 'Sắp ca cho nhân viên phòng bạn. Bấm Lưu để ghi vào file dept riêng, kieu/hoa sẽ quét và tiếp nhận.'}
               </p>
             </div>
           </div>
         </div>
 
-        {/* Nút chuyển chế độ đối với Host Kiều / Hoa */}
+        {/* Nút chuyển chế độ của kieu / hoa */}
         <div className="flex items-center gap-2">
           {isHostOrHR && (
             <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs">
@@ -429,6 +462,42 @@ export const ShiftAssignmentPage: React.FC = () => {
       {/* ========================================================================= */}
       {isHostOrHR && viewMode === 'received' ? (
         <div className="space-y-6 flex-1 flex flex-col">
+          {/* Hộp thư 3 file dept JSON chờ tiếp nhận */}
+          <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-sm space-y-3">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <Inbox className="w-4 h-4 text-emerald-600" />
+                <span>File dept JSON chờ tiếp nhận (HR_Data)</span>
+                {deptScan && (deptScan.pendingDept.length > 0) && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-100 text-rose-700 border border-rose-200">{deptScan.pendingDept.length} mới</span>
+                )}
+              </h3>
+              <button onClick={handleScanDept} disabled={isDeptScanning} className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-bold rounded-xl transition disabled:opacity-50 flex items-center gap-1.5">
+                <RefreshCw className={`w-3.5 h-3.5 ${isDeptScanning ? 'animate-spin' : ''}`} />
+                <span>{isDeptScanning ? 'Đang quét...' : 'Quét HR_Data'}</span>
+              </button>
+            </div>
+            {!jsonSyncService.folder.hasHandle() || !jsonSyncService.folder.isGranted() ? (
+              <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                Chưa kết nối thư mục HR_Data — bấm “Quét JSON” trên thanh header (1 click) để cấp quyền, sau đó quét lại.
+              </p>
+            ) : !deptScan ? (
+              <p className="text-[11px] text-slate-500">Bấm “Quét HR_Data” để liệt kê dept_WH_vinh / dept_QC_nguyetanh / dept_PRD_han mới.</p>
+            ) : deptScan.pendingDept.length === 0 ? (
+              <p className="text-[11px] text-emerald-700 font-semibold flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Không có file dept mới.</p>
+            ) : (
+              <div className="space-y-2">
+                {deptScan.pendingDept.map((it) => (
+                  <div key={it.file} className="flex items-center justify-between gap-2 p-2.5 border border-slate-200 rounded-xl text-xs">
+                    <div><div className="font-mono font-bold">{it.file}</div><div className="text-slate-500 text-[11px]">{it.note}</div></div>
+                    <button disabled={ingestingDept === it.file} onClick={() => handleIngestDept(it.file)} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold rounded-xl transition shrink-0 disabled:opacity-50">
+                      {ingestingDept === it.file ? 'Đang nhận...' : 'Tiếp Nhận'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           {/* Thẻ tiến độ 3 Bộ phận nộp ca */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* 1. Kho WH (Vinh) */}
@@ -866,7 +935,7 @@ export const ShiftAssignmentPage: React.FC = () => {
                   className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm disabled:opacity-40"
                 >
                   {isSubmittingToHost ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                  <span>Lưu & Gửi Lên Host Kiều ({mode === 'day' ? '1 ngày' : mode === 'week' ? '7 ngày' : 'cả tháng'})</span>
+                  <span>Lưu & Nộp File Dept ({mode === 'day' ? '1 ngày' : mode === 'week' ? '7 ngày' : 'cả tháng'})</span>
                 </button>
               </div>
             </div>
@@ -874,7 +943,7 @@ export const ShiftAssignmentPage: React.FC = () => {
             <div className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 flex items-center justify-between">
               <span>
                 Đang sắp ca cho bộ phận <b>{departmentScope || selectedDept}</b> từ ngày <b>{baseDate}</b> ({getDateRange(mode, baseDate).length} ngày).
-                Dữ liệu sẽ được truyền trực tiếp tới máy Host Kiều qua mạng P2P.
+                Bấm Lưu để ghi vào file dept riêng trong HR_Data (kieu/hoa quét và tiếp nhận).
               </span>
               <span className="font-semibold text-indigo-700">
                 Hiển thị {visibleEmployees.length} nhân viên • Đã chọn {selectedEmployeeIds.size}
