@@ -16,8 +16,17 @@ import {
   AlertTriangle,
   FileJson,
   Upload,
-  Download
+  Download,
+  Wifi,
+  Radio,
+  Server,
+  Copy,
+  ExternalLink,
+  Zap,
+  Activity,
+  Users
 } from 'lucide-react';
+import { lanSyncService, LanServerHealth, LanOnlineUser } from '../services/lan-sync-service';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
@@ -153,7 +162,52 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
-  const [activeTab, setActiveTab] = useState<'rbac' | 'diligence' | 'formula' | 'sync' | 'system'>('rbac');
+  const [activeTab, setActiveTab] = useState<'rbac' | 'diligence' | 'formula' | 'sync' | 'system' | 'lan-server'>('rbac');
+  const [serverHealth, setServerHealth] = useState<LanServerHealth | null>(null);
+  const [isPinging, setIsPinging] = useState(false);
+  const [lanOnlineUsers, setLanOnlineUsers] = useState<LanOnlineUser[]>([]);
+  const [copiedIp, setCopiedIp] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    lanSyncService.checkServerHealth().then(h => setServerHealth(h));
+    const unsubPresence = lanSyncService.onPresence(users => setLanOnlineUsers(users));
+    const unsubStatus = lanSyncService.onStatus((online, lat) => {
+      setServerHealth(prev => prev ? { ...prev, status: online ? 'online' : 'offline', latencyMs: lat } : null);
+    });
+    return () => {
+      unsubPresence();
+      unsubStatus();
+    };
+  }, []);
+
+  const handlePingServer = async () => {
+    setIsPinging(true);
+    try {
+      const h = await lanSyncService.checkServerHealth();
+      setServerHealth(h);
+      if (h?.status === 'online') {
+        success('Máy chủ trực tuyến', `Độ trễ phản hồi: ${h.latencyMs}ms. Cổng: ${h.port}.`);
+      } else {
+        warning('Máy chủ ngoại tuyến', 'Không thể kết nối đến máy chủ LAN. Vui lòng chạy start-server.bat hoặc start-server-hidden.vbs.');
+      }
+    } catch {
+      error('Lỗi kết nối', 'Không thể ping máy chủ.');
+    } finally {
+      setIsPinging(false);
+    }
+  };
+
+  const handleCopyLink = (url: string) => {
+    navigator.clipboard.writeText(url);
+    setCopiedIp(url);
+    success('Đã sao chép liên kết', url);
+    setTimeout(() => setCopiedIp(null), 2000);
+  };
+
+  const handleManualCatchUp = async () => {
+    await lanSyncService.pullCatchUp();
+    success('Đã kéo bù dữ liệu', 'Đã kiểm tra và đồng bộ các thay đổi mới nhất từ máy chủ LAN.');
+  };
 
   const rolesList: RoleType[] = [
     'HR Manager',
@@ -325,6 +379,23 @@ export const SettingsPage: React.FC = () => {
         >
           <FileJson className="w-4 h-4 text-cyan-400" />
           <span>Đồng Bộ JSON (OneDrive HR_Data)</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('lan-server')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
+            activeTab === 'lan-server'
+              ? 'bg-slate-900 text-white shadow-sm'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Wifi className="w-4 h-4 text-emerald-400" />
+          <span>Máy Chủ & Đồng Bộ LAN Realtime</span>
+          {lanOnlineUsers.length > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-bold">
+              {lanOnlineUsers.length}
+            </span>
+          )}
         </button>
 
         <button
@@ -906,6 +977,255 @@ export const SettingsPage: React.FC = () => {
             <p>• NV mới trùng mã ERP bị chặn tự động, kieu xử lý tay.</p>
             <p>• Ai sửa được truy vết qua _sync.by + nhật ký audit (TIMESHEET_EDIT / ASSIGN_SHIFT / UPDATE_RATE_*).</p>
             <p>• han (NS) và nguyetanh (CL) sửa cùng ngày-line không mất nhau nhờ merge theo field.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Tab Content 5: LAN Server & Realtime Sync */}
+      {activeTab === 'lan-server' && (
+        <div className="space-y-6 animate-in fade-in duration-200">
+          {/* Header Card */}
+          <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white p-6 rounded-2xl shadow-sm border border-slate-700/50 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-500/20 rounded-xl text-emerald-400 border border-emerald-500/30">
+                  <Wifi className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold flex items-center gap-2">
+                    Máy Chủ LAN & Đồng Bộ Realtime (Falcon EDR Safe)
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold border ${
+                      serverHealth?.status === 'online'
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                    }`}>
+                      <span className={`w-2 h-2 rounded-full ${serverHealth?.status === 'online' ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+                      {serverHealth?.status === 'online' ? 'MÁY CHỦ ĐANG CHẠY' : 'CHƯA KẾT NỐI MÁY CHỦ'}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    Tự động đồng bộ hai chiều giữa các máy phòng ban (HR, Kho, QC, Sản Xuất) mà không cần xuất/nhập file thủ công.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={handlePingServer}
+                disabled={isPinging}
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-white/10 hover:bg-white/20 border border-white/20 text-white rounded-xl text-xs font-bold transition shadow-xs"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isPinging ? 'animate-spin' : ''}`} />
+                <span>{isPinging ? 'Đang kiểm tra...' : 'Kiểm tra Ping'}</span>
+              </button>
+              <button
+                onClick={handleManualCatchUp}
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition shadow-xs"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                <span>Kéo Bù Dữ Liệu</span>
+              </button>
+            </div>
+          </div>
+
+          {/* KPI Metrics */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Độ Trễ Phản Hồi (Ping)</div>
+              <div className="text-2xl font-black text-slate-900 mt-1 flex items-baseline gap-1">
+                {serverHealth?.status === 'online' ? serverHealth.latencyMs : '--'}
+                <span className="text-xs font-semibold text-slate-500">ms</span>
+              </div>
+              <div className="text-[10px] text-emerald-600 font-semibold mt-1 flex items-center gap-1">
+                <Activity className="w-3 h-3" /> Kết nối mạng LAN nội bộ
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Cổng Mạng (Port)</div>
+              <div className="text-2xl font-black text-indigo-600 mt-1">
+                {serverHealth?.port || 4173}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">Giao thức HTTP Stream I/O</div>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Đang Trực Tuyến</div>
+              <div className="text-2xl font-black text-emerald-600 mt-1">
+                {lanOnlineUsers.length} <span className="text-xs font-semibold text-slate-500">user</span>
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">Cập nhật qua SSE realtime</div>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Lượt Đồng Bộ (Mutations)</div>
+              <div className="text-2xl font-black text-orange-600 mt-1">
+                {serverHealth?.totalMutations || 0}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">Ghi nhận vào Master Store</div>
+            </div>
+          </div>
+
+          {/* LAN Addresses & Links */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Radio className="w-4 h-4 text-indigo-600" />
+                  <span>Địa Chỉ Kết Nối Dành Cho Máy Khác Trong Mạng LAN</span>
+                </h4>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Gửi các liên kết dưới đây cho đồng nghiệp (hoặc mở trên điện thoại cùng mạng Wi-Fi/LAN) để truy cập hệ thống:
+                </p>
+              </div>
+              <a
+                href="/status"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition"
+              >
+                <span>Bảng Giám Sát /status</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {serverHealth?.lanAddresses && serverHealth.lanAddresses.length > 0 ? (
+                serverHealth.lanAddresses.map((net) => {
+                  const url = `http://${net.address}:${serverHealth.port}`;
+                  return (
+                    <div key={net.address} className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-bold text-slate-500 uppercase">{net.name} (Card mạng)</div>
+                        <div className="font-mono text-xs font-bold text-slate-900 truncate mt-0.5">{url}</div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => handleCopyLink(url)}
+                          className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 text-[11px] font-semibold rounded-lg transition flex items-center gap-1"
+                          title="Sao chép địa chỉ"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>{copiedIp === url ? 'Đã chép!' : 'Chép'}</span>
+                        </button>
+                        <a
+                          href={url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-lg transition"
+                          title="Mở liên kết"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-500">
+                  Đang tải danh sách địa chỉ card mạng... Hoặc mở tại: <code className="font-bold text-slate-800">http://localhost:4173</code>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Realtime Online Users Table */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Users className="w-4 h-4 text-emerald-600" />
+                  <span>Danh Sách Nhân Sự Đang Trực Tuyến ({lanOnlineUsers.length})</span>
+                </h4>
+                <p className="text-xs text-slate-500 mt-0.5">Hiển thị tức thời khi có người mở tab hoặc đổi phân hệ</p>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-slate-700 font-bold border-b border-slate-200">
+                  <tr>
+                    <th className="py-3 px-4">Nhân Sự & Tài Khoản</th>
+                    <th className="py-3 px-3">Vai Trò</th>
+                    <th className="py-3 px-3">Địa Chỉ IP</th>
+                    <th className="py-3 px-3">Phân Hệ Đang Mở</th>
+                    <th className="py-3 px-3">Thiết Bị</th>
+                    <th className="py-3 px-3 text-right">Trạng Thái</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {lanOnlineUsers.length > 0 ? (
+                    lanOnlineUsers.map((u) => (
+                      <tr key={u.username} className="hover:bg-slate-50/80 transition">
+                        <td className="py-3 px-4">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-indigo-500 to-blue-600 text-white font-bold flex items-center justify-center text-xs shadow-xs">
+                              {u.displayName.charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <div className="font-bold text-slate-900">{u.displayName}</div>
+                              <div className="text-[10px] text-slate-400 font-mono">@{u.username}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3 px-3">
+                          <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 font-semibold text-[10px] border border-blue-200">
+                            {u.role}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 font-mono text-slate-600">{u.ip}</td>
+                        <td className="py-3 px-3 text-slate-700 font-medium">{u.currentTab || 'Bảng điều khiển'}</td>
+                        <td className="py-3 px-3 text-slate-500 text-[11px]">{u.deviceLabel || 'Trình duyệt Web'}</td>
+                        <td className="py-3 px-3 text-right">
+                          <span className="inline-flex items-center gap-1 text-emerald-600 font-bold text-[11px]">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+                            Trực tuyến
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={6} className="py-8 text-center text-slate-400 italic">
+                        Chưa có người dùng nào khác kết nối qua mạng LAN.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Guide Card: How to remove "Insecure" warnings */}
+          <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-5 space-y-3 text-xs">
+            <div className="flex items-center gap-2 text-amber-900 font-bold text-sm">
+              <Shield className="w-4 h-4 text-amber-600" />
+              <span>Cách Ẩn Hoàn Toàn Cảnh Báo "Kết Nối Không An Toàn" Trên Máy Khách (Edge / Chrome)</span>
+            </div>
+            <p className="text-amber-800 leading-relaxed">
+              Trình duyệt Chromium (Edge, Chrome) mặc định cảnh báo khi mở trang qua HTTP IP mạng LAN có ô mật khẩu. Để xóa vĩnh viễn cảnh báo này (chỉ cần làm 1 lần trên máy khách):
+            </p>
+            <div className="bg-white/80 p-3 rounded-xl border border-amber-200 font-mono space-y-1.5 text-[11px]">
+              <div><b>Bước 1:</b> Mở tab mới trên Edge/Chrome, gõ vào thanh địa chỉ: <code className="bg-amber-100 px-1.5 py-0.5 rounded text-amber-900">edge://flags</code> (hoặc <code className="bg-amber-100 px-1.5 py-0.5 rounded text-amber-900">chrome://flags</code>)</div>
+              <div><b>Bước 2:</b> Tìm từ khóa: <code className="bg-amber-100 px-1.5 py-0.5 rounded text-amber-900">Insecure origins treated as secure</code> &rarr; chuyển sang <b>Enabled</b></div>
+              <div><b>Bước 3:</b> Dán địa chỉ IP máy chủ của bạn vào ô bên dưới &rarr; bấm <b>Restart / Relaunch</b> trình duyệt.</div>
+            </div>
+            <p className="text-amber-700 text-[11px] italic">
+              * Sau khi làm xong, trình duyệt sẽ công nhận IP mạng LAN an toàn như HTTPS, không bao giờ hiện cảnh báo nhạy cảm nữa!
+            </p>
+          </div>
+
+          {/* Guide Card: Silent Runner */}
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-2 text-xs text-slate-600">
+            <div className="font-bold text-slate-900 flex items-center gap-2">
+              <Server className="w-4 h-4 text-slate-700" />
+              <span>Khởi Động Máy Chủ Chạy Ẩn Không Hiện Bảng CMD (Windows Silent Runner)</span>
+            </div>
+            <p className="leading-relaxed">
+              Nếu không muốn thấy cửa sổ đen CMD xuất hiện trên màn hình khi làm việc, anh chỉ cần nhấp đúp vào file <code className="font-mono font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">start-server-hidden.vbs</code> trong thư mục dự án.
+              Máy chủ sẽ tự động chạy ngầm dưới dạng tiến trình nền (tiêu tốn &lt; 15MB RAM), hoàn toàn không làm giật màn hình và 100% tuân thủ chính sách CrowdStrike Falcon EDR.
+            </p>
           </div>
         </div>
       )}

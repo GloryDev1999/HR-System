@@ -1,4 +1,5 @@
 import { RoleType, SessionUser } from '../types';
+import { lanSyncService } from './lan-sync-service';
 
 export interface ActiveUserPresence {
   username: string;
@@ -71,11 +72,29 @@ class PresenceManager {
       this.checkTimer = setInterval(() => {
         this.cleanupAndNotify();
       }, 8000);
+
+      // Đăng ký nhận user online qua kênh SSE Realtime mạng LAN
+      lanSyncService.onPresence((lanUsers) => {
+        for (const u of lanUsers) {
+          if (this.currentSession && u.username.toLowerCase() === this.currentSession.username.toLowerCase()) continue;
+          this.recordRemotePresence({
+            username: u.username,
+            displayName: u.displayName,
+            role: u.role as any,
+            status: 'online',
+            lastActive: u.lastActive,
+            currentTab: u.currentTab,
+            color: getUserColor(u.username)
+          });
+        }
+      });
     }
   }
 
   public setSession(session: SessionUser | null, tabName?: string) {
     if (tabName) this.currentTabName = tabName;
+
+    lanSyncService.setSession(session, tabName || this.currentTabName);
 
     if (!session) {
       this.leave();
@@ -91,6 +110,7 @@ class PresenceManager {
 
   public updateCurrentTab(tabName: string) {
     this.currentTabName = tabName;
+    lanSyncService.updateTab(tabName);
     if (this.currentSession) {
       this.sendHeartbeat();
     }

@@ -9,6 +9,7 @@
     "build": "tsc && vite build && node scripts/copy-offline-assets.mjs",
     "preview": "vite preview",
     "serve": "vite preview --host 0.0.0.0 --port 4173",
+    "server": "node server.js",
     "setup": "npm install && npm run build",
     "shortcut": "node scripts/make-shortcut.mjs",
     "test": "vitest run",

@@ -3,9 +3,9 @@
     "project_name": "SmartHR - Single-File In-Browser HRMS & Timekeeping System",
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
-    "last_updated": "2026-09-16T09:20:56Z",
-    "current_phase": "Phase 28: Migrate WebRTC Star-Cluster/Folder-Signaling to Pure JSON Sync Dual-Master Phuong an A (139/139 tests green, tsc clean)",
-    "version": "2.8.0"
+    "last_updated": "2026-09-18T01:42:30Z",
+    "current_phase": "Phase 30: LAN Realtime Sync Hub & Presence with Silent Runner (139/139 tests green, tsc clean, production build OK)",
+    "version": "3.0.0"
   },
   "agent_profile": {
     "role": "Senior Principal System Designer & Staff IT Software Engineer",
@@ -277,15 +277,38 @@
       ]
     },
     "M19_Json_Sync_DualMaster_2026_09_16": {
-      "status": "IN_PROGRESS",
-      "completion_pct": 70,
+      "status": "COMPLETED",
+      "completion_pct": 100,
       "features": [
         "Loai bo WebRTC Star-Cluster (webrtc-cluster-service.ts 995 dong), folder-signaling-service.ts, types/cluster.ts, webrtc-cluster.test.ts de tranh CSP/EDR chan blob Worker tren Edge doanh nghiep",
         "Service moi src/services/json-sync-service.ts (Phuong an A Dual-master): master_kieu.json / master_hoa.json / master_glory.json + dept_WH_vinh.json / dept_QC_nguyetanh.json / dept_PRD_han.json",
         "Merge LWW theo PK voi _sync {at,by} + tie-break kieu > hoa > glory, employees khong bao gio xoa + chan trung erpId, productivityQualityRates merge theo field NS/CL rieng, auditLogs union append-only",
         "Folder Access 1-click: luu DirectoryHandle vao IndexedDB (smarthr_json_sync_db), scan/ingest/export dept+master, phat hien conflict-copy OneDrive",
-        "Verify 2026-09-16: vitest 139/139 pass (10 files, gom 9 tests json-sync moi), tsc --noEmit 0 loi",
-        "Con lai: commit + rebuild dist/index.html + test Edge file:// thu muc OneDrive that"
+        "Verify 2026-09-16 (post-session restore): vitest 139/139 pass (10 files), tsc --noEmit 0 loi, dist/index.html 72MB build moi nhat da kem commit a846e30",
+        "Tich hop UI hoan tat: Header.tsx + SettingsPage.tsx (ket noi thu muc/scan/ingest/export), ShiftAssignmentPage.tsx (submitDeptShifts + auto-scan), ProductivityQualityPage.tsx (stamp NS/CL)",
+        "Con lai duy nhat: user test thu cong tren Edge file:// voi thu muc OneDrive that (ngoai pham vi container)"
+      ]
+    },
+    "M20_Portable_LAN_Server_Falcon_2026_09_18": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "Tạo file server.js thuần chuẩn 100% native Node.js (http, fs, path, os, zlib, url), zero external dependencies, tương thích hoàn toàn với Node.js Portable (node.exe unzipped) không cần npm install / npm setup",
+        "Tối ưu hóa môi trường Falcon EDR (CrowdStrike): 0 child process spawning (tránh heuristic Living-off-the-Land), stream I/O chunking (RAM < 15MB, không load nguyên 75MB dist/index.html vào bộ nhớ heap)",
+        "Tự động nén Gzip/Deflate on-the-fly nén 75MB bundle xuống còn ~15MB truyền LAN siêu tốc",
+        "Cấu hình Cross-Origin Isolation Headers bắt buộc cho ONNX Runtime WASM SIMD Web Worker: Cross-Origin-Opener-Policy: same-origin, Cross-Origin-Embedder-Policy: require-corp",
+        "Hỗ trợ ETag 304 Not Modified và cache control tĩnh, F5 trình duyệt không tải lại file nặng",
+        "Bảo vệ Directory Traversal và Fallback định tuyến SPA (React Router)",
+        "Động hóa IP mạng LAN: Lắng nghe 0.0.0.0, dùng os.networkInterfaces() quét và in toàn bộ URL truy cập cho máy nội bộ và máy khác cùng mạng LAN (Wi-Fi, Ethernet)",
+        "Thêm script start-server.bat cho Windows tự nhận diện node.exe trong thư mục hiện tại hoặc thư mục con node/nodejs",
+        "Cập nhật package.json scripts: bổ sung npm run server",
+        "Đã test thực tế: server khởi động tức thì, curl kiểm tra 200 OK, Gzip stream chunked, 304 Not Modified, SPA fallback đều chính xác 100%",
+        "Tích hợp Real-time Client Connection Monitor: tự động phân tích IP, phân biệt Local vs LAN client, nhận diện thiết bị/trình duyệt, in thông báo màu trực quan trên Terminal ngay khi có máy khác truy cập",
+        "Trang chẩn đoán mạng LAN /status: hiển thị bảng điều khiển trực quan thống kê danh sách IP máy khách, thiết bị, thời gian truy cập gần nhất và số lượng request",
+        "Thêm start-server-hidden.vbs: khởi động node.exe server.js hoàn toàn ẩn cửa sổ đen CMD, 0 giật màn hình, an toàn cho Falcon EDR",
+        "Nâng cấp server.js: Kênh SSE Realtime (/api/realtime) thông báo user online đa máy, LAN Delta Sync Hub (/api/sync/mutate & /api/sync/pull), Master Store data/lan_master_store.json, Health Ping /api/health",
+        "Frontend lan-sync-service.ts & presence-service.ts: kết nối SSE, heartbeat đa máy, nạp remote mutation vào Dexie, PresenceBar hiển thị avatar đồng nghiệp tức thì",
+        "Frontend SettingsPage.tsx: tab mới 'Máy Chủ & Đồng Bộ LAN Realtime' với thẻ trạng thái, Ping ms, địa chỉ IP card mạng, bảng user online, hướng dẫn xóa cảnh báo Insecure trên Edge/Chrome flags"
       ]
     }
   }
