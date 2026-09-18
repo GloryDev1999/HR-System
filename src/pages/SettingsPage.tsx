@@ -24,7 +24,8 @@ import {
   ExternalLink,
   Zap,
   Activity,
-  Users
+  Users,
+  Play
 } from 'lucide-react';
 import { lanSyncService, LanServerHealth, LanOnlineUser } from '../services/lan-sync-service';
 import { useAuth } from '../context/AuthContext';
@@ -167,6 +168,49 @@ export const SettingsPage: React.FC = () => {
   const [isPinging, setIsPinging] = useState(false);
   const [lanOnlineUsers, setLanOnlineUsers] = useState<LanOnlineUser[]>([]);
   const [copiedIp, setCopiedIp] = useState<string | null>(null);
+  const [isStartingServer, setIsStartingServer] = useState(false);
+
+  const handleLaunchServerProtocol = () => {
+    if (isStartingServer) return;
+    setIsStartingServer(true);
+
+    try {
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = 'smarthr://start';
+      document.body.appendChild(iframe);
+      setTimeout(() => {
+        try {
+          document.body.removeChild(iframe);
+        } catch {}
+      }, 2000);
+    } catch {
+      window.location.href = 'smarthr://start';
+    }
+
+    let attempts = 0;
+    const maxAttempts = 6;
+    const pollInterval = setInterval(async () => {
+      attempts++;
+      const health = await lanSyncService.checkServerHealth();
+      if (health?.status === 'online') {
+        clearInterval(pollInterval);
+        setIsStartingServer(false);
+        setServerHealth(health);
+        success(
+          'Máy chủ đã khởi động thành công!',
+          `Server đang chạy ngầm trên cổng ${health.port}. Đã sẵn sàng kết nối mạng LAN.`
+        );
+      } else if (attempts >= maxAttempts) {
+        clearInterval(pollInterval);
+        setIsStartingServer(false);
+        warning(
+          'Chưa phát hiện máy chủ',
+          'Nếu đây là lần đầu tiên kích hoạt từ web, vui lòng chạy file "register-protocol.bat" (1 lần duy nhất) để đăng ký giao thức smarthr:// với Windows.'
+        );
+      }
+    }, 1000);
+  };
 
   React.useEffect(() => {
     lanSyncService.checkServerHealth().then(h => setServerHealth(h));
@@ -1011,6 +1055,27 @@ export const SettingsPage: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
+              {serverHealth?.status !== 'online' ? (
+                <button
+                  onClick={handleLaunchServerProtocol}
+                  disabled={isStartingServer}
+                  className="flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-bold transition shadow-md hover:shadow-emerald-500/25 active:scale-95 disabled:opacity-50"
+                  title="Khởi động server.js chạy ngầm qua giao thức smarthr://"
+                >
+                  <Play className={`w-3.5 h-3.5 ${isStartingServer ? 'animate-spin' : 'fill-white'}`} />
+                  <span>{isStartingServer ? 'Đang kích hoạt server...' : '🚀 Kích Hoạt Server (Chạy Ngầm)'}</span>
+                </button>
+              ) : (
+                <button
+                  onClick={handleLaunchServerProtocol}
+                  disabled={isStartingServer}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-slate-800/80 hover:bg-slate-700/80 text-emerald-400 border border-emerald-500/30 rounded-xl text-xs font-bold transition shadow-xs"
+                  title="Máy chủ đang chạy. Bấm nếu muốn gửi tín hiệu kích hoạt ngầm."
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Máy Chủ Đang Chạy</span>
+                </button>
+              )}
               <button
                 onClick={handlePingServer}
                 disabled={isPinging}
@@ -1213,6 +1278,45 @@ export const SettingsPage: React.FC = () => {
             </div>
             <p className="text-amber-700 text-[11px] italic">
               * Sau khi làm xong, trình duyệt sẽ công nhận IP mạng LAN an toàn như HTTPS, không bao giờ hiện cảnh báo nhạy cảm nữa!
+            </p>
+          </div>
+
+          {/* Guide Card: 1-Click Launch Protocol */}
+          <div className="bg-indigo-50/70 border border-indigo-200 rounded-2xl p-5 space-y-3 text-xs text-indigo-950">
+            <div className="font-bold flex items-center justify-between">
+              <div className="flex items-center gap-2 text-indigo-900 text-sm">
+                <Play className="w-4 h-4 text-indigo-600 fill-indigo-600" />
+                <span>Tính Năng Mở Máy Chủ 1-Click Trực Tiếp Từ Trình Duyệt (Giao thức smarthr://)</span>
+              </div>
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                Falcon EDR Safe 100%
+              </span>
+            </div>
+            <p className="leading-relaxed text-indigo-900">
+              Bạn có thể khởi động <code className="font-mono font-bold bg-indigo-100 px-1 py-0.5 rounded text-indigo-900">server.js</code> ngay tại nút bấm góc trên mà không cần mở thư mục hay gõ lệnh. Cơ chế hoạt động qua Custom Protocol Handler của Windows (tương tự như Teams, Zoom, Slack) và hoàn toàn không bị Falcon chặn:
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+              <div className="bg-white/90 p-3.5 rounded-xl border border-indigo-200 space-y-1.5">
+                <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                  <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold">1</span>
+                  Kích hoạt 1 lần duy nhất (Máy chủ)
+                </div>
+                <p className="text-slate-600">
+                  Nhấp đúp vào file <code className="font-mono font-bold text-indigo-700 bg-indigo-50 px-1 py-0.5 rounded">register-protocol.bat</code> trong thư mục dự án. Script chỉ ghi vào <code className="font-mono text-slate-700">HKCU\Software\Classes</code> của tài khoản hiện tại, <b>không đòi hỏi quyền Admin</b> và <b>không khóa cứng tên User</b>.
+                </p>
+              </div>
+              <div className="bg-white/90 p-3.5 rounded-xl border border-indigo-200 space-y-1.5">
+                <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                  <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold">2</span>
+                  Bấm nút trên web để chạy ngầm
+                </div>
+                <p className="text-slate-600">
+                  Sau khi đăng ký, mỗi khi cần mở server, bạn chỉ cần bấm nút <b>"🚀 Kích Hoạt Server (Chạy Ngầm)"</b> ở góc trên. Trình duyệt sẽ đánh thức script VBS chạy Node.js ngầm hoàn toàn, không hiện cửa sổ đen CMD.
+                </p>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-500 italic">
+              * Nếu chuyển dự án sang máy khác hoặc tài khoản khác, chỉ cần chạy lại <code className="font-mono">register-protocol.bat</code> trên máy đó. Muốn gỡ bỏ: Chạy <code className="font-mono">unregister-protocol.bat</code>.
             </p>
           </div>
 
