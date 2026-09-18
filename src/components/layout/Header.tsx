@@ -250,8 +250,8 @@ export const Header: React.FC = () => {
           let postTimesheets: any[] = Array.isArray(msg.timesheets) ? [...msg.timesheets] : [];
           let postRawLogs: any[] = Array.isArray(msg.rawLogs) ? [...msg.rawLogs] : [];
           const overtimesToCreate: any[] = [];
-          const restViolationsToCreate: any[] = [];
           const leaveRequestsToCreate: any[] = [];
+          const updatedRostersMap = new Map<string, any>();
 
           try {
             const employees = await db.employees.toArray();
@@ -259,6 +259,33 @@ export const Header: React.FC = () => {
             const empMap = new Map<string, any>(employees.map((e: any) => [e.employeeId.toUpperCase(), e]));
             const erpMap = new Map<string, any>(employees.filter((e: any) => e.erpId).map((e: any) => [String(e.erpId).trim(), e]));
             const shiftMap = new Map<string, any>(shiftRosters.map((r: any) => [r.employeeId_date, r]));
+            for (const [k, v] of shiftMap.entries()) {
+              updatedRostersMap.set(k, v);
+            }
+
+            // Helper nhận diện ca thực tế từ giờ quẹt thẻ chấm công
+            const detectPunchShift = (checkIn: string, checkOut: string): { shiftCode: string; label: string; start: string; end: string } | null => {
+              const inM = parseTimeToMinutes(checkIn);
+              if (inM === null) return null;
+
+              // Ca 2: 14:00 - 22:00 (vào từ 12:00 đến 17:00)
+              if (inM >= 12 * 60 && inM <= 17 * 60) {
+                return { shiftCode: 'SHIFT_2', label: 'Ca 2 (14:00 - 22:00)', start: '14:00', end: '22:00' };
+              }
+
+              // Ca 1: 06:00 - 14:00 (vào từ 04:30 đến 07:00)
+              if (inM >= 4 * 60 + 30 && inM < 7 * 60) {
+                return { shiftCode: 'SHIFT_1', label: 'Ca 1 (06:00 - 14:00)', start: '06:00', end: '14:00' };
+              }
+
+              // Vào từ 07:00 đến 10:00:
+              // Nếu quẹt ra <= 14:45 -> Ca 1 trễ; Nếu quẹt ra > 14:45 -> Hành chính OFFICE_M_S
+              const outM = parseTimeToMinutes(checkOut);
+              if (outM !== null && outM <= 14 * 60 + 45) {
+                return { shiftCode: 'SHIFT_1', label: 'Ca 1 (06:00 - 14:00)', start: '06:00', end: '14:00' };
+              }
+              return { shiftCode: 'OFFICE_M_S', label: 'HC (07:30 - 16:00)', start: '07:30', end: '16:00' };
+            };
 
             // Helper tìm nhân viên linh hoạt theo employeeId, erpId, LEP000, LEP000Text
             const findEmployee = (rawId: string): any => {
@@ -641,6 +668,74 @@ export const Header: React.FC = () => {
               }
             }
 
+            // === 2.5 ĐỐI CHIẾU CA SẮP XẾP VS CHẤM CÔNG THỰC TẾ (CẢNH BÁO ĐI SAI GIỜ SẮP CA) ===
+            for (const ts of postTimesheets) {
+              const emp = empMap.get(String(ts.employeeId || '').toUpperCase());
+              // Miễn trừ tuyệt đối khối hành chính văn phòng OFFICE_M_F (23 công)
+              if (emp?.shiftClassId === 'OFFICE_M_F') continue;
+
+              const checkIn = String(ts.checkIn || '').trim();
+              const checkOut = String(ts.checkOut || '').trim();
+              if (!checkIn) continue;
+
+              const rosterKey = `${ts.employeeId}_${ts.date}`;
+              let roster = updatedRostersMap.get(rosterKey);
+              const shiftInfo = getShiftInfo(emp, ts.date);
+              const detectedShift = detectPunchShift(checkIn, checkOut);
+
+              const scheduledShift = roster?.shiftCode || shiftInfo.shiftCode;
+              const isEligibleDept = ['Production', 'QC', 'WH'].includes(emp?.department || '');
+
+              const isShiftMismatch = Boolean(
+                detectedShift &&
+                scheduledShift &&
+                detectedShift.shiftCode !== scheduledShift &&
+                (Boolean(roster) || isEligibleDept)
+              );
+
+              let mismatchDetails: string | undefined;
+              if (isShiftMismatch && detectedShift) {
+                const scheduledLabel = scheduledShift === 'SHIFT_1' ? 'Ca 1 (06:00-14:00)' : scheduledShift === 'SHIFT_2' ? 'Ca 2 (14:00-22:00)' : 'HC (07:30-16:00)';
+                mismatchDetails = `Đi sai giờ sắp ca: Sắp ${scheduledLabel}, thực tế đi ${detectedShift.label} (vào ${checkIn}${checkOut ? ', ra ' + checkOut : ''})`;
+
+                ts.isViolation = true;
+                ts.isViolationFlag = 1;
+                ts.violationNote = ts.violationNote
+                  ? `${ts.violationNote} | Đi sai ca (Sắp ${scheduledShift}, đi ${detectedShift.shiftCode})`
+                  : `Đi sai ca (Sắp ${scheduledShift}, thực tế đi ${detectedShift.shiftCode})`;
+              }
+
+              if (roster) {
+                roster.actualCheckIn = checkIn;
+                roster.actualCheckOut = checkOut;
+                roster.actualShiftCode = detectedShift?.shiftCode;
+                roster.isShiftMismatch = isShiftMismatch;
+                roster.isShiftMismatchFlag = isShiftMismatch ? 1 : 0;
+                roster.mismatchDetails = mismatchDetails;
+                updatedRostersMap.set(rosterKey, roster);
+              } else if (isShiftMismatch && detectedShift) {
+                updatedRostersMap.set(rosterKey, {
+                  employeeId_date: rosterKey,
+                  employeeId: ts.employeeId,
+                  fullName: emp?.fullName || ts.employeeId,
+                  department: emp?.department || '',
+                  date: ts.date,
+                  shiftCode: scheduledShift,
+                  startTime: shiftInfo.start,
+                  endTime: shiftInfo.end,
+                  actualCheckIn: checkIn,
+                  actualCheckOut: checkOut,
+                  actualShiftCode: detectedShift.shiftCode,
+                  isShiftMismatch: true,
+                  isShiftMismatchFlag: 1,
+                  mismatchDetails,
+                  isRestViolation: false,
+                  isRestViolationFlag: 0,
+                  restHours: 16
+                });
+              }
+            }
+
             // === 3. KIỂM TRA VI PHẠM XOAY CA KHÔNG NGHỈ ĐỦ 12 TIẾNG (12h Rest Rule - LỰA CHỌN A) ===
             const empTimesheetMap = new Map<string, any[]>();
             for (const ts of postTimesheets) {
@@ -652,6 +747,7 @@ export const Header: React.FC = () => {
             for (const [empId, list] of empTimesheetMap.entries()) {
               list.sort((a, b) => a.date.localeCompare(b.date));
               const emp = empMap.get(empId.toUpperCase());
+              if (emp?.shiftClassId === 'OFFICE_M_F') continue; // Miễn trừ HC văn phòng
 
               for (let idx = 0; idx < list.length - 1; idx++) {
                 const curTs = list[idx];
@@ -678,21 +774,42 @@ export const Header: React.FC = () => {
                     const restHours = +(restMins / 60).toFixed(1);
 
                     if (restMins < 12 * 60) {
-                      restViolationsToCreate.push({
-                        employeeId_date: `${empId}_${nextTs.date}`,
-                        employeeId: empId,
-                        fullName: emp?.fullName || empId,
-                        department: emp?.department || '',
-                        date: nextTs.date,
-                        shiftCode: nextShift.shiftCode,
-                        previousShiftEndTime: curEndStr,
-                        startTime: nextStartStr,
-                        endTime: nextTs.checkOut || nextShift.end,
-                        restHours: restHours,
-                        isRestViolation: true,
-                        isRestViolationFlag: 1,
-                        violationDetails: `Nghỉ ${restHours}h giữa 2 ca liên tiếp (${curEndStr} → ${nextStartStr}) < 12h theo Luật LĐ & L&P`
-                      });
+                      const nextRosterKey = `${empId}_${nextTs.date}`;
+                      const existingRoster = updatedRostersMap.get(nextRosterKey);
+                      const violationNote = `Nghỉ ${restHours}h giữa 2 ca liên tiếp (${curEndStr} → ${nextStartStr}) < 12h theo Luật LĐ & L&P`;
+
+                      if (existingRoster) {
+                        existingRoster.previousShiftEndTime = curEndStr;
+                        existingRoster.restHours = restHours;
+                        existingRoster.isRestViolation = true;
+                        existingRoster.isRestViolationFlag = 1;
+                        existingRoster.violationDetails = violationNote;
+                        updatedRostersMap.set(nextRosterKey, existingRoster);
+                      } else {
+                        updatedRostersMap.set(nextRosterKey, {
+                          employeeId_date: nextRosterKey,
+                          employeeId: empId,
+                          fullName: emp?.fullName || empId,
+                          department: emp?.department || '',
+                          date: nextTs.date,
+                          shiftCode: nextShift.shiftCode,
+                          previousShiftEndTime: curEndStr,
+                          startTime: nextStartStr,
+                          endTime: nextTs.checkOut || nextShift.end,
+                          restHours: restHours,
+                          isRestViolation: true,
+                          isRestViolationFlag: 1,
+                          violationDetails: violationNote,
+                          isShiftMismatch: false,
+                          isShiftMismatchFlag: 0
+                        });
+                      }
+
+                      nextTs.isViolation = true;
+                      nextTs.isViolationFlag = 1;
+                      nextTs.violationNote = nextTs.violationNote
+                        ? `${nextTs.violationNote} | Vi phạm nghỉ < 12h (${restHours}h)`
+                        : `Vi phạm nghỉ < 12h giữa 2 ca (${restHours}h)`;
                     }
                   }
                 }
@@ -712,13 +829,13 @@ export const Header: React.FC = () => {
           setImportStatusText('[6/6] Ghi vào cơ sở dữ liệu Dexie.js (IndexedDB)...');
 
           // Thực hiện làm sạch và ghi mới trong MỘT Transaction nguyên tử (ACID)
-          // Đảm bảo không bao giờ bị mất dữ liệu cũ nếu gặp lỗi giữa chừng
+          // Đảm bảo KHÔNG clear shiftRosters để bảo toàn dữ liệu sắp ca từ các trạm!
           await db.transaction('rw', [db.dailyTimesheets, db.overtimeRecords, db.rawAttendanceLogs, db.leaveRequests, db.shiftRosters], async () => {
             await db.dailyTimesheets.clear();
             await db.overtimeRecords.clear();
             await db.rawAttendanceLogs.clear();
             await db.leaveRequests.clear();
-            await db.shiftRosters.clear();
+            // KHÔNG clear shiftRosters!
 
             if (postTimesheets.length > 0) {
               await db.dailyTimesheets.bulkPut(postTimesheets);
@@ -732,16 +849,21 @@ export const Header: React.FC = () => {
             if (leaveRequestsToCreate.length > 0) {
               await db.leaveRequests.bulkPut(leaveRequestsToCreate);
             }
-            if (restViolationsToCreate.length > 0) {
-              await db.shiftRosters.bulkPut(restViolationsToCreate);
+            const rostersToSave = Array.from(updatedRostersMap.values());
+            if (rostersToSave.length > 0) {
+              await db.shiftRosters.bulkPut(rostersToSave as any);
             }
           });
+
+          const allRosters = Array.from(updatedRostersMap.values());
+          const restViolationCount = allRosters.filter((r: any) => r.isRestViolation).length;
+          const mismatchCount = allRosters.filter((r: any) => r.isShiftMismatch).length;
 
           setImportProgress(100);
           setIsImporting(false);
           success(
             'Nạp dữ liệu chấm công thành công!',
-            `Đã làm sạch bảng công cũ và cập nhật ${postTimesheets.length.toLocaleString()} ô công, ${overtimesToCreate.length.toLocaleString()} bản ghi tăng ca, ${restViolationsToCreate.length} cảnh báo xoay ca < 12h.`
+            `Đã làm sạch bảng công cũ và cập nhật ${postTimesheets.length.toLocaleString()} ô công, ${overtimesToCreate.length.toLocaleString()} bản ghi tăng ca, ${restViolationCount} cảnh báo nghỉ < 12h, ${mismatchCount} cảnh báo đi sai ca.`
           );
     } catch (err: any) {
       setIsImporting(false);

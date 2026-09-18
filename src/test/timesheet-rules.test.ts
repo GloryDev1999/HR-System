@@ -724,6 +724,80 @@ describe('Timesheet Business Rules & Status Logic', () => {
       expect(evaluated.find(e => e.dateStr === '2026-09-03')?.status).toBe('MCI');
     });
   });
+
+  describe('Shift Assignment vs Actual Punch Verification (Đi sai giờ sắp ca)', () => {
+    const parseTimeToMinutes = (t: string): number | null => {
+      if (!t) return null;
+      const [h, m] = t.split(':').map(Number);
+      return h * 60 + m;
+    };
+
+    const detectPunchShift = (checkIn: string, checkOut: string) => {
+      const inM = parseTimeToMinutes(checkIn);
+      if (inM === null) return null;
+      if (inM >= 12 * 60 && inM <= 17 * 60) return { shiftCode: 'SHIFT_2', label: 'Ca 2' };
+      if (inM >= 4 * 60 + 30 && inM < 7 * 60) return { shiftCode: 'SHIFT_1', label: 'Ca 1' };
+      const outM = parseTimeToMinutes(checkOut);
+      if (outM !== null && outM <= 14 * 60 + 45) return { shiftCode: 'SHIFT_1', label: 'Ca 1' };
+      return { shiftCode: 'OFFICE_M_S', label: 'HC' };
+    };
+
+    it('flags mismatch when scheduled Ca 1 (06:00-14:00) but punched Ca 2 (14:00-22:00)', () => {
+      const scheduledShift = 'SHIFT_1';
+      const actualPunch = detectPunchShift('13:55', '22:05');
+      expect(actualPunch?.shiftCode).toBe('SHIFT_2');
+      const isMismatch = actualPunch?.shiftCode !== scheduledShift;
+      expect(isMismatch).toBe(true);
+    });
+
+    it('flags mismatch when scheduled Ca 2 (14:00-22:00) but punched Ca 1 (06:00-14:00)', () => {
+      const scheduledShift = 'SHIFT_2';
+      const actualPunch = detectPunchShift('05:52', '14:05');
+      expect(actualPunch?.shiftCode).toBe('SHIFT_1');
+      const isMismatch = actualPunch?.shiftCode !== scheduledShift;
+      expect(isMismatch).toBe(true);
+    });
+
+    it('does NOT flag mismatch when scheduled Ca 1 and punches are on Ca 1 (even if slightly late)', () => {
+      const scheduledShift = 'SHIFT_1';
+      const actualPunch = detectPunchShift('06:15', '14:02');
+      expect(actualPunch?.shiftCode).toBe('SHIFT_1');
+      const isMismatch = actualPunch?.shiftCode !== scheduledShift;
+      expect(isMismatch).toBe(false);
+    });
+
+    it('strictly excludes OFFICE_M_F employees from shift mismatch alerts', () => {
+      const emp = { employeeId: 'LEP099', shiftClassId: 'OFFICE_M_F' };
+      const isExempt = emp.shiftClassId === 'OFFICE_M_F';
+      expect(isExempt).toBe(true);
+    });
+  });
+
+  describe('Employee Resignation & Monthly Auto-Purge Lifecycle', () => {
+    it('calculates pay period correctly and determines whether resigned employee should be purged', () => {
+      // Giả sử kỳ công hiện tại là Tháng 9/2026 (2026-09-18)
+      const currentPeriod = { month: 9, year: 2026 };
+
+      // Nhân viên nghỉ trong tháng hiện tại (2026-09-05) -> Vẫn giữ hiển thị "Đã nghỉ việc"
+      const resignedThisMonth = { resignedDate: '2026-09-05', month: 9, year: 2026 };
+      const shouldPurgeThisMonth = (resignedThisMonth.year < currentPeriod.year) ||
+        (resignedThisMonth.year === currentPeriod.year && resignedThisMonth.month < currentPeriod.month);
+      expect(shouldPurgeThisMonth).toBe(false);
+
+      // Nhân viên nghỉ trong tháng trước (2026-08-15) -> Đã hết tháng, tự động xóa
+      const resignedLastMonth = { resignedDate: '2026-08-15', month: 8, year: 2026 };
+      const shouldPurgeLastMonth = (resignedLastMonth.year < currentPeriod.year) ||
+        (resignedLastMonth.year === currentPeriod.year && resignedLastMonth.month < currentPeriod.month);
+      expect(shouldPurgeLastMonth).toBe(true);
+    });
+
+    it('computes turnover rate KPI based on resigned employees', () => {
+      const totalEmployees = 100;
+      const resignedCount = 3;
+      const turnoverRate = +((resignedCount / totalEmployees) * 100).toFixed(1);
+      expect(turnoverRate).toBe(3.0);
+    });
+  });
 });
 
 

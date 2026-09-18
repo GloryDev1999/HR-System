@@ -47,16 +47,17 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
 
   // v6: dùng Flag 0|1 thay boolean để index hợp lệ (IndexedDB chỉ cho Number/String/Date)
   const badgeCounts = useLiveQuery(async () => {
-    const [pendingLeave, violations, pendingOT, attendanceViolations] = await Promise.all([
+    const [pendingLeave, violations, pendingOT, attendanceViolations, shiftMismatches] = await Promise.all([
       db.leaveRequests.where('status').equals('PENDING').count(),
       db.shiftRosters.where('isRestViolationFlag').equals(1).count(),
       db.overtimeRecords.where('verificationStatus').equals('PENDING').count(),
       db.dailyTimesheets.where('statusCode').anyOf(['LA','ED','MCO','MCI']).count(),
+      db.shiftRosters.where('isShiftMismatchFlag').equals(1).count().catch(() => 0),
     ]);
-    return { pendingLeave, violations, pendingOT, attendanceViolations };
+    return { pendingLeave, violations, pendingOT, attendanceViolations, shiftMismatches };
   }, []);
   const pendingLeaveCount = badgeCounts?.pendingLeave ?? 0;
-  const shiftViolationCount = badgeCounts?.violations ?? 0;
+  const shiftViolationCount = (badgeCounts?.violations ?? 0) + (badgeCounts?.shiftMismatches ?? 0);
   const pendingOTCount = badgeCounts?.pendingOT ?? 0;
   const attendanceViolationCount = badgeCounts?.attendanceViolations ?? 0;
 
@@ -161,25 +162,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
           </button>
         )}
 
-        {/* Shift Roster & 12h Rest Violations - Chỉ HR, Admin, Software nhìn thấy */}
-        {isMasterUser && (hasPermission('MANAGE_ROSTER') || hasPermission('MANAGE_DEPT_ROSTER')) && (
-          <button
-            onClick={() => onSelectPage('shiftRoster')}
-            className={menuItemClass(activePage === 'shiftRoster')}
-          >
-            <div className="flex items-center gap-2.5">
-              <RotateCcw className={`w-4 h-4 ${activePage === 'shiftRoster' ? 'text-[#FF5B26]' : 'text-slate-400'}`} />
-              <span>{t('shiftRoster')}</span>
-            </div>
-            {shiftViolationCount > 0 && (
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-600 text-white animate-pulse">
-                {shiftViolationCount}
-              </span>
-            )}
-          </button>
-        )}
-
-        {/* Sắp Xếp Ca Làm Việc - mới, nằm ngay dưới Phân Ca, lọc theo bộ phận, role-based */}
+        {/* Sắp Xếp Ca Làm Việc & Tiếp Nhận Dữ Liệu Sắp Ca Từ Các Trạm */}
         {(hasPermission('MANAGE_ROSTER') || hasPermission('MANAGE_DEPT_ROSTER')) && (
           <button
             onClick={() => onSelectPage('shiftAssignment')}
@@ -189,6 +172,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
               <Briefcase className={`w-4 h-4 ${activePage === 'shiftAssignment' ? 'text-[#FF5B26]' : 'text-slate-400'}`} />
               <span>{isHostOrHR ? 'Tiếp Nhận Sắp Ca' : t('shiftAssignment')}</span>
             </div>
+            {shiftViolationCount > 0 && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-600 text-white animate-pulse" title="Cảnh báo vi phạm nghỉ 12h & Đi sai ca">
+                {shiftViolationCount}
+              </span>
+            )}
           </button>
         )}
 

@@ -2,7 +2,7 @@
 
 /* Tailwind v4: định nghĩa theme bằng CSS (tailwind.config.js đã loại bỏ) */
 @theme {
-  --font-sans: "Plus Jakarta Sans", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-sans: "Aptos Narrow", "Aptos", "Plus Jakarta Sans", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 @layer base {

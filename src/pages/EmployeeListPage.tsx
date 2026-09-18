@@ -26,7 +26,7 @@ import { IEmployee, ShiftClassType, ContractType } from '../types';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 import { useAuth } from '../context/AuthContext';
-import { daysUntil } from '../services/pay-period';
+import { daysUntil, getPayPeriod, parseDateLoose } from '../services/pay-period';
 
 export const EmployeeListPage: React.FC = () => {
   const { success, warning, error } = useToast();
@@ -145,37 +145,77 @@ export const EmployeeListPage: React.FC = () => {
     }
   };
 
-  const handleResignEmployee = async (emp: IEmployee) => {
+  // Tự động xóa nhân viên đã nghỉ việc khi bước sang tháng mới
+  React.useEffect(() => {
+    const purgeExpiredResignedEmployees = async () => {
+      try {
+        const allResigned = await db.employees.where('status').equals('RESIGNED').toArray();
+        if (allResigned.length === 0) return;
+
+        const savedMonth = localStorage.getItem('smarthr_selected_month');
+        const savedYear = localStorage.getItem('smarthr_selected_year');
+        const curMonth = savedMonth ? parseInt(savedMonth, 10) : (new Date().getMonth() + 1);
+        const curYear = savedYear ? parseInt(savedYear, 10) : new Date().getFullYear();
+
+        const idsToDelete: string[] = [];
+        for (const emp of allResigned) {
+          if (!emp.resignedDate) continue;
+          const d = parseDateLoose(emp.resignedDate);
+          if (!d) continue;
+          const pp = getPayPeriod(d, emp.contractType);
+          const isPastPeriod = pp.payYear < curYear || (pp.payYear === curYear && pp.payMonth < curMonth);
+          if (isPastPeriod) {
+            idsToDelete.push(emp.employeeId);
+          }
+        }
+
+        if (idsToDelete.length > 0) {
+          await db.employees.bulkDelete(idsToDelete);
+          console.log(`[AUTO-PURGE] Đã tự động xóa ${idsToDelete.length} nhân viên nghỉ việc từ tháng cũ:`, idsToDelete);
+        }
+      } catch (err) {
+        console.warn('Lỗi khi tự động dọn dẹp nhân viên nghỉ việc', err);
+      }
+    };
+
+    purgeExpiredResignedEmployees();
+  }, []);
+
+  const handleDeleteEmployee = async (emp: IEmployee) => {
+    const today = new Date().toLocaleDateString('en-GB'); // DD/MM/YYYY
+
+    if (emp.status === 'RESIGNED') {
+      const ok = await confirm({
+        title: `Xóa vĩnh viễn nhân viên [${emp.employeeId}]`,
+        message: `Nhân viên [${emp.employeeId}] ${emp.fullName} hiện đang ở trạng thái "Đã nghỉ việc" (ngày ${emp.resignedDate || today}). Bạn có muốn xóa vĩnh viễn ngay lập tức khỏi hệ thống không?`,
+        confirmText: 'Xóa vĩnh viễn ngay',
+        cancelText: 'Hủy bỏ',
+        type: 'danger'
+      });
+      if (ok) {
+        await db.employees.delete(emp.employeeId);
+        success('Đã xóa nhân viên', `Nhân viên ${emp.employeeId} - ${emp.fullName} đã được xóa vĩnh viễn.`);
+      }
+      return;
+    }
+
     const ok = await confirm({
-      title: 'Xác nhận cho nghỉ việc',
-      message: `Bạn có chắc chắn muốn cho nhân viên [${emp.employeeId}] ${emp.fullName} nghỉ việc? Thao tác sẽ cập nhật trạng thái RESIGNED và tính vào tỷ lệ nghỉ việc (KPI). Nhân viên sẽ được chuyển sang trạng thái đã nghỉ việc và ẩn khỏi danh sách hoạt động.`,
-      confirmText: 'Xác nhận nghỉ việc',
+      title: `Xác nhận xóa nhân viên [${emp.employeeId}]`,
+      message: `Bạn có chắc chắn muốn xóa nhân viên [${emp.employeeId}] ${emp.fullName}? Hệ thống sẽ chuyển trạng thái sang "Đã nghỉ việc" (RESIGNED) vào ngày ${today}, đồng bộ trực tiếp tới thẻ KPI "Tỷ lệ nghỉ việc". Nhân viên sẽ tiếp tục hiển thị trạng thái "Đã nghỉ việc" cho đến hết tháng này, và sẽ được tự động xóa hoàn toàn khi bắt đầu kỳ công tháng mới.`,
+      confirmText: 'Xác nhận xóa nhân viên',
       cancelText: 'Hủy bỏ',
       type: 'danger'
     });
 
     if (ok) {
-      const today = new Date().toLocaleDateString('en-GB'); // DD/MM/YYYY
       await db.employees.update(emp.employeeId, {
         status: 'RESIGNED',
         resignedDate: today
       } as any);
-      success('Đã cho nghỉ việc', `Nhân viên ${emp.employeeId} - ${emp.fullName} đã được chuyển sang trạng thái nghỉ việc (RESIGNED) ngày ${today}. KPI tỷ lệ nghỉ việc sẽ tự động cập nhật theo kỳ công 21-20 / 01-31.`);
-    }
-  };
-
-  // Giữ hàm xóa cứng cho AD System nếu cần, nhưng nút chính là nghỉ việc
-  const handleDeleteEmployee = async (emp: IEmployee) => {
-    const ok = await confirm({
-      title: 'Xác nhận xóa vĩnh viễn',
-      message: `Bạn có chắc chắn muốn XÓA VĨNH VIỄN nhân viên [${emp.employeeId}] ${emp.fullName}? Hành động không thể hoàn tác.`,
-      confirmText: 'Xóa vĩnh viễn',
-      cancelText: 'Hủy bỏ',
-      type: 'danger'
-    });
-    if (ok) {
-      await db.employees.delete(emp.employeeId);
-      success('Đã xóa nhân viên', `Nhân viên ${emp.employeeId} đã được xóa vĩnh viễn.`);
+      success(
+        'Đã xóa nhân viên (Chuyển sang Đã nghỉ việc)',
+        `Nhân viên ${emp.employeeId} - ${emp.fullName} đã chuyển sang trạng thái "Đã nghỉ việc" ngày ${today}. Số liệu đã đồng bộ vào thẻ KPI Tỷ lệ nghỉ việc trên Dashboard và sẽ tự động xóa khi bắt đầu tháng mới.`
+      );
     }
   };
 
@@ -590,22 +630,13 @@ export const EmployeeListPage: React.FC = () => {
                             <Edit className="w-3.5 h-3.5" />
                           </button>
                         )}
-                        {hasPermission('MANAGE_EMPLOYEES') && emp.status !== 'RESIGNED' && (
-                          <button
-                            onClick={() => handleResignEmployee(emp)}
-                            className="p-1.5 text-slate-500 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition"
-                            title="Cho nghỉ việc (tính KPI tỷ lệ nghỉ việc)"
-                          >
-                            <UserMinus className="w-3.5 h-3.5" />
-                          </button>
-                        )}
                         {hasPermission('MANAGE_EMPLOYEES') && (
                           <button
                             onClick={() => handleDeleteEmployee(emp)}
-                            className="p-1.5 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                            title="Xóa vĩnh viễn (AD System)"
+                            className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition"
+                            title={emp.status === 'RESIGNED' ? 'Xóa vĩnh viễn khỏi hệ thống' : 'Xóa nhân viên (Chuyển sang Đã nghỉ việc, tính KPI nghỉ việc & tự xóa khi bắt đầu tháng mới)'}
                           >
-                            <Trash2 className="w-3 h-3" />
+                            <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>

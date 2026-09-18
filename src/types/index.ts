@@ -208,6 +208,12 @@ export interface IShiftRosterEntry {
   isRestViolation: boolean;   // giữ boolean gốc
   isRestViolationFlag: 0 | 1; // shadow 0|1 CHỈ để index
   violationDetails?: string;
+  actualShiftCode?: ShiftClassType | string;
+  actualCheckIn?: string;
+  actualCheckOut?: string;
+  isShiftMismatch?: boolean;
+  isShiftMismatchFlag?: 0 | 1;
+  mismatchDetails?: string;
 }
 
 export interface IOCREntry {

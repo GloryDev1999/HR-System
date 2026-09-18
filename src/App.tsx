@@ -68,27 +68,7 @@ const Shell: React.FC = () => {
       {activePage === 'productivityQuality' && <ProductivityQualityPage />}
       {activePage === 'overtime' && <OvertimePage onNavigate={setActivePage} />}
       {activePage === 'leavePending' && <LeavePendingPage />}
-      {activePage === 'shiftRoster' && (
-        isMasterUser ? (
-          <ShiftRosterPage />
-        ) : (
-          <div className="flex-1 p-8 flex flex-col items-center justify-center text-center">
-            <div className="w-14 h-14 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mb-4 border border-rose-200">
-              <span className="text-2xl font-bold">🔒</span>
-            </div>
-            <h2 className="text-base font-bold text-slate-900">Quyền truy cập bị giới hạn</h2>
-            <p className="text-xs text-slate-500 max-w-sm mt-2 leading-relaxed">
-              Trang Phân Ca & Xoay Ca toàn hệ thống chỉ dành cho Quản trị viên và Nhân sự. Vui lòng chuyển sang trang "Sắp Xếp Ca Làm Việc" của bộ phận.
-            </p>
-            <button
-              onClick={() => setActivePage('shiftAssignment')}
-              className="mt-4 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold shadow-sm hover:bg-slate-800 transition"
-            >
-              Đến Sắp Xếp Ca Bộ Phận
-            </button>
-          </div>
-        )
-      )}
+      {activePage === 'shiftRoster' && <ShiftAssignmentPage />}
       {activePage === 'shiftAssignment' && <ShiftAssignmentPage />}
       {activePage === 'attendanceViolation' && <AttendanceViolationPage />}
       {activePage === 'ocrVerification' && <OCRVerificationPage onNavigate={setActivePage} />}

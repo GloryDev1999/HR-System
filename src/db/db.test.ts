@@ -29,8 +29,8 @@ describe('HRSystemDatabase v6 — Schema & Flag Indexes', () => {
     ]);
   });
 
-  it('(a) DB init không lỗi, version 8 và đủ 14 stores', async () => {
-    expect(db.verno).toBe(8);
+  it('(a) DB init không lỗi, version 9 và đủ 14 stores', async () => {
+    expect(db.verno).toBe(9);
     expect(db.employees).toBeDefined();
     expect(db.dailyTimesheets).toBeDefined();
     expect(db.overtimeRecords).toBeDefined();
@@ -146,6 +146,17 @@ describe('HRSystemDatabase v6 — Schema & Flag Indexes', () => {
     expect(await db.shiftRosters.where('isRestViolationFlag').equals(0).count()).toBe(1);
     expect(await db.shiftRosters.where('[isRestViolationFlag+date]').equals([1, '2026-08-15']).count()).toBe(1);
     expect(await db.shiftRosters.where('[isRestViolationFlag+date]').equals([0, '2026-08-15']).count()).toBe(1);
+  });
+
+  it('(c6bis) shiftRosters isShiftMismatchFlag deterministic + compound index', async () => {
+    await db.shiftRosters.bulkPut([
+      { employeeId_date: 'LEP001_2026-08-16', employeeId: 'LEP001', fullName: 'A', department: 'Production', date: '2026-08-16', shiftCode: 'SHIFT_1', isShiftMismatch: true, isShiftMismatchFlag: 1 } as any,
+      { employeeId_date: 'LEP002_2026-08-16', employeeId: 'LEP002', fullName: 'B', department: 'WH', date: '2026-08-16', shiftCode: 'SHIFT_2', isShiftMismatch: false, isShiftMismatchFlag: 0 } as any,
+    ]);
+    expect(await db.shiftRosters.where('isShiftMismatchFlag').equals(1).count()).toBe(1);
+    expect(await db.shiftRosters.where('isShiftMismatchFlag').equals(0).count()).toBe(1);
+    expect(await db.shiftRosters.where('[isShiftMismatchFlag+date]').equals([1, '2026-08-16']).count()).toBe(1);
+    expect(await db.shiftRosters.where('[isShiftMismatchFlag+date]').equals([0, '2026-08-16']).count()).toBe(1);
   });
 
   it('(c7) accounts activeFlag + [role+activeFlag] deterministic', async () => {

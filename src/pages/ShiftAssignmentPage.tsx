@@ -110,6 +110,7 @@ export const ShiftAssignmentPage: React.FC = () => {
 
   // Bộ lọc cho chế độ tiếp nhận (Host/HR review)
   const [selectedDeptReview, setSelectedDeptReview] = useState<string>('ALL');
+  const [reviewViolationFilter, setReviewViolationFilter] = useState<'ALL' | 'REST_VIOLATION' | 'SHIFT_MISMATCH' | 'NORMAL'>('ALL');
 
   // Trạng thái cho chế độ sắp ca thủ công
   const [searchManualTerm, setSearchManualTerm] = useState('');
@@ -179,6 +180,7 @@ export const ShiftAssignmentPage: React.FC = () => {
       const shift2 = deptRosters.filter(r => r.shiftCode === 'SHIFT_2').length;
       const office = deptRosters.filter(r => r.shiftCode === 'OFFICE_M_S' || r.shiftCode === 'OFFICE_M_F').length;
       const violations = deptRosters.filter(r => r.isRestViolation).length;
+      const mismatches = deptRosters.filter(r => r.isShiftMismatch).length;
       const latestSub = shiftSubmissions.find(s => s.department === dept);
 
       return {
@@ -192,6 +194,7 @@ export const ShiftAssignmentPage: React.FC = () => {
         shift2Count: shift2,
         officeCount: office,
         violationsCount: violations,
+        mismatchesCount: mismatches,
         latestSubmission: latestSub
       };
     };
@@ -240,9 +243,27 @@ export const ShiftAssignmentPage: React.FC = () => {
         const q = searchReviewTerm.toLowerCase();
         if (!r.employeeId.toLowerCase().includes(q) && !r.fullName.toLowerCase().includes(q)) return false;
       }
+      if (reviewViolationFilter === 'REST_VIOLATION' && !r.isRestViolation) return false;
+      if (reviewViolationFilter === 'SHIFT_MISMATCH' && !r.isShiftMismatch) return false;
+      if (reviewViolationFilter === 'NORMAL' && (r.isRestViolation || r.isShiftMismatch)) return false;
       return true;
     });
-  }, [shiftRosters, selectedDeptReview, baseDate, searchReviewTerm]);
+  }, [shiftRosters, selectedDeptReview, baseDate, searchReviewTerm, reviewViolationFilter]);
+
+  // Thống kê tổng hợp KPI đối soát ngày được chọn
+  const reviewSummary = useMemo(() => {
+    const baseList = shiftRosters.filter(r => {
+      if (selectedDeptReview !== 'ALL' && r.department !== selectedDeptReview) return false;
+      if (baseDate && r.date !== baseDate) return false;
+      return true;
+    });
+    const totalRosters = baseList.length;
+    const violationCount = baseList.filter(r => r.isRestViolation).length;
+    const mismatchCount = baseList.filter(r => r.isShiftMismatch).length;
+    const matchedCount = baseList.filter(r => r.actualCheckIn && !r.isShiftMismatch).length;
+    const accuracyRate = (matchedCount + mismatchCount) > 0 ? Math.round((matchedCount / (matchedCount + mismatchCount)) * 100) : 100;
+    return { totalRosters, violationCount, mismatchCount, accuracyRate };
+  }, [shiftRosters, selectedDeptReview, baseDate]);
 
   const toggleSelectAll = () => {
     if (selectedEmployeeIds.size === visibleEmployees.length) {
@@ -498,6 +519,53 @@ export const ShiftAssignmentPage: React.FC = () => {
               </div>
             )}
           </div>
+          {/* 4 Thẻ KPI Tổng Hợp Đối Soát Tiếp Nhận Ca & Chấm Công */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-xs flex items-center gap-3">
+              <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl shrink-0">
+                <Briefcase className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold text-slate-500">Tổng ca tiếp nhận ({baseDate})</p>
+                <p className="text-lg font-black text-slate-900">{reviewSummary.totalRosters} <span className="text-xs font-normal text-slate-500">ca</span></p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-xs flex items-center gap-3">
+              <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl shrink-0">
+                <CheckCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold text-slate-500">Tỷ lệ đúng ca đã sắp</p>
+                <p className="text-lg font-black text-emerald-600">{reviewSummary.accuracyRate}%</p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-xs flex items-center gap-3">
+              <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl shrink-0">
+                <Clock className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold text-slate-500">Đi sai giờ sắp ca</p>
+                <p className={`text-lg font-black ${reviewSummary.mismatchCount > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+                  {reviewSummary.mismatchCount} <span className="text-xs font-normal text-slate-500">lệch</span>
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-xs flex items-center gap-3">
+              <div className="p-2.5 bg-rose-50 text-rose-600 rounded-xl shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold text-slate-500">Vi phạm nghỉ &lt; 12h</p>
+                <p className={`text-lg font-black ${reviewSummary.violationCount > 0 ? 'text-rose-600' : 'text-slate-900'}`}>
+                  {reviewSummary.violationCount} <span className="text-xs font-normal text-slate-500">vi phạm</span>
+                </p>
+              </div>
+            </div>
+          </div>
+
           {/* Thẻ tiến độ 3 Bộ phận nộp ca */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* 1. Kho WH (Vinh) */}
@@ -553,6 +621,18 @@ export const ShiftAssignmentPage: React.FC = () => {
                   ) : (
                     <span className="font-bold text-emerald-600 flex items-center gap-1">
                       <CheckCheck className="w-3.5 h-3.5" /> 0 vi phạm (Chuẩn)
+                    </span>
+                  )}
+                </div>
+                <div className="pt-1 flex justify-between items-center text-[11px]">
+                  <span className="text-slate-500">Đi sai giờ sắp ca:</span>
+                  {deptStats.wh.mismatchesCount > 0 ? (
+                    <span className="font-bold text-amber-600 flex items-center gap-1">
+                      <Clock className="w-3.5 h-3.5" /> {deptStats.wh.mismatchesCount} cảnh báo
+                    </span>
+                  ) : (
+                    <span className="font-bold text-emerald-600 flex items-center gap-1">
+                      <CheckCheck className="w-3.5 h-3.5" /> 0 lệch (Chuẩn)
                     </span>
                   )}
                 </div>
@@ -615,6 +695,18 @@ export const ShiftAssignmentPage: React.FC = () => {
                     </span>
                   )}
                 </div>
+                <div className="pt-1 flex justify-between items-center text-[11px]">
+                  <span className="text-slate-500">Đi sai giờ sắp ca:</span>
+                  {deptStats.qc.mismatchesCount > 0 ? (
+                    <span className="font-bold text-amber-600 flex items-center gap-1">
+                      <Clock className="w-3.5 h-3.5" /> {deptStats.qc.mismatchesCount} cảnh báo
+                    </span>
+                  ) : (
+                    <span className="font-bold text-emerald-600 flex items-center gap-1">
+                      <CheckCheck className="w-3.5 h-3.5" /> 0 lệch (Chuẩn)
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -674,6 +766,18 @@ export const ShiftAssignmentPage: React.FC = () => {
                     </span>
                   )}
                 </div>
+                <div className="pt-1 flex justify-between items-center text-[11px]">
+                  <span className="text-slate-500">Đi sai giờ sắp ca:</span>
+                  {deptStats.prd.mismatchesCount > 0 ? (
+                    <span className="font-bold text-amber-600 flex items-center gap-1">
+                      <Clock className="w-3.5 h-3.5" /> {deptStats.prd.mismatchesCount} cảnh báo
+                    </span>
+                  ) : (
+                    <span className="font-bold text-emerald-600 flex items-center gap-1">
+                      <CheckCheck className="w-3.5 h-3.5" /> 0 lệch (Chuẩn)
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -706,6 +810,34 @@ export const ShiftAssignmentPage: React.FC = () => {
                   className={`px-3 py-1.5 rounded-lg transition ${selectedDeptReview === 'Production' ? 'bg-white shadow-xs text-purple-800' : 'text-slate-500 hover:text-slate-800'}`}
                 >
                   Sản Xuất
+                </button>
+              </div>
+
+              {/* Lọc trạng thái cảnh báo / vi phạm */}
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-bold">
+                <button
+                  onClick={() => setReviewViolationFilter('ALL')}
+                  className={`px-2.5 py-1.5 rounded-lg transition ${reviewViolationFilter === 'ALL' ? 'bg-white shadow-xs text-slate-900' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  Tất cả ({reviewSummary.totalRosters})
+                </button>
+                <button
+                  onClick={() => setReviewViolationFilter('REST_VIOLATION')}
+                  className={`px-2.5 py-1.5 rounded-lg transition ${reviewViolationFilter === 'REST_VIOLATION' ? 'bg-white shadow-xs text-rose-700 font-extrabold' : 'text-slate-500 hover:text-rose-600'}`}
+                >
+                  Nghỉ &lt; 12h ({reviewSummary.violationCount})
+                </button>
+                <button
+                  onClick={() => setReviewViolationFilter('SHIFT_MISMATCH')}
+                  className={`px-2.5 py-1.5 rounded-lg transition ${reviewViolationFilter === 'SHIFT_MISMATCH' ? 'bg-white shadow-xs text-amber-700 font-extrabold' : 'text-slate-500 hover:text-amber-600'}`}
+                >
+                  Đi sai ca ({reviewSummary.mismatchCount})
+                </button>
+                <button
+                  onClick={() => setReviewViolationFilter('NORMAL')}
+                  className={`px-2.5 py-1.5 rounded-lg transition ${reviewViolationFilter === 'NORMAL' ? 'bg-white shadow-xs text-emerald-700' : 'text-slate-500 hover:text-emerald-600'}`}
+                >
+                  Đúng chuẩn
                 </button>
               </div>
 
@@ -749,10 +881,10 @@ export const ShiftAssignmentPage: React.FC = () => {
                     <th className="py-3 px-4">Họ và Tên</th>
                     <th className="py-3 px-4">Bộ Phận</th>
                     <th className="py-3 px-4 text-center">Ngày Làm Việc</th>
-                    <th className="py-3 px-4 text-center">Ca Được Gán</th>
-                    <th className="py-3 px-4 text-center">Khung Giờ</th>
+                    <th className="py-3 px-4 text-center">Ca Được Sắp</th>
+                    <th className="py-3 px-4 text-center">Chấm Công Thực Tế</th>
                     <th className="py-3 px-4 text-center">Nghỉ Giữa 2 Ca</th>
-                    <th className="py-3 px-4 text-center">Kiểm Soát Vi Phạm</th>
+                    <th className="py-3 px-4 text-center">Đối Soát Cảnh Báo</th>
                     <th className="py-3 px-4 text-center">Trạng Thái</th>
                   </tr>
                 </thead>
@@ -766,8 +898,18 @@ export const ShiftAssignmentPage: React.FC = () => {
                   ) : (
                     reviewRosters.map(roster => {
                       const shiftCfg = SHIFT_OPTIONS.find(s => s.value === roster.shiftCode);
+                      const actualShiftCfg = SHIFT_OPTIONS.find(s => s.value === roster.actualShiftCode);
                       return (
-                        <tr key={roster.employeeId_date} className="hover:bg-slate-50 transition">
+                        <tr
+                          key={roster.employeeId_date}
+                          className={`hover:bg-slate-50 transition ${
+                            roster.isRestViolation
+                              ? 'bg-rose-50/25'
+                              : roster.isShiftMismatch
+                              ? 'bg-amber-50/25'
+                              : ''
+                          }`}
+                        >
                           <td className="py-2.5 px-4 font-mono font-bold text-slate-900">{roster.employeeId}</td>
                           <td className="py-2.5 px-4 font-medium text-slate-800">{roster.fullName}</td>
                           <td className="py-2.5 px-4">
@@ -777,26 +919,57 @@ export const ShiftAssignmentPage: React.FC = () => {
                           </td>
                           <td className="py-2.5 px-4 text-center font-mono text-[11px] text-slate-600">{roster.date}</td>
                           <td className="py-2.5 px-4 text-center">
-                            <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${shiftCfg?.color || 'bg-slate-100 text-slate-700 border-slate-200'}`}>
-                              {shiftCfg?.label || roster.shiftCode}
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-4 text-center font-mono text-[11px] text-slate-600">
-                            {roster.startTime} - {roster.endTime}
-                          </td>
-                          <td className="py-2.5 px-4 text-center font-mono text-[11px]">
-                            {roster.restHours ? `${roster.restHours}h` : '—'}
+                            <div className="inline-flex flex-col items-center">
+                              <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${shiftCfg?.color || 'bg-slate-100 text-slate-700 border-slate-200'}`}>
+                                {shiftCfg?.label || roster.shiftCode}
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-mono mt-0.5">{roster.startTime} - {roster.endTime}</span>
+                            </div>
                           </td>
                           <td className="py-2.5 px-4 text-center">
-                            {roster.isRestViolation ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 font-bold text-[10px] border border-rose-200" title={roster.violationDetails}>
-                                <AlertTriangle className="w-3 h-3" /> Vi phạm &lt; 12h
-                              </span>
+                            {roster.actualCheckIn ? (
+                              <div className="inline-flex flex-col items-center">
+                                <span className="font-mono text-slate-800 font-bold text-[11px]">
+                                  {roster.actualCheckIn} - {roster.actualCheckOut || '...'}
+                                </span>
+                                {roster.actualShiftCode && (
+                                  <span className={`px-1.5 py-0.2 rounded text-[10px] font-semibold mt-0.5 ${actualShiftCfg?.color || 'bg-slate-100 text-slate-600'}`}>
+                                    {actualShiftCfg?.label || roster.actualShiftCode}
+                                  </span>
+                                )}
+                              </div>
                             ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[10px] border border-emerald-200">
-                                <CheckCheck className="w-3 h-3" /> Chuẩn &ge; 12h
-                              </span>
+                              <span className="text-slate-400 italic text-[11px]">Chưa có quẹt thẻ</span>
                             )}
+                          </td>
+                          <td className="py-2.5 px-4 text-center font-mono text-[11px]">
+                            {roster.restHours ? (
+                              <span className={`font-bold ${roster.isRestViolation ? 'text-rose-600' : 'text-slate-700'}`}>
+                                {roster.restHours}h
+                              </span>
+                            ) : '—'}
+                          </td>
+                          <td className="py-2.5 px-4 text-center">
+                            <div className="flex flex-col items-center gap-1">
+                              {roster.isRestViolation && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 font-bold text-[10px] border border-rose-200" title={roster.violationDetails}>
+                                  <AlertTriangle className="w-3 h-3" /> Vi phạm &lt; 12h
+                                </span>
+                              )}
+                              {roster.isShiftMismatch && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold text-[10px] border border-amber-200" title={roster.mismatchDetails}>
+                                  <Clock className="w-3 h-3 text-amber-600" /> Đi sai giờ sắp ca
+                                </span>
+                              )}
+                              {!roster.isRestViolation && !roster.isShiftMismatch && roster.actualCheckIn && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[10px] border border-emerald-200">
+                                  <CheckCheck className="w-3 h-3" /> Đúng ca & chuẩn nghỉ
+                                </span>
+                              )}
+                              {!roster.isRestViolation && !roster.isShiftMismatch && !roster.actualCheckIn && (
+                                <span className="text-slate-400 text-[10px]">Chờ chấm công</span>
+                              )}
+                            </div>
                           </td>
                           <td className="py-2.5 px-4 text-center">
                             <span className="inline-flex items-center gap-1 text-emerald-700 font-bold text-[11px]">

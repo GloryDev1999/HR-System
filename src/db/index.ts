@@ -260,6 +260,16 @@ export class HRSystemDatabase extends Dexie {
       userAuditLogs: 'id, username, actionType, timestamp, [username+timestamp], [actionType+timestamp]'
     });
 
+    // v9 (2026-09-18): THÊM INDEX ĐỐI SOÁT ĐI SAI GIỜ SẮP CA (SHIFT MISMATCH)
+    this.version(9).stores({
+      shiftRosters:
+        'employeeId_date, employeeId, date, shiftCode, isRestViolationFlag, isShiftMismatchFlag, department, [isRestViolationFlag+date], [isShiftMismatchFlag+date], [department+date], [shiftCode+date]',
+    }).upgrade(async tx => {
+      await (tx as any).table('shiftRosters').toCollection().modify((rec: any) => {
+        if (typeof rec.isShiftMismatchFlag === 'undefined') rec.isShiftMismatchFlag = rec.isShiftMismatch ? 1 : 0;
+      });
+    });
+
     // Hooks tự đồng bộ Flag khi tạo/cập nhật — đảm bảo không sót chỗ set tay (v6)
     this.dailyTimesheets.hook('creating', (_p: any, obj: any) => {
       if (typeof obj.isViolationFlag === 'undefined') obj.isViolationFlag = obj.isViolation ? 1 : 0;
@@ -269,9 +279,11 @@ export class HRSystemDatabase extends Dexie {
     });
     this.shiftRosters.hook('creating', (_p: any, obj: any) => {
       if (typeof obj.isRestViolationFlag === 'undefined') obj.isRestViolationFlag = obj.isRestViolation ? 1 : 0;
+      if (typeof obj.isShiftMismatchFlag === 'undefined') obj.isShiftMismatchFlag = obj.isShiftMismatch ? 1 : 0;
     });
     this.shiftRosters.hook('updating', (mods: any) => {
       if ('isRestViolation' in mods && !('isRestViolationFlag' in mods)) mods.isRestViolationFlag = mods.isRestViolation ? 1 : 0;
+      if ('isShiftMismatch' in mods && !('isShiftMismatchFlag' in mods)) mods.isShiftMismatchFlag = mods.isShiftMismatch ? 1 : 0;
     });
     this.accounts.hook('creating', (_p: any, obj: any) => {
       if (typeof obj.activeFlag === 'undefined') obj.activeFlag = obj.active ? 1 : 0;

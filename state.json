@@ -3,9 +3,9 @@
     "project_name": "SmartHR - Single-File In-Browser HRMS & Timekeeping System",
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
-    "last_updated": "2026-09-18T01:42:30Z",
-    "current_phase": "Phase 30: LAN Realtime Sync Hub & Presence with Silent Runner (139/139 tests green, tsc clean, production build OK)",
-    "version": "3.0.0"
+    "last_updated": "2026-09-18T02:28:00Z",
+    "current_phase": "Phase 31: Aptos Narrow Font, Employee Resignation Auto-Purge, Consolidated Shift Assignment with Punch vs Shift Mismatch Detection (146/146 tests green, tsc clean, production build OK)",
+    "version": "3.1.0"
   },
   "agent_profile": {
     "role": "Senior Principal System Designer & Staff IT Software Engineer",
@@ -50,14 +50,14 @@
   "verified_schemas": {
     "db_name": "HRSystem_LeggettPlatt_DB",
     "db_file": "src/db/index.ts",
-    "current_version": 8,
+    "current_version": 9,
     "stores": {
       "employees": "employeeId PK, erpId, fullName, department, shiftClassId FK→shiftClasses.shiftClassId, contractType, status, productionLine, productivityGroup, [department+status], [contractType+status], [shiftClassId+status], [department+contractType]",
       "rawAttendanceLogs": "++id PK auto-increment, employeeId FK, date, [employeeId+date], departmentCode, [departmentCode+date]",
       "dailyTimesheets": "employeeId_date PK composite, employeeId FK, date, statusCode, isViolation (boolean giữ UI), isViolationFlag 0|1 indexed, month, year, [month+year], [employeeId+month+year], [statusCode+month+year], [isViolationFlag+month+year]",
       "overtimeRecords": "employeeId_date PK composite, employeeId FK, date, verificationStatus, month, year, [month+year], [employeeId+month+year], [verificationStatus+month+year]",
       "leaveRequests": "id PK string, employeeId FK, date, leaveType, status, department, [status+date], [employeeId+status], [department+status]",
-      "shiftRosters": "employeeId_date PK composite, employeeId FK, date, shiftCode FK→shiftClasses.shiftClassId, isRestViolation (boolean giữ UI), isRestViolationFlag 0|1 indexed, department, [isRestViolationFlag+date], [department+date]",
+      "shiftRosters": "employeeId_date PK composite, employeeId FK, date, shiftCode FK→shiftClasses.shiftClassId, isRestViolation (boolean giữ UI), isRestViolationFlag 0|1 indexed, isShiftMismatchFlag 0|1 indexed, department, [isRestViolationFlag+date], [isShiftMismatchFlag+date], [department+date], [shiftCode+date]",
       "ocrScans": "id PK, extractedEmployeeId, extractedDate, matchStatus, scanTimestamp, [matchStatus+scanTimestamp]",
       "settings": "key PK",
       "accounts": "username PK, role FK→rbacRoles.roleId, active (boolean giữ UI), activeFlag 0|1 indexed, [role+activeFlag]",
