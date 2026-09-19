@@ -182,7 +182,10 @@ export const SettingsPage: React.FC = () => {
     'REM  Falcon EDR Safe 100%% - Chi ghi HKCU, khong can Admin',
     'REM  QUAN TRONG: File nay BAT BUOC luu dang ASCII (khong dau).',
     'REM  Khong luu UTF-8 co dau - cmd.exe se bao loi font.',
+    'REM  Duong dan OneDrive co dau & (vd Leggett & Platt) -> BAT BUOC',
+    'REM  dung Delayed Expansion (!VAR!) de ky tu dac biet an toan.',
     'REM ============================================================',
+    'setlocal EnableDelayedExpansion',
     'chcp 65001 >nul',
     'title SmartHR - Register smarthr protocol (Falcon EDR Safe)',
     '',
@@ -212,7 +215,9 @@ export const SettingsPage: React.FC = () => {
     'reg add "HKCU\\Software\\Classes\\smarthr" /v "URL Protocol" /d "" /f >nul',
     'reg add "HKCU\\Software\\Classes\\smarthr\\shell" /f >nul',
     'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open" /f >nul',
-    'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open\\command" /ve /d "wscript.exe \\"%VBS_PATH%\\" \\"%%1\\"" /f >nul',
+    'REM Dung !VBS_PATH! (Delayed Expansion) thay %VBS_PATH% de dau & trong',
+    'REM duong dan OneDrive (vd Leggett & Platt) khong bi cat lenh.',
+    'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open\\command" /ve /d "wscript.exe \\"!VBS_PATH!\\" \\"%%1\\"" /f >nul',
     '',
     'if %errorlevel% equ 0 (',
     '    echo.',
@@ -222,6 +227,9 @@ export const SettingsPage: React.FC = () => {
     '    echo   - Nguoi dung: %USERNAME%',
     '    echo   - Thu muc:    %SCRIPT_DIR%',
     '    echo   - An toan:    Chi ghi vao HKCU (User Registry, 0 can thiep Admin)',
+    '    echo.',
+    '    echo Gia tri lenh da luu trong Registry (kiem tra duong dan day du):',
+    '    reg query "HKCU\\Software\\Classes\\smarthr\\shell\\open\\command" /ve',
     '    echo.',
     '    echo Bay gio ban co the bam nut "Kich Hoat Server" truc tiep tu',
     '    echo muc Cai Dat tren trinh duyet Web ma khong can mo thu muc!',
@@ -238,12 +246,14 @@ export const SettingsPage: React.FC = () => {
   const REGISTER_CMDS_TEMPLATE: string = [
     'REM Chay trong CMD tai dung thu muc chua start-server-hidden.vbs',
     'REM Thay C:\\DUONG\\DAN\\DEN\\THU-MUC-DU-AN bang duong dan that tren may anh',
+    'REM Dong setlocal bat buoc neu duong dan co dau & (vd OneDrive - Leggett & Platt)',
+    'setlocal EnableDelayedExpansion',
     'set "VBS_PATH=C:\\DUONG\\DAN\\DEN\\THU-MUC-DU-AN\\start-server-hidden.vbs"',
     'reg add "HKCU\\Software\\Classes\\smarthr" /ve /d "URL:SmartHR Server Launcher" /f',
     'reg add "HKCU\\Software\\Classes\\smarthr" /v "URL Protocol" /d "" /f',
     'reg add "HKCU\\Software\\Classes\\smarthr\\shell" /f',
     'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open" /f',
-    'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open\\command" /ve /d "wscript.exe \\"%VBS_PATH%\\" \\"%1\\"" /f',
+    'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open\\command" /ve /d "wscript.exe \\"!VBS_PATH!\\" \\"%1\\"" /f',
   ].join('\r\n');
 
   const handleDownloadRegisterBat = () => {
@@ -293,10 +303,12 @@ export const SettingsPage: React.FC = () => {
           <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs">
             <div className="font-bold text-rose-900">Vì sao anh gặp lỗi 'Thức', 'SCRIPT_DIR"', 'cript.exe'...?</div>
             <p className="mt-1 text-rose-800">
-              File <code className="font-mono font-bold">register-protocol.bat</code> cũ được lưu dạng UTF-8 có dấu tiếng Việt.
-              cmd.exe phân tích file .bat theo bảng mã ANSI hệ thống <b>trước khi</b> lệnh <code className="font-mono">chcp 65001</code> có hiệu lực,
-              nên mỗi ký tự có dấu (2–3 bytes) bị chẻ thành ký tự rác — làm vỡ lệnh <code className="font-mono">set "SCRIPT_DIR"</code>,{' '}
-              <code className="font-mono">wscript.exe</code> thành <code className="font-mono">cript.exe</code>. Đã fix triệt để bằng bản ASCII-only (không dấu) + CRLF.
+              File <code className="font-mono font-bold">register-protocol.bat</code> cũ có 2 lỗi: (1) lưu dạng UTF-8 có dấu nên cmd.exe chẻ ký tự đa byte thành rác
+              ('Thức', 'SCRIPT_DIR"', 'cript.exe'...); (2) đường dẫn OneDrive chứa dấu <code className="font-mono font-bold">&</code> (vd{' '}
+              <code className="font-mono">OneDrive - Leggett & Platt</code>) bị cmd.exe hiểu là dấu ngắt lệnh, gây lỗi{' '}
+              <code className="font-mono">'Platt' is not recognized</code> và báo [THẤT BẠI] giả dù reg đã ghi. Bản fix dùng ASCII-only + CRLF +{' '}
+              <code className="font-mono">setlocal EnableDelayedExpansion</code> với <code className="font-mono">!VBS_PATH!</code> để ký tự đặc biệt an toàn,
+              kèm lệnh <code className="font-mono">reg query</code> in giá trị đã lưu ra màn hình để anh đối chiếu.
             </p>
           </div>
           <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs">

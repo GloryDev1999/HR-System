@@ -3,8 +3,8 @@
     "project_name": "SmartHR - Single-File In-Browser HRMS & Timekeeping System",
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
-    "last_updated": "2026-09-19T02:00:00Z",
-    "current_phase": "Phase 32: Fix loi font register-protocol.bat UTF-8 sang ASCII-only + One-click tai file/copy lenh HKCU Falcon-safe (146/146 tests green, tsc clean)",
+    "last_updated": "2026-09-19T02:20:00Z",
+    "current_phase": "Phase 33: Fix dau & OneDrive (Leggett & Platt) cat lenh reg bang Delayed Expansion + reg query verify (146/146 tests green, tsc clean)",
     "version": "3.1.0"
   },
   "agent_profile": {
@@ -320,6 +320,16 @@
         "SettingsPage one-click Falcon-safe: nut ROCKET thu smarthr://start + poll /api/health 6 lan, fail -> Custom Modal (Zero Native Dialogs) giai thich loi font + gioi han sandbox, 3 hanh dong Tai file FIXED (Blob, noi dung khop 100% file repo) / Copy 5 lenh HKCU / Huong dan mo thu muc cap quyen",
         "Guide card bo sung 3 nut Tai file + Copy lenh + Huong dan, ghi ro browser khong tu chay .bat, luong hop le la user-consent 1 lan duy nhat",
         "Verify: tsc --noEmit 0 loi, vitest 146/146 pass, Blob download khớp file repo (node check MATCH OK), learning.md KB-018"
+      ]
+    },
+    "M22_Protocol_Ampersand_DelayedExpansion_2026_09_19": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "Root cause moi: dau & trong OneDrive - Leggett & Platt bi cmd hieu la ngat lenh (do \\\" khong phai quote thoat) -> 'Platt' is not recognized + bao THAT BAI gia + luu gia tri Registry cut",
+        "Fix register-protocol.bat: setlocal EnableDelayedExpansion + !VBS_PATH! trong dong reg, giu ASCII-only + CRLF + chi HKCU, them reg query /ve in gia tri da luu de doi chieu",
+        "Dong bo frontend: REGISTER_BAT_LINES khop 100% file repo (node check OK), REGISTER_CMDS_TEMPLATE them setlocal + !VBS_PATH!, modal help cap nhat nguyen nhan &",
+        "Verify: tsc --noEmit 0 loi, vitest 146/146 pass, learning.md KB-019"
       ]
     }
   }

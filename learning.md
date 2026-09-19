@@ -23,6 +23,7 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
 - [KB-016: Lỗi Web Worker bị chặn trên giao thức file:// khi nạp file chấm công (`Lỗi Web Worker`)](#kb-016-lỗi-web-worker-bị-chặn-trên-giao-thức-file-khi-nạp-file-chấm-công-lỗi-web-worker)
 - [KB-017: Chuyển hoàn toàn Timesheet Parser sang Pure In-Memory, loại bỏ triệt để lỗi Web Worker](#kb-017-chuyển-hoàn-toàn-timesheet-parser-sang-pure-in-memory-loại-bỏ-triệt-để-lỗi-web-worker)
 - [KB-018: File .bat UTF-8 có dấu gây vỡ lệnh cmd.exe + pattern one-click Falcon-safe](#kb-018-file-bat-utf-8-có-dấu-tiếng-việt-gây-vỡ-lệnh-cmdexe--pattern-one-click-falcon-safe)
+- [KB-019: Dấu & trong đường dẫn OneDrive (Leggett & Platt) cắt lệnh reg + Delayed Expansion](#kb-019-dấu--trong-đường-dẫn-onedrive-leggett--platt-cắt-lệnh-reg--delayed-expansion)
 
 ---
 
@@ -314,4 +315,21 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
   3. Frontend: trình duyệt KHÔNG thể tự chạy .bat (sandbox + Falcon chặn auto-execution). Pattern one-click hợp lệ = nút 🚀 thử `smarthr://start` trước → poll `/api/health` 6 lần → nếu fail mở Custom Modal (Zero Native Dialogs) với 3 hành động: Tải file FIXED .bat qua Blob download (nội dung khớp 100% file repo), Copy 5 lệnh HKCU qua clipboard, Hướng dẫn mở thư mục cấp quyền từng bước.
 - **Bài học kinh nghiệm (Key Takeaway)**:
   - Mọi file `.bat`/`.cmd` chạy trên cmd.exe BẮT BUỘC ASCII-only (không dấu) + CRLF. `chcp 65001` không cứu được lỗi parse. Mọi hứa hẹn "web tự chạy file local" đều sai về mặt sandbox/Falcon — phải thiết kế luồng user-consent 1 lần duy nhất.
+
+---
+
+### KB-019: Dấu & trong đường dẫn OneDrive (Leggett & Platt) cắt lệnh reg + Delayed Expansion
+- **Ngày ghi nhận**: 2026-09-19
+- **Vị trí**: `register-protocol.bat` dòng `reg add ... /d "wscript.exe ..."` + `REGISTER_BAT_LINES` / `REGISTER_CMDS_TEMPLATE` trong `src/pages/SettingsPage.tsx`
+- **Triệu chứng (Symptom)**:
+  - Chạy bản bat ASCII-only đã fix KB-018 trên máy có đường dẫn `C:\Users\bbuvqp1\OneDrive - Leggett & Platt, Incorporated\HR-System\`: hiện `The operation completed successfully.` rồi báo `'Platt' is not recognized as an internal or external command` và kết luận sai `[THAT BAI] Co loi khi them khoa Registry.`
+- **Nguyên nhân gốc rễ (Root Cause)**:
+  - cmd.exe không hiểu `\"` là quote thoát — mỗi dấu `"` đều bật/tắt trạng thái quote. Nên `%VBS_PATH%` trong dòng reg thực chất được expand ở vùng KHÔNG quote, dấu `&` trong `Leggett & Platt` bị xem là ngắt lệnh: nửa sau ` Platt, Incorporated\...` chạy như lệnh mới (lỗi 9009 → errorlevel ≠ 0 → báo THAT BAI giả), nửa đầu ghi vào Registry một giá trị LỆNH CỤT (`wscript.exe "C:\...\OneDrive - Leggett `) không dùng được.
+- **Giải pháp xử lý (Resolution)**:
+  1. Thêm `setlocal EnableDelayedExpansion` đầu file, đổi dòng reg sang `!VBS_PATH!`: delayed expansion chèn giá trị SAU khi parser tách lệnh nên `&`/space/comma an toàn; reg.exe tự parse theo luật C (`\"` → quote thật) và lưu đúng `wscript.exe "<full path>" "%1"`.
+  2. Thêm `reg query "HKCU\Software\Classes\smarthr\shell\open\command" /ve` trong nhánh thành công để in giá trị đã lưu — bằng chứng đối chiếu tại chỗ.
+  3. Đồng bộ `REGISTER_BAT_LINES` web (Blob download khớp 100% file repo, đã check bằng node) và `REGISTER_CMDS_TEMPLATE` (thêm `setlocal EnableDelayedExpansion` + `!VBS_PATH!` vì paste vào CMD tương tác cũng dính lỗi `&` y hệt).
+  4. Lần chạy lỗi trước đã lưu giá trị cụt — chỉ cần chạy lại bản fix (ghi đè `/f`) là xong, không cần xóa tay.
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Mọi giá trị đường dẫn đưa vào lệnh `reg add /d "...\"...\""` BẮT BUỘC qua Delayed Expansion (`!VAR!`), không bao giờ dùng `%VAR%` trực tiếp — vì `\"` không bảo vệ được `& | < > ^` khỏi parser cmd. Môi trường OneDrive doanh nghiệp (`Leggett & Platt`) gần như chắc chắn chứa `&`.
 
