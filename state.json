@@ -3,8 +3,8 @@
     "project_name": "SmartHR - Single-File In-Browser HRMS & Timekeeping System",
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
-    "last_updated": "2026-09-18T02:28:00Z",
-    "current_phase": "Phase 31: Aptos Narrow Font, Employee Resignation Auto-Purge, Consolidated Shift Assignment with Punch vs Shift Mismatch Detection (146/146 tests green, tsc clean, production build OK)",
+    "last_updated": "2026-09-19T02:00:00Z",
+    "current_phase": "Phase 32: Fix loi font register-protocol.bat UTF-8 sang ASCII-only + One-click tai file/copy lenh HKCU Falcon-safe (146/146 tests green, tsc clean)",
     "version": "3.1.0"
   },
   "agent_profile": {
@@ -309,6 +309,17 @@
         "Nâng cấp server.js: Kênh SSE Realtime (/api/realtime) thông báo user online đa máy, LAN Delta Sync Hub (/api/sync/mutate & /api/sync/pull), Master Store data/lan_master_store.json, Health Ping /api/health",
         "Frontend lan-sync-service.ts & presence-service.ts: kết nối SSE, heartbeat đa máy, nạp remote mutation vào Dexie, PresenceBar hiển thị avatar đồng nghiệp tức thì",
         "Frontend SettingsPage.tsx: tab mới 'Máy Chủ & Đồng Bộ LAN Realtime' với thẻ trạng thái, Ping ms, địa chỉ IP card mạng, bảng user online, hướng dẫn xóa cảnh báo Insecure trên Edge/Chrome flags"
+      ]
+    },
+    "M21_Protocol_Bat_AsciiFix_OneClick_2026_09_19": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "Root cause loi font: register-protocol.bat luu UTF-8 khong BOM co dau -> cmd.exe parse theo ANSI truoc chcp 65001 nen vo lenh (Thuc, SCRIPT_DIR, cript.exe). Fix sang ASCII-only khong dau + CRLF, verify all(b<128), file=ASCII text with CRLF",
+        "Dong bo unregister-protocol.bat + chuan hoa start-server.bat sang ASCII+CRLF, giu nguyen tac Falcon: chi HKCU\\Software\\Classes\\smarthr, khong Admin/HKLM/Startup/Task/PowerShell bypass, %%1 escape chuan",
+        "SettingsPage one-click Falcon-safe: nut ROCKET thu smarthr://start + poll /api/health 6 lan, fail -> Custom Modal (Zero Native Dialogs) giai thich loi font + gioi han sandbox, 3 hanh dong Tai file FIXED (Blob, noi dung khop 100% file repo) / Copy 5 lenh HKCU / Huong dan mo thu muc cap quyen",
+        "Guide card bo sung 3 nut Tai file + Copy lenh + Huong dan, ghi ro browser khong tu chay .bat, luong hop le la user-consent 1 lan duy nhat",
+        "Verify: tsc --noEmit 0 loi, vitest 146/146 pass, Blob download khớp file repo (node check MATCH OK), learning.md KB-018"
       ]
     }
   }

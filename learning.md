@@ -21,6 +21,8 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
 - [KB-013: OCR chỉ cần MSNV, Ngày, Giờ — Tránh biến đổi ký tự tự do làm hỏng tên tiếng Việt (B31)](#kb-013-ocr-chỉ-cần-msnv-ngày-giờ--tránh-biến-đổi-ký-tự-tự-do-làm-hỏng-tên-tiếng-việt-b31)
 - [KB-015: Lỗi dynamic import() file:// trên ONNX Runtime Web (`TypeError: Failed to fetch dynamically imported module ... ort-wasm-simd-threaded.mjs`)](#kb-015-lỗi-dynamic-import-file-trên-onnx-runtime-web-typeerror-failed-to-fetch-dynamically-imported-module--ort-wasm-simd-threadedmjs)
 - [KB-016: Lỗi Web Worker bị chặn trên giao thức file:// khi nạp file chấm công (`Lỗi Web Worker`)](#kb-016-lỗi-web-worker-bị-chặn-trên-giao-thức-file-khi-nạp-file-chấm-công-lỗi-web-worker)
+- [KB-017: Chuyển hoàn toàn Timesheet Parser sang Pure In-Memory, loại bỏ triệt để lỗi Web Worker](#kb-017-chuyển-hoàn-toàn-timesheet-parser-sang-pure-in-memory-loại-bỏ-triệt-để-lỗi-web-worker)
+- [KB-018: File .bat UTF-8 có dấu gây vỡ lệnh cmd.exe + pattern one-click Falcon-safe](#kb-018-file-bat-utf-8-có-dấu-tiếng-việt-gây-vỡ-lệnh-cmdexe--pattern-one-click-falcon-safe)
 
 ---
 
@@ -296,4 +298,20 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
   4. Bổ sung bộ test `src/test/timesheet-parser-upload.test.ts` xác thực quy trình nạp tệp Excel hoàn toàn xanh (134/134 tests PASS).
 - **Bài học kinh nghiệm (Key Takeaway)**:
   - Đối với các tác vụ xử lý bảng tính dưới 1 giây, ưu tiên tuyệt đối Pure In-Memory với async microtask ticks thay vì Web Worker để đạt độ ổn định 100% trên mọi môi trường bảo mật cao.
+
+---
+
+### KB-018: File .bat UTF-8 có dấu tiếng Việt gây vỡ lệnh cmd.exe + pattern one-click Falcon-safe
+- **Ngày ghi nhận**: 2026-09-19
+- **Vị trí**: `register-protocol.bat`, `unregister-protocol.bat`, `src/pages/SettingsPage.tsx` (handleLaunchServerProtocol, handleDownloadRegisterBat, handleCopyRegisterCommands, handleOpenRegisterHelp)
+- **Triệu chứng (Symptom)**:
+  - Chạy `register-protocol.bat` báo hàng loạt `'Thức' is not recognized`, `'SCRIPT_DIR"' is not recognized`, `'BS_PATH"'`, `'cript.exe'`, `'mục:'`, `'Registry'`, `'[THẤT'...` dù lệnh `chcp 65001` đã có trong file.
+- **Nguyên nhân gốc rễ (Root Cause)**:
+  - File `.bat` được lưu dạng UTF-8 không BOM, chứa ký tự có dấu (Đăng Ký, Giao Thức...). cmd.exe phân tích file .bat theo codepage ANSI hệ thống **trước khi** `chcp 65001` có hiệu lực, nên mỗi ký tự đa byte (2–3 bytes) bị chẻ thành ký tự rác — làm vỡ `set "SCRIPT_DIR"`, `wscript.exe` thành `cript.exe`. `file` báo `UTF-8 text`, trong khi `start-server.bat` (ASCII) chạy bình thường.
+- **Giải pháp xử lý (Resolution)**:
+  1. Viết lại cả 2 file `.bat` sang **ASCII-only (không dấu) + CRLF**, giữ `chcp 65001` chỉ để hiển thị, mọi `echo`/`set`/`reg` đều ASCII. Verify `all(b<128)` + `CRLF`, `file` báo `ASCII text, with CRLF`.
+  2. Giữ nguyên tắc Falcon EDR Safe: chỉ ghi `HKCU\Software\Classes\smarthr`, không Admin/HKLM/Startup/Task Scheduler/PowerShell bypass, `%%1` escape đúng cho registry value.
+  3. Frontend: trình duyệt KHÔNG thể tự chạy .bat (sandbox + Falcon chặn auto-execution). Pattern one-click hợp lệ = nút 🚀 thử `smarthr://start` trước → poll `/api/health` 6 lần → nếu fail mở Custom Modal (Zero Native Dialogs) với 3 hành động: Tải file FIXED .bat qua Blob download (nội dung khớp 100% file repo), Copy 5 lệnh HKCU qua clipboard, Hướng dẫn mở thư mục cấp quyền từng bước.
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Mọi file `.bat`/`.cmd` chạy trên cmd.exe BẮT BUỘC ASCII-only (không dấu) + CRLF. `chcp 65001` không cứu được lỗi parse. Mọi hứa hẹn "web tự chạy file local" đều sai về mặt sandbox/Falcon — phải thiết kế luồng user-consent 1 lần duy nhất.
 

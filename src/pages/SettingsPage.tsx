@@ -38,8 +38,8 @@ import { jsonSyncService, ScanResult, IngestResult } from '../services/json-sync
 
 export const SettingsPage: React.FC = () => {
   const { session, currentRole, systemSettings, refreshPermissions, hasPermission, changePassword } = useAuth();
-  const { success, warning, error } = useToast();
-  const { confirm } = useModal();
+  const { success, warning, error, info } = useToast();
+  const { confirm, openCustomModal, closeCustomModal } = useModal();
 
   const canManageRBAC = hasPermission('MANAGE_ROLES_PERMISSIONS');
   const canManageSystem = hasPermission('SYSTEM_SETTINGS');
@@ -170,6 +170,182 @@ export const SettingsPage: React.FC = () => {
   const [copiedIp, setCopiedIp] = useState<string | null>(null);
   const [isStartingServer, setIsStartingServer] = useState(false);
 
+  // ---- One-click kich hoat: noi dung file register BAT ban ASCII-only (khong dau) ----
+  // LUU Y HIEN PHAP: trinh duyet KHONG the tu chay .bat/.vbs (sandbox + Falcon EDR chan
+  // auto-execution). Flow hop le duy nhat: 1 click tai file/copy lenh (user consent) ->
+  // user double-click 1 lan duy nhat -> tu do nut Kich Hoat moi chay ngam that su qua smarthr://.
+  // File .bat BAT BUOC ASCII-only + CRLF, chi ghi HKCU, khong Admin, khong HKLM, khong Startup.
+  const REGISTER_BAT_LINES: string[] = [
+    '@echo off',
+    'REM ============================================================',
+    'REM  SmartHR Enterprise - Dang ky giao thuc smarthr://',
+    'REM  Falcon EDR Safe 100%% - Chi ghi HKCU, khong can Admin',
+    'REM  QUAN TRONG: File nay BAT BUOC luu dang ASCII (khong dau).',
+    'REM  Khong luu UTF-8 co dau - cmd.exe se bao loi font.',
+    'REM ============================================================',
+    'chcp 65001 >nul',
+    'title SmartHR - Register smarthr protocol (Falcon EDR Safe)',
+    '',
+    'echo ============================================================',
+    'echo   SmartHR Enterprise - Dang ky giao thuc smarthr://',
+    'echo   (Khong yeu cau quyen Admin, khong khoa cung ten User)',
+    'echo ============================================================',
+    'echo.',
+    '',
+    'set "SCRIPT_DIR=%~dp0"',
+    'set "VBS_PATH=%SCRIPT_DIR%start-server-hidden.vbs"',
+    '',
+    'if not exist "%VBS_PATH%" (',
+    '    echo [LOI] Khong tim thay file start-server-hidden.vbs trong thu muc:',
+    '    echo "%SCRIPT_DIR%"',
+    '    echo.',
+    '    pause',
+    '    exit /b 1',
+    ')',
+    '',
+    'echo Duong dan file kich hoat:',
+    'echo "%VBS_PATH%"',
+    'echo.',
+    'echo Dang dang ky giao thuc smarthr:// vao HKCU\\Software\\Classes...',
+    '',
+    'reg add "HKCU\\Software\\Classes\\smarthr" /ve /d "URL:SmartHR Server Launcher" /f >nul',
+    'reg add "HKCU\\Software\\Classes\\smarthr" /v "URL Protocol" /d "" /f >nul',
+    'reg add "HKCU\\Software\\Classes\\smarthr\\shell" /f >nul',
+    'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open" /f >nul',
+    'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open\\command" /ve /d "wscript.exe \\"%VBS_PATH%\\" \\"%%1\\"" /f >nul',
+    '',
+    'if %errorlevel% equ 0 (',
+    '    echo.',
+    '    echo ============================================================',
+    '    echo   [THANH CONG] Da dang ky giao thuc smarthr:// thanh cong!',
+    '    echo ============================================================',
+    '    echo   - Nguoi dung: %USERNAME%',
+    '    echo   - Thu muc:    %SCRIPT_DIR%',
+    '    echo   - An toan:    Chi ghi vao HKCU (User Registry, 0 can thiep Admin)',
+    '    echo.',
+    '    echo Bay gio ban co the bam nut "Kich Hoat Server" truc tiep tu',
+    '    echo muc Cai Dat tren trinh duyet Web ma khong can mo thu muc!',
+    '    echo.',
+    ') else (',
+    '    echo.',
+    '    echo [THAT BAI] Co loi khi them khoa Registry.',
+    ')',
+    '',
+    'pause',
+    '',
+  ];
+
+  const REGISTER_CMDS_TEMPLATE: string = [
+    'REM Chay trong CMD tai dung thu muc chua start-server-hidden.vbs',
+    'REM Thay C:\\DUONG\\DAN\\DEN\\THU-MUC-DU-AN bang duong dan that tren may anh',
+    'set "VBS_PATH=C:\\DUONG\\DAN\\DEN\\THU-MUC-DU-AN\\start-server-hidden.vbs"',
+    'reg add "HKCU\\Software\\Classes\\smarthr" /ve /d "URL:SmartHR Server Launcher" /f',
+    'reg add "HKCU\\Software\\Classes\\smarthr" /v "URL Protocol" /d "" /f',
+    'reg add "HKCU\\Software\\Classes\\smarthr\\shell" /f',
+    'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open" /f',
+    'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open\\command" /ve /d "wscript.exe \\"%VBS_PATH%\\" \\"%1\\"" /f',
+  ].join('\r\n');
+
+  const handleDownloadRegisterBat = () => {
+    try {
+      const blob = new Blob([REGISTER_BAT_LINES.join('\r\n')], { type: 'text/plain;charset=ascii' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'register-protocol-FIXED.bat';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        try {
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        } catch {}
+      }, 1000);
+      success(
+        'Đã tải file kích hoạt bản fix lỗi font',
+        'File register-protocol-FIXED.bat (ASCII-only). Anh chuột phải → Merge/Double-click 1 lần duy nhất, không cần quyền Admin.'
+      );
+    } catch {
+      error('Không tải được file', 'Trình duyệt đã chặn download. Hãy dùng nút Copy lệnh HKCU bên cạnh.');
+    }
+  };
+
+  const handleCopyRegisterCommands = async () => {
+    try {
+      await navigator.clipboard.writeText(REGISTER_CMDS_TEMPLATE);
+      success(
+        'Đã sao chép lệnh đăng ký HKCU',
+        'Mở CMD tại thư mục dự án, sửa đường dẫn VBS_PATH cho đúng rồi Paste + Enter từng dòng.'
+      );
+    } catch {
+      warning(
+        'Không sao chép tự động được',
+        'Trình duyệt chặn clipboard. Hãy mở file register-protocol-FIXED.bat bằng Notepad để copy thủ công.'
+      );
+    }
+  };
+
+  const handleOpenRegisterHelp = () => {
+    openCustomModal(
+      'Kích hoạt Server 1-Click — Khắc phục lỗi font & mở thư mục cấp quyền',
+      (
+        <div className="space-y-3 text-sm text-slate-700 leading-relaxed">
+          <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs">
+            <div className="font-bold text-rose-900">Vì sao anh gặp lỗi 'Thức', 'SCRIPT_DIR"', 'cript.exe'...?</div>
+            <p className="mt-1 text-rose-800">
+              File <code className="font-mono font-bold">register-protocol.bat</code> cũ được lưu dạng UTF-8 có dấu tiếng Việt.
+              cmd.exe phân tích file .bat theo bảng mã ANSI hệ thống <b>trước khi</b> lệnh <code className="font-mono">chcp 65001</code> có hiệu lực,
+              nên mỗi ký tự có dấu (2–3 bytes) bị chẻ thành ký tự rác — làm vỡ lệnh <code className="font-mono">set "SCRIPT_DIR"</code>,{' '}
+              <code className="font-mono">wscript.exe</code> thành <code className="font-mono">cript.exe</code>. Đã fix triệt để bằng bản ASCII-only (không dấu) + CRLF.
+            </p>
+          </div>
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs">
+            <div className="font-bold text-amber-900">Vì sao web không thể “tự chạy file” khi bấm 🚀?</div>
+            <p className="mt-1 text-amber-800">
+              Trình duyệt bị sandbox chặn thực thi file cục bộ — nếu bypass được thì đó chính là lỗ hổng mà Falcon EDR bắt buộc chặn
+              (Living-off-the-Land / auto-execution). Chính sách Falcon nghiêm ngặt yêu cầu <b>user phải double-click xác nhận 1 lần duy nhất</b> (user consent).
+              Sau lần đó, nút <b>🚀 Kích Hoạt Server (Chạy Ngầm)</b> mới chạy ngầm thật sự qua giao thức <code className="font-mono">smarthr://</code> mà không cần mở thư mục nữa.
+            </p>
+          </div>
+          <ol className="list-decimal ml-5 space-y-1.5 text-xs">
+            <li><b>Bước 1:</b> Bấm <b>“Tải file kích hoạt (fix lỗi font)”</b> bên dưới → được file <code className="font-mono">register-protocol-FIXED.bat</code> (ASCII-only, chỉ ghi HKCU, không cần Admin).</li>
+            <li><b>Bước 2:</b> Mở thư mục Downloads → chuột phải file → <b>Run / Merge</b> (hoặc double-click) 1 lần duy nhất. Cho phép ghi Registry HKCU của chính tài khoản khi Windows hỏi.</li>
+            <li><b>Bước 3:</b> Quay lại web, bấm <b>🚀 Kích Hoạt Server (Chạy Ngầm)</b> → trình duyệt đánh thức <code className="font-mono">start-server-hidden.vbs</code> chạy Node.js ẩn hoàn toàn (không hiện CMD đen).</li>
+            <li><b>Dự phòng không cần file:</b> Bấm <b>“Copy lệnh HKCU”</b> → mở CMD tại thư mục dự án → sửa đường dẫn VBS_PATH → Paste từng dòng.</li>
+          </ol>
+          <p className="text-[11px] italic text-slate-500">
+            Falcon-safe: chỉ ghi HKCU\Software\Classes\smarthr của user hiện tại, không HKLM, không quyền Admin, không Startup/Scheduled Task,
+            không PowerShell bypass, không khóa cứng tên User. Muốn gỡ: chạy unregister-protocol.bat.
+          </p>
+        </div>
+      ),
+      (
+        <>
+          <button
+            onClick={handleDownloadRegisterBat}
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Tải file kích hoạt (fix lỗi font)</span>
+          </button>
+          <button
+            onClick={handleCopyRegisterCommands}
+            className="px-4 py-2 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl transition flex items-center gap-1.5"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            <span>Copy lệnh HKCU</span>
+          </button>
+          <button
+            onClick={closeCustomModal}
+            className="px-4 py-2 text-xs font-medium text-slate-500 hover:bg-slate-100 rounded-xl transition"
+          >
+            Đóng
+          </button>
+        </>
+      )
+    );
+  };
+
   const handleLaunchServerProtocol = () => {
     if (isStartingServer) return;
     setIsStartingServer(true);
@@ -206,8 +382,13 @@ export const SettingsPage: React.FC = () => {
         setIsStartingServer(false);
         warning(
           'Chưa phát hiện máy chủ',
-          'Nếu đây là lần đầu tiên kích hoạt từ web, vui lòng chạy file "register-protocol.bat" (1 lần duy nhất) để đăng ký giao thức smarthr:// với Windows.'
+          'Giao thức smarthr:// chưa được đăng ký (thường do file BAT cũ lỗi font UTF-8). Đang mở hộp hướng dẫn 1-click fix lỗi font.'
         );
+        info(
+          'Mẹo one-click Falcon-safe',
+          'Bấm "Tải file kích hoạt" trong hộp thoại → double-click 1 lần duy nhất (HKCU, không Admin) → bấm lại nút 🚀.'
+        );
+        handleOpenRegisterHelp();
       }
     }, 1000);
   };
@@ -1299,10 +1480,41 @@ export const SettingsPage: React.FC = () => {
               <div className="bg-white/90 p-3.5 rounded-xl border border-indigo-200 space-y-1.5">
                 <div className="font-bold text-slate-900 flex items-center gap-1.5">
                   <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold">1</span>
-                  Kích hoạt 1 lần duy nhất (Máy chủ)
+                  Kích hoạt 1 lần duy nhất (Máy chủ) — One-click fix lỗi font
                 </div>
                 <p className="text-slate-600">
-                  Nhấp đúp vào file <code className="font-mono font-bold text-indigo-700 bg-indigo-50 px-1 py-0.5 rounded">register-protocol.bat</code> trong thư mục dự án. Script chỉ ghi vào <code className="font-mono text-slate-700">HKCU\Software\Classes</code> của tài khoản hiện tại, <b>không đòi hỏi quyền Admin</b> và <b>không khóa cứng tên User</b>.
+                  Bản <code className="font-mono font-bold text-indigo-700 bg-indigo-50 px-1 py-0.5 rounded">register-protocol.bat</code> cũ lưu UTF-8 có dấu nên cmd.exe báo lỗi font
+                  ('Thức', 'SCRIPT_DIR"', 'cript.exe'...). Đã fix sang <b>ASCII-only + CRLF</b>. Bấm nút bên dưới để tải bản fix (không cần mở thư mục thủ công),
+                  sau đó double-click 1 lần duy nhất. Script chỉ ghi vào <code className="font-mono text-slate-700">HKCU\Software\Classes</code> của tài khoản hiện tại, <b>không đòi hỏi quyền Admin</b> và <b>không khóa cứng tên User</b>.
+                </p>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    onClick={handleDownloadRegisterBat}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold rounded-lg transition shadow-xs"
+                    title="Tải bản register-protocol-FIXED.bat (ASCII-only, Falcon-safe)"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Tải file kích hoạt (fix lỗi font)</span>
+                  </button>
+                  <button
+                    onClick={handleCopyRegisterCommands}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 text-[11px] font-bold rounded-lg transition"
+                    title="Copy 5 lệnh reg add HKCU để paste vào CMD"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy lệnh HKCU</span>
+                  </button>
+                  <button
+                    onClick={handleOpenRegisterHelp}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-[11px] font-bold rounded-lg transition"
+                    title="Mở hộp hướng dẫn mở thư mục cấp quyền từng bước"
+                  >
+                    <Folder className="w-3.5 h-3.5" />
+                    <span>Hướng dẫn mở thư mục cấp quyền</span>
+                  </button>
+                </div>
+                <p className="text-[10px] italic text-slate-500">
+                  Lưu ý Falcon: trình duyệt không thể tự chạy .bat (sandbox). Luồng one-click hợp lệ = 1 click tải file/copy lệnh (user consent) → double-click 1 lần → từ đó nút 🚀 chạy ngầm thật sự.
                 </p>
               </div>
               <div className="bg-white/90 p-3.5 rounded-xl border border-indigo-200 space-y-1.5">

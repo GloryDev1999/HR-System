@@ -1,18 +1,23 @@
 @echo off
+REM ============================================================
+REM  SmartHR Enterprise - Huy dang ky giao thuc smarthr://
+REM  Falcon EDR Safe - Chi xoa HKCU, khong can Admin
+REM  File luu dang ASCII (khong dau) de tranh loi font cmd.exe
+REM ============================================================
 chcp 65001 >nul
-title Huy Dang Ky Giao Thuc SmartHR Protocol
+title SmartHR - Unregister smarthr protocol
 
 echo ============================================================
-echo   SmartHR Enterprise - Hủy Đăng Ký Giao Thức smarthr://
+echo   SmartHR Enterprise - Huy dang ky giao thuc smarthr://
 echo ============================================================
 echo.
 
 reg delete "HKCU\Software\Classes\smarthr" /f >nul 2>&1
 
 if %errorlevel% equ 0 (
-    echo [THÀNH CÔNG] Đã xóa giao thức smarthr:// khỏi máy tính của bạn.
+    echo [THANH CONG] Da xoa giao thuc smarthr:// khoi may cua ban.
 ) else (
-    echo [THÔNG BÁO] Giao thức smarthr:// chưa từng được đăng ký hoặc đã bị xóa trước đó.
+    echo [THONG BAO] Giao thuc smarthr:// chua tung duoc dang ky hoac da bi xoa truoc do.
 )
 
 echo.

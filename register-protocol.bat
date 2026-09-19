@@ -1,10 +1,16 @@
 @echo off
+REM ============================================================
+REM  SmartHR Enterprise - Dang ky giao thuc smarthr://
+REM  Falcon EDR Safe 100%% - Chi ghi HKCU, khong can Admin
+REM  QUAN TRONG: File nay BAT BUOC luu dang ASCII (khong dau).
+REM  Khong luu UTF-8 co dau - cmd.exe se bao loi font.
+REM ============================================================
 chcp 65001 >nul
-title Dang Ky Giao Thuc SmartHR Protocol (Falcon EDR Safe)
+title SmartHR - Register smarthr protocol (Falcon EDR Safe)
 
 echo ============================================================
-echo   SmartHR Enterprise - Đăng Ký Giao Thức smarthr://
-echo   (Không yêu cầu quyền Admin, không khóa cứng tên User)
+echo   SmartHR Enterprise - Dang ky giao thuc smarthr://
+echo   (Khong yeu cau quyen Admin, khong khoa cung ten User)
 echo ============================================================
 echo.
 
@@ -12,17 +18,17 @@ set "SCRIPT_DIR=%~dp0"
 set "VBS_PATH=%SCRIPT_DIR%start-server-hidden.vbs"
 
 if not exist "%VBS_PATH%" (
-    echo [LỖI] Không tìm thấy file start-server-hidden.vbs trong thư mục:
+    echo [LOI] Khong tim thay file start-server-hidden.vbs trong thu muc:
     echo "%SCRIPT_DIR%"
     echo.
     pause
     exit /b 1
 )
 
-echo Đường dẫn file kích hoạt:
+echo Duong dan file kich hoat:
 echo "%VBS_PATH%"
 echo.
-echo Đang đăng ký giao thức smarthr:// vào HKCU\Software\Classes...
+echo Dang dang ky giao thuc smarthr:// vao HKCU\Software\Classes...
 
 reg add "HKCU\Software\Classes\smarthr" /ve /d "URL:SmartHR Server Launcher" /f >nul
 reg add "HKCU\Software\Classes\smarthr" /v "URL Protocol" /d "" /f >nul
@@ -33,18 +39,18 @@ reg add "HKCU\Software\Classes\smarthr\shell\open\command" /ve /d "wscript.exe \
 if %errorlevel% equ 0 (
     echo.
     echo ============================================================
-    echo   [THÀNH CÔNG] Đã đăng ký giao thức smarthr:// thành công!
+    echo   [THANH CONG] Da dang ky giao thuc smarthr:// thanh cong!
     echo ============================================================
-    echo   - Người dùng: %USERNAME%
-    echo   - Thư mục:    %SCRIPT_DIR%
-    echo   - An toàn:    Chỉ ghi vào HKCU (User Registry, 0 can thiệp Admin)
+    echo   - Nguoi dung: %USERNAME%
+    echo   - Thu muc:    %SCRIPT_DIR%
+    echo   - An toan:    Chi ghi vao HKCU (User Registry, 0 can thiep Admin)
     echo.
-    echo Bây giờ anh có thể bấm nút "Mở Server" trực tiếp từ
-    echo mục Cài Đặt trên trình duyệt Web mà không cần mở thư mục!
+    echo Bay gio ban co the bam nut "Kich Hoat Server" truc tiep tu
+    echo muc Cai Dat tren trinh duyet Web ma khong can mo thu muc!
     echo.
 ) else (
     echo.
-    echo [THẤT BẠI] Có lỗi khi thêm khóa Registry.
+    echo [THAT BAI] Co loi khi them khoa Registry.
 )
 
 pause
