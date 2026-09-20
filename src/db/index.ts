@@ -15,6 +15,7 @@ import {
   IProductivityQualityRate,
   IUserAuditLog
 } from '../types';
+import { emitLanPush } from '../services/lan-push-guard';
 
 /**
  * HRSystemDatabase — Local-First IndexedDB cho SMART HR (Leggett & Platt)
@@ -303,6 +304,24 @@ export class HRSystemDatabase extends Dexie {
     this.rbacRoles.hook('updating', (mods: any) => {
       if ('isSystem' in mods && !('isSystemFlag' in mods)) mods.isSystemFlag = mods.isSystem ? 1 : 0;
     });
+
+    // LAN realtime push (P0-1 revive, quyết user 2026-09-20: 2 chiều mọi role).
+    // Chỉ 3 bảng đã chốt: employees (NV mới xuống dept) + shiftRosters (xếp ca
+    // 2 chiều) + productivityQualityRates (NS/CL). Ghi tay → POST journal.
+    // Bulk/file/seed + nạp từ máy khác bị chặn trong guard (không spam, không loop).
+    const lanPushTables = ['employees', 'shiftRosters', 'productivityQualityRates'];
+    for (const tableName of lanPushTables) {
+      const dexieTable = (this as any)[tableName];
+      dexieTable.hook('creating', (_p: any, obj: any) => {
+        if (obj) emitLanPush({ table: tableName, action: 'put', record: { ...obj } });
+      });
+      dexieTable.hook('updating', (mods: any, _key: any, obj: any) => {
+        if (obj) emitLanPush({ table: tableName, action: 'put', record: { ...obj, ...mods } });
+      });
+      dexieTable.hook('deleting', (_key: any, _obj: any) => {
+        emitLanPush({ table: tableName, action: 'delete', key: _key });
+      });
+    }
   }
 }
 

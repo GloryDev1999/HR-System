@@ -183,6 +183,16 @@ const PAGE = `<!DOCTYPE html>
   .quit { text-align: center; margin-top: 16px; }
   .quit button { background: none; border: 0; color: #94a3b8; font-size: 12px; cursor: pointer; text-decoration: underline; }
   .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: #0f172a; color: #fff; padding: 12px 20px; border-radius: 12px; font-size: 13px; display: none; box-shadow: 0 10px 30px rgba(0,0,0,.3); }
+  .overlay { position: fixed; inset: 0; background: rgba(15,23,42,.55); display: none; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+  .overlay.show { display: flex; }
+  .modal { background: #fff; border-radius: 16px; padding: 22px; max-width: 380px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+  .modal h3 { font-size: 15px; margin-bottom: 8px; }
+  .modal p { font-size: 13px; color: #64748b; line-height: 1.55; margin-bottom: 18px; }
+  .modal .row { display: flex; gap: 10px; }
+  .modal .row button { flex: 1; border: 0; border-radius: 10px; padding: 12px; font-size: 14px; font-weight: 800; cursor: pointer; }
+  .m-cancel { background: #f1f5f9; color: #475569; }
+  .m-ok { background: linear-gradient(135deg, #dc2626, #ef4444); color: #fff; }
+  .m-ok.blue { background: linear-gradient(135deg, #0369a1, #0284c7); }
 </style>
 </head>
 <body>
@@ -218,10 +228,35 @@ const PAGE = `<!DOCTYPE html>
     <div class="quit"><button id="btnQuit">Tắt trung tâm này</button></div>
   </div>
   <div class="toast" id="toast"></div>
+  <div class="overlay" id="confirmOverlay" role="dialog" aria-modal="true">
+    <div class="modal">
+      <h3 id="confirmTitle">Xac nhan</h3>
+      <p id="confirmMsg"></p>
+      <div class="row">
+        <button class="m-cancel" id="confirmNo">Huy bo</button>
+        <button class="m-ok" id="confirmYes">Dong y</button>
+      </div>
+    </div>
+  </div>
 <script>
 const $ = (id) => document.getElementById(id);
 function log(m) { const el = $("log"); const t = new Date().toLocaleTimeString("vi-VN"); el.textContent += "[" + t + "] " + m + "\\n"; el.scrollTop = el.scrollHeight; }
 function toast(m) { const t = $("toast"); t.textContent = m; t.style.display = "block"; setTimeout(() => t.style.display = "none", 2600); }
+// Modal xac nhan noi bo (Zero Native Dialogs theo agent.md — khong dung confirm()).
+function askConfirm(title, msg, okLabel) {
+  return new Promise((resolve) => {
+    const ov = $("confirmOverlay");
+    $("confirmTitle").textContent = title;
+    $("confirmMsg").textContent = msg;
+    const yes = $("confirmYes"), no = $("confirmNo");
+    yes.textContent = okLabel || "Dong y";
+    const done = (v) => { ov.classList.remove("show"); yes.onclick = null; no.onclick = null; ov.onclick = null; resolve(v); };
+    yes.onclick = () => done(true);
+    no.onclick = () => done(false);
+    ov.onclick = (e) => { if (e.target === ov) done(false); };
+    ov.classList.add("show");
+  });
+}
 async function refresh() {
   try {
     const r = await fetch("/api/status", { cache: "no-store" });
@@ -258,7 +293,8 @@ $("btnStart").onclick = async () => {
   refresh();
 };
 $("btnStop").onclick = async () => {
-  if (!confirm("Đóng cổng? Máy khác trong LAN sẽ mất kết nối.")) return;
+  const ok = await askConfirm("Dong cong?", "May khac trong LAN se mat ket noi. He thong tren may nay van chay offline binh thuong.", "Dong cong");
+  if (!ok) return;
   try {
     const r = await fetch("/api/stop", { method: "POST" });
     const j = await r.json();
@@ -280,7 +316,8 @@ $("btnOpen").onclick = async () => {
   } catch (e) { toast("Lỗi kết nối trung tâm."); }
 };
 $("btnQuit").onclick = async () => {
-  if (!confirm("Tắt trung tâm? (cổng vẫn mở nếu đang hoạt động)")) return;
+  const ok = await askConfirm("Tat trung tam?", "Bang dieu khien se dung. Cong 4173 van mo neu dang hoat dong.", "Tat trung tam");
+  if (!ok) return;
   await fetch("/api/quit", { method: "POST" }).catch(() => {});
   document.body.innerHTML = "<p style='padding:40px;text-align:center'>Đã tắt trung tâm. Đóng tab này lại.</p>";
 };

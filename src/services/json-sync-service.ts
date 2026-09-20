@@ -16,6 +16,7 @@
  */
 
 import { db } from '../db';
+import { runWithoutLanPush } from './lan-push-guard';
 import { logUserAction } from './audit-log-service';
 
 export const JSON_SYNC_SCHEMA_VERSION = '4.0.0';
@@ -975,7 +976,8 @@ class JsonSyncService {
       return stampSyncMeta(c, u, at);
     });
 
-    await db.transaction('rw', db.shiftRosters, db.employees, async () => {
+    // LAN push: ghi lại dữ liệu file-pipeline (đã đẩy ở bước lưu tay) → không đẩy lặp.
+    await runWithoutLanPush(() => db.transaction('rw', db.shiftRosters, db.employees, async () => {
       if (stamped.length) await db.shiftRosters.bulkPut(stamped as any);
       if (input.entries?.length) {
         for (const [empId, shiftCode] of input.entries) {
@@ -986,7 +988,7 @@ class JsonSyncService {
           }
         }
       }
-    });
+    }));
 
     // Ghi lịch sử nộp ca (local)
     try {
@@ -1210,7 +1212,8 @@ class JsonSyncService {
 
     const auditUnion = unionById(localAudits as any[], (payload.auditLogs || []) as any[], (r: any) => r.id);
 
-    await db.transaction('rw', [db.shiftRosters, db.productivityQualityRates, db.leaveRequests, db.userAuditLogs], async () => {
+    // LAN push: nạp file dept (dữ liệu đã có chủ từ file) → không đẩy LAN.
+    await runWithoutLanPush(() => db.transaction('rw', [db.shiftRosters, db.productivityQualityRates, db.leaveRequests, db.userAuditLogs], async () => {
       if (rosterMerge.toPut.length) await db.shiftRosters.bulkPut(rosterMerge.toPut as any);
       if (rateMerge.toPut.length) await db.productivityQualityRates.bulkPut(rateMerge.toPut as any);
       if (leaveMerge.toPut.length) await db.leaveRequests.bulkPut(leaveMerge.toPut as any);
@@ -1219,7 +1222,7 @@ class JsonSyncService {
         const u2 = unionById(fresh as any[], (payload.auditLogs || []) as any[], (r: any) => r.id);
         if (u2.added > 0) await db.userAuditLogs.bulkPut((payload.auditLogs || []) as any);
       }
-    });
+    }));
 
     // Lưu lịch sử tiếp nhận + audit
     const conflicts = [...rosterMerge.conflicts, ...rateMerge.conflicts, ...leaveMerge.conflicts];
@@ -1339,7 +1342,8 @@ class JsonSyncService {
     const subsRow = await db.settings.get('shift_submissions').catch(() => undefined);
     const subsUnion = unionById((subsRow?.value as any[]) || [], payload.shiftSubmissions || [], (r: any) => r.id, 50);
 
-    await db.transaction(
+    // LAN push: merge master kieu<->hoa từ file → không đẩy LAN.
+    await runWithoutLanPush(() => db.transaction(
       'rw',
       [db.employees, db.dailyTimesheets, db.overtimeRecords, db.leaveRequests, db.shiftRosters, db.ocrScans, db.settings, db.shiftClasses, db.rbacRoles, db.productionLines, db.productivityQualityRates, db.userAuditLogs],
       async () => {
@@ -1357,7 +1361,7 @@ class JsonSyncService {
         if (settingsChanged && mergedSettings) await db.settings.put({ key: 'systemSettings', value: mergedSettings });
         await db.settings.put({ key: 'shift_submissions', value: subsUnion.merged });
       }
-    );
+    ));
 
     const conflicts: ConflictEntry[] = [
       ...empMerge.conflicts,
@@ -1501,12 +1505,13 @@ class JsonSyncService {
     const rateMerge = mergeQualityRates(localRates as any[], (payload.productivityQualityRates || []) as any[], incomingFile);
     const scopedLeaves = (payload.leaveRequests || []).filter((l: any) => !l.department || l.department === payload.department);
     const leaveMerge = mergeTableRecords('leaveRequests', localLeaves as any[], scopedLeaves as any[], (r: any) => r.id, incomingFile);
-    await db.transaction('rw', [db.shiftRosters, db.productivityQualityRates, db.leaveRequests, db.userAuditLogs], async () => {
+    // LAN push: ingest object từ file → không đẩy LAN.
+    await runWithoutLanPush(() => db.transaction('rw', [db.shiftRosters, db.productivityQualityRates, db.leaveRequests, db.userAuditLogs], async () => {
       if (rosterMerge.toPut.length) await db.shiftRosters.bulkPut(rosterMerge.toPut as any);
       if (rateMerge.toPut.length) await db.productivityQualityRates.bulkPut(rateMerge.toPut as any);
       if (leaveMerge.toPut.length) await db.leaveRequests.bulkPut(leaveMerge.toPut as any);
       if ((payload.auditLogs || []).length) await db.userAuditLogs.bulkPut(payload.auditLogs as any).catch(() => {});
-    });
+    }));
     const state = await getLocalSyncState();
     state.lastSeenDept[file] = { exportedAt: payload.exportedAt, exportedBy: payload.exportedBy };
     state.lastMergeAt = nowIso();

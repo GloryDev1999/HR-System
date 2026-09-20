@@ -1,4 +1,5 @@
 import { db, DEFAULT_SETTINGS } from '../db';
+import { runWithoutLanPush } from './lan-push-guard';
 import initialEmployees from '../data/initial-employees.json';
 import initialTimesheets from '../data/initial-timesheets.json';
 import initialOvertimes from '../data/initial-overtimes.json';
@@ -9,7 +10,8 @@ export async function seedDatabaseIfEmpty() {
   if (empCount === 0) {
     console.log('Seeding Dexie.js database with initial Leggett & Platt data...');
     
-    await db.transaction('rw', [db.employees, db.dailyTimesheets, db.overtimeRecords, db.shiftRosters, db.leaveRequests], async () => {
+    // LAN push: seed dữ liệu mẫu ban đầu → KHÔNG đẩy lên LAN.
+    await runWithoutLanPush(() => db.transaction('rw', [db.employees, db.dailyTimesheets, db.overtimeRecords, db.shiftRosters, db.leaveRequests], async () => {
       // Seed employees
       await db.employees.bulkPut(initialEmployees as unknown as IEmployee[]);
       
@@ -81,7 +83,7 @@ export async function seedDatabaseIfEmpty() {
 
       await db.shiftRosters.bulkPut(shiftRosters);
       await db.leaveRequests.bulkPut(leaveRequests);
-    });
+    }));
 
     console.log('Database seeded successfully!');
   }

@@ -3,8 +3,8 @@
     "project_name": "SmartHR - Single-File In-Browser HRMS & Timekeeping System",
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
-    "last_updated": "2026-09-19T02:20:00Z",
-    "current_phase": "Phase 33: Fix dau & OneDrive (Leggett & Platt) cat lenh reg bang Delayed Expansion + reg query verify (146/146 tests green, tsc clean)",
+    "last_updated": "2026-09-20T00:00:00Z",
+    "current_phase": "Phase 35: Dau day GUI LAN realtime 2 chieu (P0-1 revive: hooks 3 bang + guard chong loop/spam, tsc 0 loi, vitest 152/152)",
     "version": "3.1.0"
   },
   "agent_profile": {
@@ -34,6 +34,7 @@
     },
     "user_confirmed_rules": {
       "enterprise_6_users": "Kieu(Mia) System Admin Host, Hoa(Molly) HR-System Client, Vinh(Glory) WH-Admin only shift roster for WH, Nguyet Anh QC-Admin only shift roster for QC and quality rate, Han Prd-Admin only shift roster for Production and productivity rate, Glory(Software) Technical Admin. Default password 123. Audit logs stored in userAuditLogs.",
+      "lan_sync_direction_2026_09_20": "User quyet: GIU dong bo realtime 2 CHIEU cho MOI role (ke ca 3 dept vinh/han/nguyetanh), KHONG enforce push-only P0-2 (user thua nhan chan chieu nhan cua dept la sai). Role giu chuan theo user he thong. Heartbeat giu cho moi may. Nut pull tay trong Settings chi AD System thay (SettingsPage.tsx:541 gate san). Audit P0-1 cung ngay: kenh GUI LAN hien chet (broadcastMutation 0 caller, khong co sync-outbox/v10), kenh NHAN song (SSE+pull, da test that mutate->pull OK).",
       "overtime_rounding": "Exact calculation without rounding (rawMinutes and hours decimal), manual rounding modal on Overtime Table for HR",
       "early_checkin_ot": "Check-in between 06:00 and 06:30 for 07:30 shift is counted as early overtime with isEarlyIn flag; check-in after 06:30 does not receive early OT",
       "sunday_rule": "Sunday shifts are not marked as regular 'W' workdays on timesheets; full hours converted to Sunday OT with 30m lunch deduction if >= 8h; missing punches still flagged as MCI/MCO",
@@ -330,6 +331,30 @@
         "Fix register-protocol.bat: setlocal EnableDelayedExpansion + !VBS_PATH! trong dong reg, giu ASCII-only + CRLF + chi HKCU, them reg query /ve in gia tri da luu de doi chieu",
         "Dong bo frontend: REGISTER_BAT_LINES khop 100% file repo (node check OK), REGISTER_CMDS_TEMPLATE them setlocal + !VBS_PATH!, modal help cap nhat nguyen nhan &",
         "Verify: tsc --noEmit 0 loi, vitest 146/146 pass, learning.md KB-019"
+      ]
+    },
+    "M25_Lan_Push_Wiring_2026_09_20": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "P0-1 revive (report claim M23 khong khop code: broadcastMutation 0 caller, khong outbox/v10): dau day kenh GUI LAN realtime 2 chieu cho MOI role (quyet user: khong push-only, Hoa mo cong chinh, kieu/hoa/glory ai cung co the host, 1 host tai 1 thoi diem)",
+        "Moi src/services/lan-push-guard.ts (zero-dependency, khong cycle): setLanPushHandler + shouldPushLan + emitLanPush (fire-and-forget, nuot loi giu local-first) + runWithoutLanPush + runAsRemoteApply",
+        "db/index.ts: hooks creating/updating/deleting cho 3 bang da chot (employees + shiftRosters + productivityQualityRates); luu tay o ShiftAssignment:371/EmployeeList:137/ProductivityQuality:132 tu day LAN",
+        "lan-sync-service.ts: dang ky handler -> broadcastMutation; applyRemoteMutation boc runAsRemoteApply (chong loop ping-pong); nhan giu nguyen cho moi role (khong gate canReceive)",
+        "Suppress bulk (luat kenh: file di file): Header import Excel, json-sync 4 transaction (submitDeptShifts/ingestDept/ingestMaster/ingestObject), db-seeder seed, db-sync snapshot",
+        "Verify: tsc 0 loi (sau prebuild embed-models), vitest 152/152 (146 cu + 6 guard moi), guard logic chay that tren node; manifest generated revert giu changeset sach",
+        "Rui ro con lai (ngoai scope, theo thu tu report): applyRemoteMutation blind-put chua LWW (conflict hiem: dept so huu roster phong minh, Hoa so huu master); doi host mat journal (P0-3/P0-4); API LAN chua auth (P1-6)"
+      ]
+    },
+    "M24_Control_Panel_OneClick_2026_09_20": {      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "Giu nguyen kien truc pipeline.md S4: SmartHR-BangDieuKhien.lnk -> wscript mo-ui.vbs -> node launcher-ui.js (:4179 loopback) -> spawn node server.js (:4173 LAN) -> browser 127.0.0.1:4179",
+        "Fix report.md P2-10: thay 2 confirm() native (Dong cong, Tat trung tam) bang modal inline askConfirm() trong launcher-ui.js — dat agent.md Zero Native Dialogs; giu zero-dependency, bind 127.0.0.1, windowsHide, PID %TEMP%",
+        "Them tao-BangDieuKhien.vbs (Falcon-safe: chi WScript.Shell + FileSystemObject, khong PowerShell/Registry/Admin): sinh SmartHR-BangDieuKhien.lnk tren Desktop tro vao wscript mo-ui.vbs, icon public/favicon.ico (hr-manager.ico chua ton tai trong repo)",
+        "Nut Mo He Thong giu logic hien tai: cong mo -> http://localhost:4173, cong dong -> /app offline loopback (COOP/COEP du cho ONNX), khong dung file://",
+        "Them npm script control (node launcher-ui.js)",
+        "Verify e2e that tren container (PORT=4183/MANAGER_PORT=4189): /api/status offline -> POST /api/start ok -> /api/health online -> /app 200 75MB dist -> POST /api/stop killedPid -> /api/quit; node --check launcher-ui.js + server.js OK"
       ]
     }
   }

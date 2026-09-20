@@ -9,6 +9,7 @@
  *    trừ bảng accounts (tài khoản đăng nhập là dữ liệu cục bộ của từng máy)
  */
 import { db } from '../db';
+import { runWithoutLanPush } from './lan-push-guard';
 import { 
   IEmployee, 
   IDailyTimesheetCell, 
@@ -180,7 +181,8 @@ export async function importDatabaseFromSnapshot(file: File): Promise<{
   // Toàn bộ thay thế nằm trong một transaction - fail ở bất kỳ đâu sẽ rollback toàn bộ
   // v5: thêm shiftClasses/rbacRoles vào sync (accounts vẫn local-only không sync)
   // v7: thêm productionLines/productivityQualityRates vào sync
-  await db.transaction(
+  // LAN push: snapshot thay thế toàn bộ DB → KHÔNG đẩy từng bản ghi lên LAN (spam).
+  await runWithoutLanPush(() => db.transaction(
     'rw',
     [db.employees, db.dailyTimesheets, db.overtimeRecords, db.leaveRequests, db.shiftRosters, db.ocrScans, db.settings, db.shiftClasses, db.rbacRoles, db.productionLines, db.productivityQualityRates],
     async () => {
@@ -246,7 +248,7 @@ export async function importDatabaseFromSnapshot(file: File): Promise<{
         }
       }
     }
-  );
+  ));
 
   const skippedTotal = Object.values(skipped).reduce((s, n) => s + n, 0);
 

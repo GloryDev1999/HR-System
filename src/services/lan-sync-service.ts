@@ -6,6 +6,7 @@
 
 import { db } from '../db';
 import { SessionUser } from '../types';
+import { setLanPushHandler, runAsRemoteApply } from './lan-push-guard';
 
 export interface LanOnlineUser {
   username: string;
@@ -182,13 +183,16 @@ class LanSyncService {
       const dexieTable = (db as any)[table];
       if (!dexieTable) return;
 
-      if (action === 'put' && record) {
-        await dexieTable.put(record);
-      } else if (action === 'bulkPut' && Array.isArray(record)) {
-        await dexieTable.bulkPut(record);
-      } else if (action === 'delete' && key !== undefined) {
-        await dexieTable.delete(key);
-      }
+      // Bọc remote-apply: ghi Dexie nhưng KHÔNG đẩy ngược lên server (chống loop).
+      await runAsRemoteApply(async () => {
+        if (action === 'put' && record) {
+          await dexieTable.put(record);
+        } else if (action === 'bulkPut' && Array.isArray(record)) {
+          await dexieTable.bulkPut(record);
+        } else if (action === 'delete' && key !== undefined) {
+          await dexieTable.delete(key);
+        }
+      });
     } catch (err) {
       console.warn(`[LAN SYNC] Lỗi nạp mutation vào Dexie [${table}]`, err);
     }
@@ -312,3 +316,14 @@ class LanSyncService {
 }
 
 export const lanSyncService = new LanSyncService();
+
+// Đấu dây GỬI (P0-1 revive): Dexie hooks (db/index.ts) → journal server.
+// Mọi role như nhau (quyết user 2026-09-20: realtime 2 chiều, nhận hết + UI chặn).
+// broadcastMutation tự bỏ qua khi chưa login qua http; guard chặn bulk/remote-apply.
+setLanPushHandler((e) => {
+  void lanSyncService.broadcastMutation(
+    e.table,
+    e.action,
+    e.action === 'delete' ? e.key : e.record
+  );
+});

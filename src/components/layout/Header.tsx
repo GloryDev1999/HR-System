@@ -27,6 +27,7 @@ import { useToast } from '../../context/ToastContext';
 import { useModal } from '../../context/ModalContext';
 import { exportTimesheetToExcel } from '../../services/excel-exporter';
 import { exportDatabaseToSnapshot, importDatabaseFromSnapshot } from '../../services/db-sync';
+import { runWithoutLanPush } from '../../services/lan-push-guard';
 import { jsonSyncService, ScanResult } from '../../services/json-sync-service';
 import { db } from '../../db';
 import { parseTimesheetFile } from '../../services/timesheet-parser-service';
@@ -830,7 +831,8 @@ export const Header: React.FC = () => {
 
           // Thực hiện làm sạch và ghi mới trong MỘT Transaction nguyên tử (ACID)
           // Đảm bảo KHÔNG clear shiftRosters để bảo toàn dữ liệu sắp ca từ các trạm!
-          await db.transaction('rw', [db.dailyTimesheets, db.overtimeRecords, db.rawAttendanceLogs, db.leaveRequests, db.shiftRosters], async () => {
+          // LAN push: nạp Excel hàng chục nghìn dòng → KHÔNG đẩy từng bản ghi lên LAN.
+          await runWithoutLanPush(() => db.transaction('rw', [db.dailyTimesheets, db.overtimeRecords, db.rawAttendanceLogs, db.leaveRequests, db.shiftRosters], async () => {
             await db.dailyTimesheets.clear();
             await db.overtimeRecords.clear();
             await db.rawAttendanceLogs.clear();
@@ -853,7 +855,7 @@ export const Header: React.FC = () => {
             if (rostersToSave.length > 0) {
               await db.shiftRosters.bulkPut(rostersToSave as any);
             }
-          });
+          }));
 
           const allRosters = Array.from(updatedRostersMap.values());
           const restViolationCount = allRosters.filter((r: any) => r.isRestViolation).length;
