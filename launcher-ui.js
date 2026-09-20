@@ -13,6 +13,9 @@
  *      - Cong mo   -> http://localhost:4173 (LAN vao duoc)
  *      - Cong dong -> /app (app offline qua loopback, KHONG mo cong LAN)
  *   Tu vung UI: "cong" = server LAN 4173, "trung tam" = bang dieu khien nay.
+ *   Foreign-port: neu 4173 ban ma khong phai do trung tam mo (server cu sot,
+ *   start-server.bat chay tay, app khac chiem) thi status/start/stop tra co
+ *   `foreign` de UI mo hop huong dan netstat/taskkill thay vi bao sai.
  */
 
 import http from 'node:http';
@@ -78,9 +81,14 @@ function pidAlive(pid) {
 async function serverStatus() {
   const h = await healthCheck(SERVER_PORT);
   const pid = readPid();
+  const livePid = pidAlive(pid) ? pid : null;
   return {
     online: !!h,
-    pid: pidAlive(pid) ? pid : null,
+    pid: livePid,
+    // foreign = cổng 4173 đang bận nhưng KHÔNG phải do trung tâm này mở
+    // (server cũ sót lại, start-server.bat chạy tay, hoặc app khác chiếm).
+    // Đây chính là ca "báo đang mở nhưng bấm đóng thì không có cổng để đóng".
+    foreign: !!h && !livePid,
     stalePid: pid && !pidAlive(pid) ? pid : null,
     port: SERVER_PORT,
     lan: h?.lanAddresses || getLanIPs().map((x) => ({ name: x.name, address: x.address })),
@@ -106,10 +114,13 @@ function writeHostFile(ip) {
 
 async function startServer() {
   const st = await serverStatus();
-  if (st.online) return { ok: true, reused: true, pid: st.pid };
+  if (st.online && st.pid) return { ok: true, reused: true, pid: st.pid };
+  // Cổng bận nhưng không phải của mình → KHÔNG nhận vơ "đang hoạt động",
+  // trả cờ foreign để UI mở hộp hướng dẫn giải phóng cổng.
+  if (st.online && !st.pid) return { ok: false, foreign: true };
   const stale = readPid();
   if (stale && !pidAlive(stale)) { try { fs.unlinkSync(PID_FILE); } catch {} }
-  if (!fs.existsSync(SERVER_JS)) return { ok: false, error: 'Khong thay server.js' };
+  if (!fs.existsSync(SERVER_JS)) return { ok: false, error: 'Không thấy file server.js trong thư mục' };
 
   // Spawn node bang array args (khong qua cmd) + windowsHide -> khong cua so den.
   const child = spawn(process.execPath, [SERVER_JS], {
@@ -127,13 +138,19 @@ async function startServer() {
       return { ok: true, pid: child.pid };
     }
   }
-  return { ok: false, error: 'Qua 15s chua thay /api/health (port co the bi chiem)' };
+  return { ok: false, error: 'Quá 15 giây chưa thấy /api/health (cổng có thể đang bị chiếm)' };
 }
 
 async function stopServer() {
   const pid = readPid();
-  if (!pid) return { ok: true, nothing: true };
-  if (!pidAlive(pid)) { try { fs.unlinkSync(PID_FILE); } catch {} return { ok: true, nothing: true }; }
+  if (!pid || !pidAlive(pid)) {
+    if (pid && !pidAlive(pid)) { try { fs.unlinkSync(PID_FILE); } catch {} }
+    // Không còn PID của mình: nếu cổng vẫn bận nghĩa là chương trình khác
+    // đang chiếm → báo foreign thay vì "không có cổng cần đóng".
+    const h = await healthCheck(SERVER_PORT);
+    if (h) return { ok: false, foreign: true };
+    return { ok: true, nothing: true };
+  }
   try {
     const h = await healthCheck(SERVER_PORT);
     const n = h?.onlineUsers?.length ?? 0;
@@ -153,13 +170,14 @@ const PAGE = `<!DOCTYPE html>
 <link rel="icon" href="/favicon.ico">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: Arial, "Segoe UI", sans-serif; background: #eef2f7; color: #0f172a; min-height: 100vh; }
+  body { font-family: "Aptos Narrow", "Segoe UI", Arial, sans-serif; background: #eef2f7; color: #0f172a; min-height: 100vh; font-size: 16px; }
   .hero { background: linear-gradient(135deg, #1e3a8a 0%, #0284c7 100%); color: #fff; padding: 28px 24px 34px; }
   .hero h1 { font-size: 22px; letter-spacing: .3px; }
   .hero p { opacity: .85; font-size: 13px; margin-top: 6px; }
   .pill { display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.35); padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 700; }
   .dot { width: 11px; height: 11px; border-radius: 50%; background: #f87171; }
   .dot.on { background: #4ade80; box-shadow: 0 0 10px #4ade80; animation: pulse 1.6s infinite; }
+  .dot.busy { background: #fbbf24; box-shadow: 0 0 10px #fbbf24; animation: pulse 1.6s infinite; }
   @keyframes pulse { 50% { opacity: .5; } }
   .wrap { max-width: 860px; margin: -22px auto 40px; padding: 0 16px; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
@@ -182,6 +200,17 @@ const PAGE = `<!DOCTYPE html>
   .stats b { color: #0f172a; }
   .quit { text-align: center; margin-top: 16px; }
   .quit button { background: none; border: 0; color: #94a3b8; font-size: 12px; cursor: pointer; text-decoration: underline; }
+  .hint { background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px; padding: 14px 16px; margin-top: 14px; font-size: 14px; line-height: 1.6; color: #78350f; }
+  .hint b { color: #92400e; }
+  .hint ol { margin: 8px 0 4px 20px; padding: 0; }
+  .hint li { margin: 4px 0; }
+  .cmd { display: flex; align-items: center; gap: 8px; background: #0f172a; color: #a5f3c0; border-radius: 8px; padding: 8px 10px; margin: 6px 0; font-family: Consolas, monospace; font-size: 12.5px; word-break: break-all; }
+  .cmd button { margin-left: auto; border: 0; background: #22c55e; color: #052e16; border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 12px; font-weight: 800; white-space: nowrap; font-family: inherit; }
+  .btn-row { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .btn-small { border: 1px solid #bae6fd; background: #fff; border-radius: 10px; padding: 10px 14px; cursor: pointer; font-size: 14px; font-weight: 700; color: #0369a1; font-family: inherit; }
+  .guide { text-align: left; }
+  .guide h4 { font-size: 14px; margin: 12px 0 4px; color: #0f172a; }
+  .guide p { font-size: 13.5px; color: #475569; line-height: 1.6; }
   .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: #0f172a; color: #fff; padding: 12px 20px; border-radius: 12px; font-size: 13px; display: none; box-shadow: 0 10px 30px rgba(0,0,0,.3); }
   .overlay { position: fixed; inset: 0; background: rgba(15,23,42,.55); display: none; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
   .overlay.show { display: flex; }
@@ -198,43 +227,75 @@ const PAGE = `<!DOCTYPE html>
 <body>
   <div class="hero">
     <h1>Trung tâm điều khiển</h1>
-    <p>Trung tâm khởi tạo sever tĩnh để mở kết nối giữa các phòng ban.</p>
-    <div class="pill"><span class="dot" id="dot"></span><span id="statusText">Dang kiem tra...</span></div>
+    <p>Trung tâm mở cổng mạng tĩnh để kết nối các phòng ban (không cần thao tác file thủ công).</p>
+    <div class="pill"><span class="dot" id="dot"></span><span id="statusText">Đang kiểm tra…</span></div>
   </div>
   <div class="wrap">
     <div class="cards">
       <div class="card">
-        <h2>Mở Cổng</h2>
-        <p>Mở cổng 4173 tĩnh để các phòng ban khác có thể sắp ca cho nhân viên của mình, cổng chỉ có thể kết nối khi được mở và cùng chung 1 LAN.</p>
+        <h2>Mở cổng</h2>
+        <p>Mở cổng 4173 để các phòng ban khác sắp ca cho nhân viên của mình. Cổng chỉ kết nối được khi đã mở và các máy dùng chung một mạng LAN.</p>
         <button class="btn btn-green" id="btnStart">&#9654; MỞ CỔNG</button>
       </div>
       <div class="card">
-        <h2>Đóng Cổng</h2>
-        <p>Sau khi các user khác ngắt kết nối hoặc không còn phận sự hãy đóng cổng, tiến trình đóng cổng không ảnh hưởng hệ thống hoạt động, tắt trung tâm cổng vẫn mở nên hãy đóng cổng trước khi tắt hệ thống.</p>
+        <h2>Đóng cổng</h2>
+        <p>Đóng cổng sau khi các máy khác đã ngắt kết nối hoặc hết việc. Đóng cổng không ảnh hưởng hệ thống trên máy này. Đóng tab không tắt cổng — hãy bấm nút này trước khi nghỉ.</p>
         <button class="btn btn-red" id="btnStop">&#9632; ĐÓNG CỔNG</button>
       </div>
       <div class="card">
-        <h2>Mở Hệ Thống</h2>
-        <p>Chỉ mở trang đăng nhập, KHÔNG mở cổng. ưu tiên làm việc offline khi không các user khác không có phận sự. chỉ mở cổng 4173 khi cần mở cho user khác vào.</p>
-        <button class="btn btn-blue" id="btnOpen">&#9673; M&#7902; H&#7878; TH&#7888;NG</button>
+        <h2>Mở hệ thống</h2>
+        <p>Chỉ mở trang đăng nhập, KHÔNG mở cổng. Làm việc offline khi các máy khác không có việc. Chỉ mở cổng 4173 khi cần cho máy khác vào.</p>
+        <button class="btn btn-blue" id="btnOpen">&#9673; MỞ HỆ THỐNG</button>
       </div>
     </div>
     <div class="panel">
-      <h3>Địa chỉ cổng cho các user khác</h3>
-      <div id="lanList"><p style="color:#94a3b8;font-size:13px">Dang tai...</p></div>
-      <div class="stats"><span>User online: <b id="stUsers">-</b></span><span>Mutations: <b id="stMut">-</b></span><span>Uptime: <b id="stUp">-</b></span><span>PID: <b id="stPid">-</b></span></div>
+      <h3>Địa chỉ cổng cho các máy khác</h3>
+      <div id="lanList"><p style="color:#94a3b8;font-size:13px">Đang tải…</p></div>
+      <div class="btn-row">
+        <button class="btn-small" id="btnTestLan">🔍 Kiểm tra máy khác có vào được không</button>
+      </div>
+      <div class="stats"><span>Người online: <b id="stUsers">-</b></span><span>Thay đổi: <b id="stMut">-</b></span><span>Đã chạy: <b id="stUp">-</b></span><span>PID: <b id="stPid">-</b></span></div>
     </div>
-    <div class="panel"><h3>Nh&#7853;t k&#253;</h3><div id="log"></div></div>
+    <div class="hint" id="lanHint" style="display:none">
+      <b>Máy khác không vào được? Kiểm tra 3 điểm theo thứ tự:</b>
+      <ol>
+        <li><b>1. Cùng mạng LAN:</b> máy kia phải bắt cùng Wi-Fi/mạng dây với máy này (không dùng 4G, không khác tòa nhà).</li>
+        <li><b>2. Tường lửa Windows:</b> bấm “Kiểm tra” ở trên. Nếu dòng <b>localhost vào được, IP LAN không vào được</b> thì tường lửa đang chặn. Mở CMD <b>quyền Admin</b> (chuột phải → Run as administrator) rồi chạy lệnh sau:</li>
+      </ol>
+      <div class="cmd"><span id="netshCmd">netsh advfirewall firewall add rule name="SmartHR-4173" dir=in action=allow protocol=TCP localport=4173</span><button id="btnCopyNetsh">Sao chép</button></div>
+      <ol start="3">
+        <li><b>3. Cổng bị chương trình khác chiếm:</b> nếu phía trên báo “đang bận” mà bấm Đóng/Mở đều không xong, xem hộp hướng dẫn giải phóng cổng.</li>
+      </ol>
+      <div class="btn-row"><button class="btn-small" id="btnGuide">📖 Hướng dẫn giải phóng cổng 4173</button></div>
+    </div>
+    <div class="panel"><h3>Nhật ký</h3><div id="log"></div></div>
     <div class="quit"><button id="btnQuit">Tắt trung tâm này</button></div>
   </div>
   <div class="toast" id="toast"></div>
   <div class="overlay" id="confirmOverlay" role="dialog" aria-modal="true">
     <div class="modal">
-      <h3 id="confirmTitle">Xac nhan</h3>
+      <h3 id="confirmTitle">Xác nhận</h3>
       <p id="confirmMsg"></p>
       <div class="row">
-        <button class="m-cancel" id="confirmNo">Huy bo</button>
-        <button class="m-ok" id="confirmYes">Dong y</button>
+        <button class="m-cancel" id="confirmNo">Hủy bỏ</button>
+        <button class="m-ok" id="confirmYes">Đồng ý</button>
+      </div>
+    </div>
+  </div>
+  <div class="overlay" id="guideOverlay" role="dialog" aria-modal="true">
+    <div class="modal guide" style="max-width:520px">
+      <h3>Cổng 4173 đang bị chương trình khác chiếm</h3>
+      <p>Trung tâm báo “đang mở” nhưng nút Đóng/Mở đều không điều khiển được là vì cổng đang bận bởi <b>server cũ còn sót, cửa sổ start-server.bat chạy tay, hoặc một app khác</b> — không phải do trung tâm này mở nên trung tâm không có quyền đóng.</p>
+      <h4>Bước 1 — Tìm chương trình đang chiếm (CMD thường, không cần Admin)</h4>
+      <div class="cmd"><span>netstat -ano | findstr :4173</span><button data-copy="netstat -ano | findstr :4173">Sao chép</button></div>
+      <p>Nhìn cột cuối cùng lấy số <b>PID</b> ở dòng có <b>LISTENING</b>.</p>
+      <h4>Bước 2 — Tắt đúng chương trình đó</h4>
+      <div class="cmd"><span>taskkill /PID &lt;số PID&gt; /F</span><button data-copy="taskkill /PID ">Sao chép</button></div>
+      <p>Ví dụ tìm được PID 1234 thì chạy: <b>taskkill /PID 1234 /F</b>. Xong quay lại bấm <b>MỞ CỔNG</b>.</p>
+      <h4>Mẹo tránh bị lại</h4>
+      <p>Từ nay chỉ mở cổng bằng nút <b>MỞ CỔNG</b> trong trung tâm này, không chạy thêm <b>start-server.bat</b> hay cửa sổ đen nào khác.</p>
+      <div class="row" style="display:flex;gap:10px;margin-top:14px">
+        <button class="m-cancel" id="guideClose" style="flex:1;border:0;border-radius:10px;padding:12px;font-size:14px;font-weight:800;cursor:pointer;background:#f1f5f9;color:#475569">Đã hiểu</button>
       </div>
     </div>
   </div>
@@ -242,6 +303,20 @@ const PAGE = `<!DOCTYPE html>
 const $ = (id) => document.getElementById(id);
 function log(m) { const el = $("log"); const t = new Date().toLocaleTimeString("vi-VN"); el.textContent += "[" + t + "] " + m + "\\n"; el.scrollTop = el.scrollHeight; }
 function toast(m) { const t = $("toast"); t.textContent = m; t.style.display = "block"; setTimeout(() => t.style.display = "none", 2600); }
+function copyText(txt, okMsg) {
+  const done = () => toast(okMsg || "Đã sao chép");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(done).catch(() => fallbackCopy(txt, done));
+  } else { fallbackCopy(txt, done); }
+}
+function fallbackCopy(txt, done) {
+  const ta = document.createElement("textarea");
+  ta.value = txt; document.body.appendChild(ta); ta.select();
+  try { document.execCommand("copy"); done(); } catch (e) { toast("Không sao chép được, hãy chép tay"); }
+  document.body.removeChild(ta);
+}
+function showGuide() { $("guideOverlay").classList.add("show"); }
+function hideGuide() { $("guideOverlay").classList.remove("show"); }
 // Modal xac nhan noi bo (Zero Native Dialogs theo agent.md — khong dung confirm()).
 function askConfirm(title, msg, okLabel) {
   return new Promise((resolve) => {
@@ -249,7 +324,7 @@ function askConfirm(title, msg, okLabel) {
     $("confirmTitle").textContent = title;
     $("confirmMsg").textContent = msg;
     const yes = $("confirmYes"), no = $("confirmNo");
-    yes.textContent = okLabel || "Dong y";
+    yes.textContent = okLabel || "Đồng ý";
     const done = (v) => { ov.classList.remove("show"); yes.onclick = null; no.onclick = null; ov.onclick = null; resolve(v); };
     yes.onclick = () => done(true);
     no.onclick = () => done(false);
@@ -262,13 +337,23 @@ async function refresh() {
     const r = await fetch("/api/status", { cache: "no-store" });
     const s = await r.json();
     const dot = $("dot"), txt = $("statusText");
-    if (s.online) { dot.classList.add("on"); txt.textContent = "Cổng " + s.port + " đang hoạt động"; }
-    else { dot.classList.remove("on"); txt.textContent = "Cổng " + s.port + " chưa mở"; }
-    $("btnStart").disabled = s.online;
+    if (s.foreign) {
+      dot.classList.remove("on"); dot.classList.add("busy");
+      txt.textContent = "Cổng " + s.port + " đang bận (không phải do trung tâm mở)";
+    } else if (s.online) {
+      dot.classList.remove("busy"); dot.classList.add("on");
+      txt.textContent = "Cổng " + s.port + " đang mở";
+    } else {
+      dot.classList.remove("on"); dot.classList.remove("busy");
+      txt.textContent = "Cổng " + s.port + " chưa mở";
+    }
+    $("btnStart").disabled = s.online && !s.foreign;
     $("btnStop").disabled = !s.online && !s.pid;
+    // Hộp hướng dẫn tường lửa chỉ cần khi cổng đang chạy (online hoặc bị chiếm).
+    $("lanHint").style.display = (s.online || s.foreign) ? "block" : "none";
     $("stUsers").textContent = (s.onlineUsers || []).length;
     $("stMut").textContent = s.totalMutations;
-    $("stUp").textContent = s.uptime ? Math.floor(s.uptime / 60) + " phut" : "-";
+    $("stUp").textContent = s.uptime ? Math.floor(s.uptime / 60) + " phút" : "-";
     $("stPid").textContent = s.pid || "-";
     const box = $("lanList"); box.innerHTML = "";
     (s.lan || []).forEach((n) => {
@@ -276,30 +361,37 @@ async function refresh() {
       const d = document.createElement("div"); d.className = "lan";
       d.innerHTML = "<a target='_blank' rel='noopener'></a><button>Copy</button>";
       d.querySelector("a").href = url; d.querySelector("a").textContent = url + "  (" + n.name + ")";
-      d.querySelector("button").onclick = () => { navigator.clipboard.writeText(url).then(() => toast("Da copy " + url)); };
+      d.querySelector("button").onclick = () => copyText(url, "Đã sao chép " + url);
       box.appendChild(d);
     });
-    if (!(s.lan || []).length) box.innerHTML = "<p style='color:#94a3b8;font-size:13px'>(chua co IP LAN)</p>";
-  } catch (e) { $("statusText").textContent = "Mat ket noi trinh quan tri"; }
+    if (!(s.lan || []).length) box.innerHTML = "<p style='color:#94a3b8;font-size:13px'>(chưa thấy IP mạng LAN)</p>";
+  } catch (e) { $("statusText").textContent = "Mất kết nối trung tâm — thử tải lại trang"; }
 }
 $("btnStart").onclick = async () => {
-  $("btnStart").disabled = true; log("Đang mở cổng...");
+  $("btnStart").disabled = true; log("Đang mở cổng…");
   try {
     const r = await fetch("/api/start", { method: "POST" });
     const j = await r.json();
-    if (j.ok) { log(j.reused ? "Cổng đã mở sẵn." : "Cổng 4173 đang hoạt động (PID " + j.pid + ")."); toast("Cổng đang hoạt động"); }
-    else { log("Lỗi: " + j.error); toast(j.error); }
-  } catch (e) { log("Lỗi kết nối."); }
+    if (j.ok) {
+      log(j.reused ? "Cổng đã mở sẵn từ trước." : "Cổng 4173 đã mở (tiến trình số " + j.pid + ").");
+      toast("Cổng đang mở");
+    } else if (j.foreign) {
+      log("Cổng 4173 đang bị chương trình khác chiếm — mở hướng dẫn xử lý.");
+      showGuide();
+    } else { log("Lỗi: " + (j.error || "không rõ")); toast(j.error || "Mở cổng thất bại"); }
+  } catch (e) { log("Lỗi kết nối trung tâm."); }
   refresh();
 };
 $("btnStop").onclick = async () => {
-  const ok = await askConfirm("Dong cong?", "May khac trong LAN se mat ket noi. He thong tren may nay van chay offline binh thuong.", "Dong cong");
+  const ok = await askConfirm("Đóng cổng?", "Máy khác trong LAN sẽ mất kết nối. Hệ thống trên máy này vẫn chạy offline bình thường.", "Đóng cổng");
   if (!ok) return;
   try {
     const r = await fetch("/api/stop", { method: "POST" });
     const j = await r.json();
-    log(j.ok ? (j.nothing ? "Không có cổng cần đóng." : "Đã đóng cổng.") : "Lỗi: " + j.error);
-  } catch (e) { log("Lỗi kết nối."); }
+    if (j.ok) { log(j.nothing ? "Cổng đang đóng sẵn, không có gì để đóng." : "Đã đóng cổng."); }
+    else if (j.foreign) { log("Cổng đang bị chương trình khác chiếm — mở hướng dẫn xử lý."); showGuide(); }
+    else { log("Lỗi: " + (j.error || "không rõ")); }
+  } catch (e) { log("Lỗi kết nối trung tâm."); }
   refresh();
 };
 $("btnOpen").onclick = async () => {
@@ -307,22 +399,60 @@ $("btnOpen").onclick = async () => {
     const r = await fetch("/api/status", { cache: "no-store" });
     const s = await r.json();
     if (s.online) { window.open("http://localhost:" + s.port, "_blank"); return; }
-    // Cổng chưa mở: nếu máy khác đang host thì mở theo cổng đó.
+    // Cổng chưa mở: nếu máy khác đang làm host thì mở theo cổng đó.
     const h = await (await fetch("/api/hostfile", { cache: "no-store" })).json();
-    if (h.url) { toast("Máy này chưa mở cổng - mở theo " + h.host); window.open(h.url, "_blank"); return; }
+    if (h.url) { toast("Máy này chưa mở cổng — mở theo máy " + h.host); window.open(h.url, "_blank"); return; }
     // Không cổng, không host: làm việc offline qua /app (loopback, không mở cổng LAN).
     toast("Mở chế độ offline (không cần mở cổng)");
     window.open("/app", "_blank");
   } catch (e) { toast("Lỗi kết nối trung tâm."); }
 };
 $("btnQuit").onclick = async () => {
-  const ok = await askConfirm("Tat trung tam?", "Bang dieu khien se dung. Cong 4173 van mo neu dang hoat dong.", "Tat trung tam");
+  const ok = await askConfirm("Tắt trung tâm?", "Bảng điều khiển sẽ dừng. Cổng 4173 vẫn mở nếu đang hoạt động.", "Tắt trung tâm");
   if (!ok) return;
   await fetch("/api/quit", { method: "POST" }).catch(() => {});
-  document.body.innerHTML = "<p style='padding:40px;text-align:center'>Đã tắt trung tâm. Đóng tab này lại.</p>";
+  document.body.innerHTML = "<p style='padding:40px;text-align:center'>Đã tắt trung tâm. Hãy đóng tab này lại.</p>";
+};
+$("guideClose").onclick = hideGuide;
+$("guideOverlay").onclick = (e) => { if (e.target === $("guideOverlay")) hideGuide(); };
+$("btnGuide").onclick = showGuide;
+$("btnCopyNetsh").onclick = () => copyText($("netshCmd").textContent, "Đã sao chép lệnh mở tường lửa");
+document.querySelectorAll("[data-copy]").forEach((b) => {
+  b.onclick = () => copyText(b.getAttribute("data-copy"), "Đã sao chép lệnh");
+});
+$("btnTestLan").onclick = async () => {
+  // Tự kiểm tra: trình duyệt máy này gọi thẳng IP LAN như máy khác vẫn làm.
+  // localhost vào được mà IP LAN không vào được gần như chắc chắn là tường lửa.
+  try {
+    const r = await fetch("/api/status", { cache: "no-store" });
+    const s = await r.json();
+    if (!s.online && !s.foreign) { toast("Cổng chưa mở — bấm MỞ CỔNG trước"); log("Kiểm tra LAN: cổng chưa mở nên chưa kiểm tra."); return; }
+    const port = s.port;
+    log("Kiểm tra LAN: đang thử " + ((s.lan || []).length) + " địa chỉ…");
+    try {
+      await fetch("http://localhost:" + port + "/api/health", { cache: "no-store" });
+      log("✔ Máy này (localhost:" + port + ") vào được.");
+    } catch (e) { log("✘ Ngay cả máy này cũng không vào được localhost — hãy bấm MỞ CỔNG lại."); return; }
+    let lanOk = false;
+    for (const n of (s.lan || [])) {
+      const url = "http://" + n.address + ":" + port + "/api/health";
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 4000);
+        await fetch(url, { cache: "no-store", signal: ctrl.signal });
+        clearTimeout(t);
+        log("✔ Địa chỉ LAN " + n.address + " (" + n.name + ") vào được — máy khác dùng địa chỉ này.");
+        lanOk = true;
+      } catch (e) { log("✘ Địa chỉ LAN " + n.address + " (" + n.name + ") không vào được."); }
+    }
+    if (!lanOk) {
+      log("Kết luận: localhost được mà IP LAN không được → tường lửa Windows đang chặn. Làm theo hộp vàng phía trên.");
+      toast("Khả năng tường lửa đang chặn — xem hộp vàng");
+    } else { toast("Cổng mở tốt cho mạng LAN"); }
+  } catch (e) { toast("Lỗi kết nối trung tâm."); }
 };
 refresh(); setInterval(refresh, 3000);
-log("Trung tâm điều khiển sẵn sàng.");
+log("Trung tâm điều khiển đã sẵn sàng.");
 </script>
 </body>
 </html>`;
@@ -371,7 +501,7 @@ const manager = http.createServer(async (req, res) => {
     (p === '/api/sync/pull' && req.method === 'GET')
   ) {
     if (req.method === 'POST') await readBody(req);
-    json(res, { status: 'offline', manager: true, note: 'Mo cong 4173 de dong bo' }, 503);
+    json(res, { status: 'offline', manager: true, note: 'Mở cổng 4173 để đồng bộ' }, 503);
     return;
   }
   if (p === '/api/start' && req.method === 'POST') { await readBody(req); json(res, await startServer()); return; }

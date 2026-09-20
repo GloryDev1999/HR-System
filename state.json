@@ -4,7 +4,7 @@
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
     "last_updated": "2026-09-20T00:00:00Z",
-    "current_phase": "Phase 35: Dau day GUI LAN realtime 2 chieu (P0-1 revive: hooks 3 bang + guard chong loop/spam, tsc 0 loi, vitest 152/152)",
+    "current_phase": "Phase 37: Icon HR cho shortcut (hr-manager.png -> hr-manager.ico, .lnk 2 noi, moi may chay 1 lan)",
     "version": "3.1.0"
   },
   "agent_profile": {
@@ -331,6 +331,26 @@
         "Fix register-protocol.bat: setlocal EnableDelayedExpansion + !VBS_PATH! trong dong reg, giu ASCII-only + CRLF + chi HKCU, them reg query /ve in gia tri da luu de doi chieu",
         "Dong bo frontend: REGISTER_BAT_LINES khop 100% file repo (node check OK), REGISTER_CMDS_TEMPLATE them setlocal + !VBS_PATH!, modal help cap nhat nguyen nhan &",
         "Verify: tsc --noEmit 0 loi, vitest 146/146 pass, learning.md KB-019"
+      ]
+    },
+    "M27_Shortcut_Icon_2026_09_20": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "public/hr-manager.png (dung icon HR user gui) convert sang public/hr-manager.ico multi-size 16/32/48/256 (26KB, verify mo duoc); khop pipeline.md von ghi public/hr-manager.ico",
+        "tao-BangDieuKhien.vbs: icon .lnk doi sang hr-manager.ico (fallback favicon.ico); MsgBox ghi ro quy tac MOI MAY CHAY 1 LAN vi .lnk chua duong dan tuyet doi + ban trong thu muc chung chi de Send to Desktop",
+        "Quy uoc van hanh da chot voi user: Glory tao truoc thi Hoa van phai chay lai tren may Hoa (khong mo truc tiep ban .lnk cua may khac)"
+      ]
+    },
+    "M26_ForeignPort_Font_Vietnamese_2026_09_20": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "Root cause ca cua Hoa: 4173 ban boi tien trinh khong phai trung tam mo (server cu sot/start-server.bat chay tay) -> health online nhung khong PID -> start nhan vo 'dang hoat dong', stop bao 'khong co cong de dong'. Fix: serverStatus/start/stop tra co foreign (online && !livePid); UI pill 3 trang thai (xanh/vang/xam) + hop huong dan netstat/taskkill + nut sao chep lenh",
+        "May khac khong vao duoc: them nut tu kiem tra LAN (localhost vs IP LAN de bat benh tuong lua) + hop vang 3 buoc (chung LAN / netsh advfirewall mo 4173 bang CMD Admin / giai phong cong) + copy 1 click",
+        "tao-BangDieuKhien.vbs: tao .lnk CA trong thu muc repo (nhin thay lien) + Desktop, kiem tra mo-ui.vbs ton tai, bao loi ro tung truong hop (khong quyen ghi / thieu file)",
+        "Trung tam: font Aptos Narrow (fallback Segoe UI/Arial) + viet lai toan bo UI tieng Viet co dau (song song giu .vbs/.bat ASCII theo KB-018), sua typo 'sever'",
+        "Verify that: foreign gia lap -> status/start/stop foreign:true (khong con nothing gia); flow thuong start/stop/quit PASS; node --check OK"
       ]
     },
     "M25_Lan_Push_Wiring_2026_09_20": {
