@@ -580,3 +580,14 @@ manager.listen(MANAGER_PORT, '127.0.0.1', () => {
   console.log(`[MANAGER] Trung tam dieu khien: http://127.0.0.1:${MANAGER_PORT}`);
   console.log(`[MANAGER] Cong LAN: ${SERVER_PORT} | App offline: http://127.0.0.1:${MANAGER_PORT}/app`);
 });
+
+// Double-click .lnk 2 lần / mo-ui.vbs sót: cổng 4179 đã có chủ → thoát êm
+// (mo-ui.vbs đã hỏi trước, đây là lưới chắn thứ 2, không crash im lặng).
+manager.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.log('[MANAGER] Trung tam da chay san, ban nay nhuong va thoat.');
+    process.exit(0);
+  }
+  console.error('[MANAGER ERROR]', err);
+  process.exit(1);
+});

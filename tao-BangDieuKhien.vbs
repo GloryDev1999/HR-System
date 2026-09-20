@@ -57,7 +57,9 @@ If madeHere Or madeDesk Then
   If madeDesk Then msg = msg & "[OK] Tren Desktop:" & vbCrLf & lnkDesk & vbCrLf & vbCrLf
   If Not madeDesk Then msg = msg & "[CHU Y] Khong tao duoc tren Desktop." & vbCrLf & _
     "Hay chuot phai file .lnk trong thu muc -> Send to -> Desktop." & vbCrLf & vbCrLf
-  msg = msg & "Tu nay chi can click bieu tuong do de mo bang dieu khien cong 4173." & vbCrLf & vbCrLf
+  msg = msg & "Tu nay chi can click bieu tuong do de mo bang dieu khien cong 4173." & vbCrLf
+  If iconPath <> "" Then msg = msg & "Icon: " & iconPath & vbCrLf
+  msg = msg & "Neu icon chua len ngay: ra Desktop bam F5 (Refresh) 1-2 lan." & vbCrLf & vbCrLf
   msg = msg & "[QUAN TRONG - MOI MAY CHAY 1 LAN] File .lnk chua duong dan TUYET DOI" & vbCrLf & _
     "cua chinh may nay, nen Hoa/Glory/Kieu moi nguoi tu chay file nay 1 lan" & vbCrLf & _
     "TREN MAY CUA MINH. Dung mo truc tiep ban .lnk trong thu muc chung do" & vbCrLf & _
@@ -73,13 +75,16 @@ End If
 Sub MakeShortcut(lnkPath)
   On Error Resume Next
   Dim oLink
+  ' Windows cache icon theo duong dan file: phai XOA ban .lnk cu truoc
+  ' roi moi tao moi thi icon HR moi chiu hien (ghi de tai cho khong doi icon).
+  If fso.FileExists(lnkPath) Then fso.DeleteFile lnkPath, True
   Set oLink = WshShell.CreateShortcut(lnkPath)
   oLink.TargetPath = "wscript.exe"
   oLink.Arguments = """" & moPath & """"
   oLink.WorkingDirectory = strPath
   oLink.Description = "SmartHR - Trung tam dieu khien cong 4173"
   oLink.WindowStyle = 1
-  If iconPath <> "" Then oLink.IconLocation = iconPath
+  If iconPath <> "" Then oLink.IconLocation = iconPath & ",0"
   oLink.Save
   Set oLink = Nothing
 End Sub

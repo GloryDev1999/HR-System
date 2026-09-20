@@ -4,7 +4,7 @@
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
     "last_updated": "2026-09-20T00:00:00Z",
-    "current_phase": "Phase 37: Icon HR cho shortcut (hr-manager.png -> hr-manager.ico, .lnk 2 noi, moi may chay 1 lan)",
+    "current_phase": "Phase 38: Chong mo trung tam + hien icon .lnk (mo-ui probe 4179, EADDRINUSE thoat em, xoa .lnk cu truoc khi tao + IconLocation ,0)",
     "version": "3.1.0"
   },
   "agent_profile": {
@@ -331,6 +331,17 @@
         "Fix register-protocol.bat: setlocal EnableDelayedExpansion + !VBS_PATH! trong dong reg, giu ASCII-only + CRLF + chi HKCU, them reg query /ve in gia tri da luu de doi chieu",
         "Dong bo frontend: REGISTER_BAT_LINES khop 100% file repo (node check OK), REGISTER_CMDS_TEMPLATE them setlocal + !VBS_PATH!, modal help cap nhat nguyen nhan &",
         "Verify: tsc --noEmit 0 loi, vitest 146/146 pass, learning.md KB-019"
+      ]
+    },
+    "M28_SingleInstance_IconRefresh_2026_09_20": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "Anh Hoa: screenshot cho thay may Hoa van chay UI CU (chu sever, chua hop vang/test LAN) + 4173 bi tien trinh la chiem 1896 phut -> Hoa chua pull main 32b1863. Huong xu ly: pull main, tat trung tam cu, netstat/taskkill theo hop huong dan, Mo cong lai, test LAN/firewall",
+        "mo-ui.vbs: probe 127.0.0.1:4179/api/status (MSXML2.XMLHTTP, timeout 2s) truoc khi spawn -> trung tam chay roi thi chi mo browser, khong nhan doi tien trinh",
+        "launcher-ui.js: manager.on error EADDRINUSE -> thoat 0 em + log nhuong (luoi chan 2, da test that: ban 2 exit 0, ban 1 song binh thuong); node --check OK",
+        "tao-BangDieuKhien.vbs: Windows cache icon theo path -> XOA .lnk cu truoc khi tao moi + IconLocation kem ,0 + MsgBox ghi file icon da dung + meo F5 Refresh Desktop",
+        "Ghi nhan: image copy 2.png (upload cua user) de untracked, khong commit"
       ]
     },
     "M27_Shortcut_Icon_2026_09_20": {
