@@ -41,8 +41,17 @@ FROM (VALUES
 WHERE NOT EXISTS (SELECT 1 FROM auth.users u WHERE u.email = n.email);
 
 -- ----------------------------------------------------------------------------
--- BƯỚC 2: sửa profiles do trigger handle_new_user tạo tự động
--- (trigger đặt username = email, role mặc định HR Admin).
+-- BƯỚC 2a: bù profile nếu trigger handle_new_user chưa tạo (VD trigger bị tắt).
+-- Chạy trước UPDATE để đảm bảo đủ 6 dòng profiles.
+-- ----------------------------------------------------------------------------
+INSERT INTO public.profiles (id, username, display_name, role)
+SELECT u.id, u.email, u.email, 'HR Admin'
+FROM auth.users AS u
+WHERE u.email LIKE '%@hr.os'
+ON CONFLICT (id) DO NOTHING;
+
+-- ----------------------------------------------------------------------------
+-- BƯỚC 2b: sửa profiles đúng username/display/role/scope.
 -- ----------------------------------------------------------------------------
 UPDATE public.profiles AS p SET
   username         = m.username,
