@@ -208,51 +208,12 @@ class LanSyncService {
     return;
   }
 
-  // Kiểm tra độ trễ Supabase (thay /api/health của server.js đã xóa)
+  // Kiểm tra sức khỏe Supabase bằng chính SDK + query thật (thay /api/health cũ).
+  // Dùng đúng đường mà app đang dùng nên kết quả khớp thực tế sử dụng.
   public async checkServerHealth(): Promise<LanServerHealth | null> {
     if (typeof window === 'undefined') return null;
 
-    const url = (import.meta as any)?.env?.VITE_SUPABASE_URL as string | undefined;
-    const anon = (import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY as string | undefined;
-    if (!url || !anon) {
-      this.isServerOnline = false;
-      this.notifyStatus(false, 0);
-      return {
-        status: 'offline',
-        latencyMs: 0,
-        port: 443,
-        lanAddresses: [],
-        onlineUsers: this.cachedOnlineUsers,
-        totalMutations: 0,
-        uptime: 0,
-      };
-    }
-
-    const t0 = performance.now();
-    try {
-      const res = await fetch(`${String(url).replace(/\/$/, '')}/rest/v1/`, {
-        headers: { apikey: anon },
-        cache: 'no-store',
-      });
-      const latencyMs = Math.round(performance.now() - t0);
-      this.lastLatencyMs = latencyMs;
-      this.isServerOnline = res.ok;
-      this.notifyStatus(res.ok, latencyMs);
-      return {
-        status: res.ok ? 'online' : 'offline',
-        latencyMs,
-        port: 443,
-        lanAddresses: [],
-        onlineUsers: this.cachedOnlineUsers,
-        totalMutations: 0,
-        uptime: 0,
-      };
-    } catch {
-      this.isServerOnline = false;
-      this.notifyStatus(false, 0);
-    }
-
-    return {
+    const offline: LanServerHealth = {
       status: 'offline',
       latencyMs: 0,
       port: 443,
@@ -261,6 +222,38 @@ class LanSyncService {
       totalMutations: 0,
       uptime: 0,
     };
+
+    if (!this.supabaseConfigured()) {
+      this.isServerOnline = false;
+      this.notifyStatus(false, 0);
+      return offline;
+    }
+
+    const t0 = performance.now();
+    try {
+      const { error } = await supabase.from('app_settings').select('key').limit(1);
+      const latencyMs = Math.round(performance.now() - t0);
+      this.lastLatencyMs = latencyMs;
+      const online = !error;
+      if (error) console.warn('[SUPABASE SYNC] health check:', error.message);
+      this.isServerOnline = online;
+      this.notifyStatus(online, latencyMs);
+      return {
+        status: online ? 'online' : 'offline',
+        latencyMs,
+        port: 443,
+        lanAddresses: [],
+        onlineUsers: this.cachedOnlineUsers,
+        totalMutations: 0,
+        uptime: 0,
+      };
+    } catch (err: any) {
+      console.warn('[SUPABASE SYNC] health check exception:', err?.message || err);
+      this.isServerOnline = false;
+      this.notifyStatus(false, 0);
+    }
+
+    return offline;
   }
 
   public getCachedOnlineUsers(): LanOnlineUser[] {
