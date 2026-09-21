@@ -25,8 +25,7 @@ export type StoreKey =
   | 'rbacRoles'
   | 'productionLines'
   | 'productivityQualityRates'
-  | 'userAuditLogs'
-  | 'profiles';
+  | 'userAuditLogs';
 
 const PG_TABLE: Record<StoreKey, string> = {
   employees: 'employees',
@@ -41,7 +40,6 @@ const PG_TABLE: Record<StoreKey, string> = {
   productionLines: 'production_lines',
   productivityQualityRates: 'productivity_quality_rates',
   userAuditLogs: 'user_audit_logs',
-  profiles: 'profiles',
 };
 
 const PG_PK: Record<StoreKey, string> = {
@@ -57,7 +55,6 @@ const PG_PK: Record<StoreKey, string> = {
   productionLines: 'id',
   productivityQualityRates: 'line_id_date',
   userAuditLogs: 'id',
-  profiles: 'id',
 };
 
 /** Cột GENERATED ALWAYS không được gửi khi insert/upsert. */

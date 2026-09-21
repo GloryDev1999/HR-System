@@ -44,14 +44,14 @@ Không còn: máy host `192.168.1.50`, `SmartHR-BangDieuKhien.lnk`, `mo-ui.vbs`,
 | Production Admin | han (scope Production) | Sắp ca + tỷ lệ NS | Login qua URL public |
 | QC Admin | nguyetanh (scope QC) | Sắp ca + tỷ lệ CL | Login qua URL public |
 
-Cả 6 users (`kieu` / `hoa` / `vinh` / `nguyetanh` / `han` / `glory`) nằm trong `public.profiles`, xác thực qua Supabase Auth. Không còn thao tác mở server / tắt server / kiểm tra user online trên máy host — mở browser, vào URL public, đăng nhập là làm việc.
+Cả 6 users (`vinh` / `hoa` / `kieu` / `nguyetanh` / `han` / `glory`@leggett.com) là Supabase Auth users, vai trò nằm trong App Metadata (không bảng phụ). Không còn thao tác mở server / tắt server / kiểm tra user online trên máy host — mở browser, vào URL public, đăng nhập là làm việc.
 
 ---
 
 ## 3. Database — Supabase Postgres (`supabase/schema.sql`, 14 tables)
 
 * Postgres trên Supabase Cloud là **source-of-truth duy nhất**, RLS bật mọi bảng.
-* **14 tables** (snake_case): `employees`, `profiles`, `shift_classes`, `rbac_roles`, `raw_attendance_logs`, `daily_timesheets`, `overtime_records`, `leave_requests`, `shift_rosters`, `production_lines`, `productivity_quality_rates`, `ocr_scans`, `app_settings`, `user_audit_logs`.
+* **14 tables** (snake_case): `employees`, `profiles`, `shift_classes`, `rbac_roles`, `raw_attendance_logs`, `daily_timesheets`, `overtime_records`, `leave_requests`, `shift_rosters`, `production_lines`, `productivity_quality_rates`, `ocr_scans`, `app_settings`, `user_audit_logs` (13 tables, đã bỏ `profiles`).
 * PK phổ biến `employee_id + date` (chuỗi ghép cho timesheet/OT/leave), `raw_attendance_logs` dùng id tự tăng.
 * Indexes: FK indexes cho mọi khóa ngoại, partial index cho trạng thái nóng (`PENDING`, violation flags), compound index cho query Dashboard/Timesheet theo `(employee_id, month, year)`.
 * Seed: 4 ca (`OFFICE_M_F`, `OFFICE_M_S`, `SHIFT_1`, `SHIFT_2`), 6 `rbac_roles`, 2 chuyền `line_rivet_1/2`, `app_settings` (ma trận `rolePermissions`, công thức thưởng NS/chuyên cần, phụ cấp ca đêm 30%).
@@ -95,9 +95,9 @@ OneDrive JSON (`master_*.json` / `dept_*.json`, merge LWW thủ công, `json-syn
 
 ## 7. Auth & mật khẩu
 
-* **Supabase Auth** là cơ chế duy nhất: signup/login/session/reset password qua SDK; hồ sơ + phân quyền nằm ở bảng `profiles` (+ `rbac_roles`).
+* **Supabase Auth** là cơ chế duy nhất: signup/login/session/reset password qua SDK; phân quyền nằm trong Auth App Metadata (+ `rbac_roles` cho ma trận).
 * Luồng SHA-256 tay (`salt:password`, WebCrypto + fallback JS thuần cho `http://IP-LAN`, `src/services/password.ts`) và seed 6 acc pass `123` trong `AuthContext` — **đã bỏ**.
-* Khóa acc sau nhiều lần sai + unlock/reset bởi System Admin thực hiện qua Supabase Auth + policies trên `profiles`.
+* Khóa acc sau nhiều lần sai + unlock/reset bởi System Admin thực hiện trong Supabase Dashboard → Authentication (khóa user, reset pass, sửa App Metadata).
 
 ---
 
@@ -113,5 +113,5 @@ OneDrive JSON (`master_*.json` / `dept_*.json`, merge LWW thủ công, `json-syn
 ## 9. Build / Deploy / Test
 
 * `npm install` → `npm run build` (multi-file `dist/`) → deploy `dist/` lên **Cloudflare Pages** kèm `public/_headers` (COOP/COEP cho ONNX WASM) → `PaddleOCR-Models/` serve cùng `dist/`.
-* Chi tiết từng bước: xem `DEPLOY.md` (chạy `supabase/schema.sql` trong SQL Editor, tạo 6 users + `profiles`, cấu hình `.env` `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`).
+* Chi tiết từng bước: xem `DEPLOY.md` (chạy `supabase/schema.sql` trong SQL Editor, tạo 6 users @leggett.com + App Metadata, cấu hình `.env` `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`).
 * Tests: `vitest` + `tsc --noEmit` 0 lỗi. Quy ước agent của repo: `agent.md` (evidence-first, Supabase cloud, không dialog native), `state.json`, `loop.md` / `subagent.md` / `learning.md` (vòng QC với `supabase-qc-architect` + `fe-formula-qc`).

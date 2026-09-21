@@ -41,7 +41,7 @@ export const LoginScreen: React.FC = () => {
           <form onSubmit={handleSubmit} className="px-8 py-6 space-y-4">
             <div>
               <label htmlFor="login-username" className="block text-xs font-bold text-slate-600 mb-1.5">
-                Tên đăng nhập
+                Email đăng nhập
               </label>
               <div className="relative">
                 <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -51,7 +51,7 @@ export const LoginScreen: React.FC = () => {
                   autoComplete="username"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="ví dụ: admin"
+                  placeholder="ví dụ: vinh@leggett.com"
                   className="w-full pl-9 pr-3 py-2.5 text-sm border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-400/60 focus:border-orange-400 transition"
                 />
               </div>
@@ -116,7 +116,7 @@ export const LoginScreen: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    setUsername('vinh');
+                    setUsername('vinh@leggett.com');
                     setPassword('123456');
                   }}
                   className="px-2.5 py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-xl text-left transition cursor-pointer"
@@ -128,7 +128,7 @@ export const LoginScreen: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    setUsername('kieu');
+                    setUsername('kieu@leggett.com');
                     setPassword('123456');
                   }}
                   className="px-2.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-left transition cursor-pointer"

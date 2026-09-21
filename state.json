@@ -51,7 +51,7 @@
   "verified_schemas": {
     "db_kind": "Supabase Postgres (cloud)",
     "db_file": "supabase/schema.sql",
-    "auth": "Supabase Auth (email tong hop username@smarthr.local) + public.profiles (username UNIQUE, role, department_scope, active, is_locked)",
+    "auth": "Supabase Auth duy nhat (email @leggett.com): credential + RBAC (role/scope/display) trong raw_app_meta_data; RLS doc JWT truc tiep; KHONG bang profiles",
     "tables": {
       "employees": "employee_id PK TEXT, JSONB custom_allowances/annual_leave_balance, status, indexes [department+status]",
       "raw_attendance_logs": "BIGSERIAL id PK, employee_id FK, date DATE, TIME check_in/out, month/year GENERATED",
@@ -61,16 +61,15 @@
       "shift_rosters": "employeeId_date PK TEXT, shift_code, is_rest_violation/is_shift_mismatch BOOLEAN, partial indexes",
       "ocr_scans": "UUID id PK, scan_timestamp TIMESTAMPTZ",
       "app_settings": "key PK TEXT, value JSONB (systemSettings seed san)",
-      "profiles": "UUID id PK FK auth.users, username UNIQUE, role, department_scope",
       "shift_classes": "shift_class_id PK, TIME start/end, 4 ca seed",
       "rbac_roles": "role_id PK, permissions TEXT[], 6 roles seed",
       "production_lines": "id PK TEXT, 2 lines seed",
       "productivity_quality_rates": "line_id_date PK TEXT, CHECK 0..150/0..100",
       "user_audit_logs": "UUID id PK, created_at, username/action_type indexes"
     },
-    "rls": "ENABLE RLS 14/14 bang; policies TO authenticated + (select auth.uid()) + USING/WITH CHECK; dept scope cho Warehouse/Production/QC",
+    "rls": "ENABLE RLS 13/13 bang; policies TO authenticated doc (auth.jwt()->'app_metadata'->>...) + USING/WITH CHECK; dept scope cho Warehouse/Production/QC",
     "realtime": "publication supabase_realtime: employees, daily_timesheets, overtime_records, leave_requests, shift_rosters, productivity_quality_rates, user_audit_logs + presence/broadcast channels",
-    "legacy_note": "Dexie v2-v9 (HRSystem_LeggettPlatt_DB, 14 stores, shadow Flag 0|1) da khai tu 2026-09-21: xoa src/db, lan-sync SSE, server.js, OneDrive JSON, singlefile base64. IndexedDB chi con dung cho ONNX asset cache (ocr-assets-store). Lich su chi tiet giu trong modules_status M0-M28.",
+    "legacy_note": "Dexie v2-v9 da khai tu 2026-09-21; public.profiles da khai tu 2026-09-21 (roles vao Auth app_metadata, RLS JWT). IndexedDB chi con dung cho ONNX asset cache (ocr-assets-store).",
     "erd_mermaid": "erDiagram EMPLOYEES ||--o{ RAW_ATTENDANCE_LOGS : employee_id; EMPLOYEES ||--o{ DAILY_TIMESHEETS : employee_id; EMPLOYEES ||--o{ OVERTIME_RECORDS : employee_id; EMPLOYEES ||--o{ LEAVE_REQUESTS : employee_id; EMPLOYEES ||--o{ SHIFT_ROSTERS : employee_id; PROFILES ||--o| AUTH_USERS : id; RBAC_ROLES ||--o{ PROFILES : role;",
     "future_pending_stores": {
       "auditLogs": "User chọn không cần (3.không cần) — không tạo"

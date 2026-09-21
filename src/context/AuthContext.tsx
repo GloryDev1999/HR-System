@@ -8,13 +8,13 @@ import { logUserAction } from '../services/audit-log-service';
 interface AuthContextType {
   /** Phiên đăng nhập hiện tại; null = chưa đăng nhập */
   session: SessionUser | null;
-  login: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  login: (emailOrUsername: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => void;
   changePassword: (currentPassword: string, newPassword: string) => Promise<{ ok: boolean; error?: string }>;
-  resetUserPassword: (username: string, newPassword?: string) => Promise<{ ok: boolean; error?: string }>;
-  unlockUser: (username: string) => Promise<{ ok: boolean; error?: string }>;
-  createAccount: (username: string, displayName: string, role: RoleType, password?: string, departmentScope?: string | null) => Promise<{ ok: boolean; error?: string }>;
-  updateAccountProfile: (username: string, updates: { displayName?: string; role?: RoleType; departmentScope?: string | null; active?: boolean }) => Promise<{ ok: boolean; error?: string }>;
+  resetUserPassword: (email: string, newPassword?: string) => Promise<{ ok: boolean; error?: string }>;
+  unlockUser: (email: string) => Promise<{ ok: boolean; error?: string }>;
+  createAccount: (email: string, displayName: string, role: RoleType, password?: string, departmentScope?: string | null) => Promise<{ ok: boolean; error?: string }>;
+  updateAccountProfile: (email: string, updates: { displayName?: string; role?: RoleType; departmentScope?: string | null; active?: boolean }) => Promise<{ ok: boolean; error?: string }>;
   currentRole: RoleType | null;
   departmentScope: string | null; // null for company-wide, or 'WH', 'Production', 'QC'
   hasPermission: (action: string) => boolean;
@@ -25,19 +25,16 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-/** Tài khoản mặc định khởi tạo lần đầu */
-export const DEFAULT_ADMIN_USERNAME = 'kieu';
+/** Tài khoản mẫu vận hành */
+export const DEFAULT_ADMIN_USERNAME = 'vinh@leggett.com';
 
 /**
- * Email tổng hợp cho Supabase Auth từ username nội bộ.
- * 6 user tạo 1 lần trong Dashboard Authentication với email này:
- * kieu@hr.os, hoa@hr.os, vinh@hr.os,
- * nguyetanh@hr.os, han@hr.os, glory@hr.os
+ * Email đăng nhập chuẩn Supabase Auth: vinh@leggett.com, hoa@leggett.com...
+ * Chấp nhận cả username rút gọn (vinh -> vinh@leggett.com).
  */
-export const usernameToEmail = (username: string) => {
-  const u = username.trim().toLowerCase();
-  // Cho phép nhập cả username (kieu) lẫn full email (kieu@hr.os)
-  return u.includes('@') ? u : `${u}@hr.os`;
+export const usernameToEmail = (input: string) => {
+  const v = input.trim().toLowerCase();
+  return v.includes('@') ? v : `${v}@leggett.com`;
 };
 
 function getDepartmentScope(role: RoleType): string | null {
@@ -81,33 +78,22 @@ function makeHasPermission(role: RoleType | null, permissions: ISystemSettings['
   };
 }
 
-interface ProfileRow {
-  id: string;
-  username: string;
-  display_name: string;
-  role: RoleType;
-  department_scope: string | null;
-  active: boolean;
-  is_locked: boolean;
-}
-
-async function fetchMyProfile(userId: string): Promise<ProfileRow | null> {
-  const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
-  if (error) {
-    console.warn('[Auth] fetch profile', error.message);
-    return null;
-  }
-  return (data as ProfileRow | null) ?? null;
-}
-
-function toSession(p: ProfileRow): SessionUser {
+/** Dựng SessionUser từ supabase user (role/scope trong app_metadata). */
+function sessionFromUser(u: any): SessionUser | null {
+  const md = u?.app_metadata ?? {};
+  if (!md.role) return null;
+  const email = String(u.email || '');
+  const username = md.username || email.split('@')[0] || email;
   return {
-    username: p.username,
-    displayName: p.display_name,
-    role: p.role,
-    departmentScope: p.department_scope ?? getDepartmentScope(p.role),
+    username,
+    displayName: md.display_name || username,
+    role: md.role as RoleType,
+    departmentScope: (md.department_scope as string | null) ?? getDepartmentScope(md.role as RoleType),
   };
 }
+
+const DASHBOARD_GUIDE =
+  'Quản lý user (đổi vai trò, khóa/mở, reset mật khẩu người khác) thực hiện trong Supabase Dashboard → Authentication → Users (sửa App Metadata), hoặc SQL: UPDATE auth.users SET raw_app_meta_data = raw_app_meta_data || \'{...}\'::jsonb WHERE email = \'...\'.';
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<SessionUser | null>(null);
@@ -136,20 +122,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
   }, [loadSettings]);
 
-  // Khôi phục phiên Supabase + nạp profile
+  // Khôi phục phiên Supabase
   useEffect(() => {
     let alive = true;
     (async () => {
       const { data } = await supabase.auth.getSession();
-      const user = data.session?.user;
-      if (user) {
-        const p = await fetchMyProfile(user.id);
-        if (alive && p && p.active && !p.is_locked) setSession(toSession(p));
-        else if (alive && p && (!p.active || p.is_locked)) {
-          await supabase.auth.signOut();
-          setSession(null);
-        }
-      }
+      const s = data.session?.user ? sessionFromUser(data.session.user) : null;
+      if (alive) setSession(s);
     })();
     const { data: sub } = supabase.auth.onAuthStateChange(async (event, newSession) => {
       if (event === 'SIGNED_OUT' || !newSession?.user) {
@@ -157,8 +136,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return;
       }
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') {
-        const p = await fetchMyProfile(newSession.user.id);
-        if (alive && p && p.active && !p.is_locked) setSession(toSession(p));
+        if (alive) setSession(sessionFromUser(newSession.user));
       }
     });
     return () => {
@@ -174,46 +152,30 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     [currentRole, rolePermissions]
   );
 
-  const login = useCallback(async (username: string, password: string): Promise<{ ok: boolean; error?: string }> => {
-    let uname = username.trim().toLowerCase();
-    if (!uname || !password) return { ok: false, error: 'Vui lòng nhập tên đăng nhập và mật khẩu' };
+  const login = useCallback(async (emailOrUsername: string, password: string): Promise<{ ok: boolean; error?: string }> => {
+    const email = usernameToEmail(emailOrUsername);
+    if (!emailOrUsername.trim() || !password) return { ok: false, error: 'Vui lòng nhập email đăng nhập và mật khẩu' };
 
-    // Hỗ trợ gõ cả Kiều có dấu hoặc kieu không dấu
-    if (uname === 'kiều') uname = 'kieu';
-
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: usernameToEmail(uname),
-      password,
-    });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error || !data.user) {
       return { ok: false, error: 'Tên đăng nhập hoặc mật khẩu không đúng' };
     }
 
-    const p = await fetchMyProfile(data.user.id);
-    if (!p) {
+    const s = sessionFromUser(data.user);
+    if (!s) {
       await supabase.auth.signOut();
-      return { ok: false, error: 'Tài khoản chưa có hồ sơ (profiles) — liên hệ System Admin' };
+      return { ok: false, error: 'Tài khoản chưa được gán vai trò (app_metadata.role) — liên hệ System Admin' };
     }
-    if (p.is_locked || !p.active) {
-      await supabase.auth.signOut();
-      return {
-        ok: false,
-        error: 'User đã bị khóa! vui lòng Liên hệ phòng nhân sự để được mở khóa user'
-      };
-    }
-
-    const s = toSession(p);
     setSession(s);
-    await supabase.from('profiles').update({ last_login_at: new Date().toISOString() }).eq('id', data.user.id);
 
     // Ghi nhận Transaction Đăng nhập
     logUserAction({
-      username: p.username,
-      displayName: p.display_name,
-      role: p.role,
+      username: s.username,
+      displayName: s.displayName,
+      role: s.role,
       actionType: 'AUTH_LOGIN',
       targetEntity: 'Hệ thống SmartHR',
-      details: `Đăng nhập thành công với vai trò ${p.role} (Phạm vi: ${s.departmentScope ?? 'Toàn công ty'})`
+      details: `Đăng nhập thành công với vai trò ${s.role} (Phạm vi: ${s.departmentScope ?? 'Toàn công ty'})`
     }).catch(console.error);
 
     return { ok: true };
@@ -239,8 +201,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (newPassword.length < 6) return { ok: false, error: 'Mật khẩu mới phải tối thiểu 6 ký tự (chính sách Supabase Auth)' };
 
     // Xác thực lại mật khẩu hiện tại bằng cách sign-in lại
+    const { data: udata } = await supabase.auth.getUser();
     const { error: reErr } = await supabase.auth.signInWithPassword({
-      email: usernameToEmail(session.username),
+      email: udata.user?.email || '',
       password: currentPassword,
     });
     if (reErr) return { ok: false, error: 'Mật khẩu hiện tại không đúng' };
@@ -261,102 +224,50 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, [session]);
 
   const resetUserPassword = useCallback(async (
-    _username: string,
-    _newPassword: string = '123456'
+    _email: string
   ): Promise<{ ok: boolean; error?: string }> => {
     if (!makeHasPermission(session?.role ?? null, rolePermissions)('MANAGE_USERS') && !makeHasPermission(session?.role ?? null, rolePermissions)('SYSTEM_SETTINGS')) {
       return { ok: false, error: 'Chỉ System Admin mới có quyền đặt lại mật khẩu' };
     }
-    // Supabase Auth: anon key không được đổi mật khẩu user khác (cần service_role
-    // phía server). Admin đặt lại trong Dashboard Authentication → Users.
-    // Ở đây chỉ mở khóa cờ lock để user tự đổi pass sau khi đăng nhập.
-    const uname = _username.trim().toLowerCase();
-    const { data: target } = await supabase.from('profiles').select('id').eq('username', uname).maybeSingle();
-    if (!target) return { ok: false, error: 'Không tìm thấy tài khoản' };
-    const { error } = await supabase
-      .from('profiles')
-      .update({ is_locked: false, active: true, failed_login_attempts: 0 })
-      .eq('id', (target as any).id);
-    if (error) return { ok: false, error: error.message };
-
-    if (session) {
-      logUserAction({
-        username: session.username,
-        displayName: session.displayName,
-        role: session.role,
-        actionType: 'UPDATE_USER_NAME',
-        targetEntity: uname,
-        details: `Mở khóa tài khoản "${uname}". Đặt lại mật khẩu thực hiện trong Supabase Dashboard → Authentication → Users.`
-      }).catch(console.error);
-    }
-
-    return { ok: true };
+    return { ok: false, error: DASHBOARD_GUIDE };
   }, [session, rolePermissions]);
 
   const unlockUser = useCallback(async (
-    username: string
+    _email: string
   ): Promise<{ ok: boolean; error?: string }> => {
     if (!makeHasPermission(session?.role ?? null, rolePermissions)('MANAGE_USERS') && !makeHasPermission(session?.role ?? null, rolePermissions)('SYSTEM_SETTINGS')) {
       return { ok: false, error: 'Chỉ System Admin mới có quyền mở khóa tài khoản' };
     }
-    const uname = username.trim().toLowerCase();
-    const { data: target } = await supabase.from('profiles').select('id').eq('username', uname).maybeSingle();
-    if (!target) return { ok: false, error: 'Không tìm thấy tài khoản' };
-
-    const { error } = await supabase
-      .from('profiles')
-      .update({ is_locked: false, active: true, failed_login_attempts: 0 })
-      .eq('id', (target as any).id);
-    if (error) return { ok: false, error: error.message };
-
-    if (session) {
-      logUserAction({
-        username: session.username,
-        displayName: session.displayName,
-        role: session.role,
-        actionType: 'TOGGLE_USER_ACTIVE',
-        targetEntity: uname,
-        details: `Mở khóa và reset số lần nhập sai mật khẩu về 0 cho tài khoản "${uname}"`
-      }).catch(console.error);
-    }
-
-    return { ok: true };
+    return { ok: false, error: DASHBOARD_GUIDE };
   }, [session, rolePermissions]);
 
   const createAccount = useCallback(async (
-    username: string,
+    email: string,
     displayName: string,
-    role: RoleType,
+    _role: RoleType,
     password: string = '123456',
-    departmentScope: string | null = null
+    _departmentScope: string | null = null
   ): Promise<{ ok: boolean; error?: string }> => {
     if (!makeHasPermission(session?.role ?? null, rolePermissions)('MANAGE_USERS') && !makeHasPermission(session?.role ?? null, rolePermissions)('SYSTEM_SETTINGS')) {
       return { ok: false, error: 'Chỉ System Admin mới có quyền tạo tài khoản' };
     }
-    const uname = username.trim().toLowerCase();
-    if (!uname) return { ok: false, error: 'Tên đăng nhập không được để trống' };
+    const mail = email.trim().toLowerCase();
+    if (!mail || !mail.includes('@')) return { ok: false, error: 'Email không hợp lệ' };
     const pass = password.trim() || '123456';
-    const { data: existing } = await supabase.from('profiles').select('id').eq('username', uname).maybeSingle();
-    if (existing) return { ok: false, error: `Tài khoản "${uname}" đã tồn tại` };
 
     // signUp tự đăng nhập user mới → xong việc phải signOut để admin đăng nhập lại.
-    // (Tạo user hàng loạt nên làm trong Dashboard Authentication.)
+    // Vai trò (app_metadata.role) GÁN SAU trong Dashboard/SQL (xem DASHBOARD_GUIDE).
     const { data, error } = await supabase.auth.signUp({
-      email: usernameToEmail(uname),
+      email: mail,
       password: pass,
+      options: { data: { display_name: displayName.trim() || mail } },
     });
     if (error || !data.user) {
       return { ok: false, error: error?.message || 'Tạo tài khoản thất bại' };
     }
-    const scope = departmentScope ?? getDepartmentScope(role);
-    await supabase.from('profiles').update({
-      username: uname,
-      display_name: displayName.trim() || uname,
-      role,
-      department_scope: scope,
-      active: true,
-    }).eq('id', data.user.id);
     await supabase.auth.signOut();
+    void _role;
+    void _departmentScope;
 
     if (session) {
       logUserAction({
@@ -364,8 +275,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         displayName: session.displayName,
         role: session.role,
         actionType: 'CREATE_USER',
-        targetEntity: uname,
-        details: `Tạo mới tài khoản "${uname}" với vai trò ${role}. Vui lòng đăng nhập lại tài khoản admin.`
+        targetEntity: mail,
+        details: `Tạo mới tài khoản "${mail}". Cần gán vai trò trong Dashboard (App Metadata) rồi đăng nhập lại tài khoản admin.`
       }).catch(console.error);
     }
 
@@ -373,71 +284,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, [session, rolePermissions]);
 
   const updateAccountProfile = useCallback(async (
-    username: string,
-    updates: { displayName?: string; role?: RoleType; departmentScope?: string | null; active?: boolean }
+    _email: string,
+    _updates: { displayName?: string; role?: RoleType; departmentScope?: string | null; active?: boolean }
   ): Promise<{ ok: boolean; error?: string }> => {
     if (!makeHasPermission(session?.role ?? null, rolePermissions)('MANAGE_USERS') && !makeHasPermission(session?.role ?? null, rolePermissions)('SYSTEM_SETTINGS')) {
       return { ok: false, error: 'Chỉ System Admin mới có quyền chỉnh sửa thông tin tài khoản' };
     }
-
-    const { data: account } = await supabase.from('profiles').select('*').eq('username', username).maybeSingle();
-    if (!account) return { ok: false, error: 'Không tìm thấy tài khoản để cập nhật' };
-    const acc = account as any;
-
-    const patch: any = {};
-    const logDetails: string[] = [];
-
-    if (updates.displayName !== undefined && updates.displayName.trim() && updates.displayName !== acc.display_name) {
-      patch.display_name = updates.displayName.trim();
-      logDetails.push(`Đổi tên hiển thị từ "${acc.display_name}" -> "${updates.displayName.trim()}"`);
-    }
-
-    if (updates.role !== undefined && updates.role !== acc.role) {
-      patch.role = updates.role;
-      logDetails.push(`Đổi vai trò từ "${acc.role}" -> "${updates.role}"`);
-    }
-
-    if (updates.departmentScope !== undefined && updates.departmentScope !== acc.department_scope) {
-      patch.department_scope = updates.departmentScope;
-      logDetails.push(`Đổi phạm vi phòng ban -> "${updates.departmentScope ?? 'Toàn công ty'}"`);
-    }
-
-    if (updates.active !== undefined && updates.active !== acc.active) {
-      patch.active = updates.active;
-      if (!updates.active) patch.is_locked = true;
-      logDetails.push(`${updates.active ? 'Mở khóa' : 'Khóa'} tài khoản`);
-    }
-
-    if (Object.keys(patch).length === 0) {
-      return { ok: true };
-    }
-
-    const { error } = await supabase.from('profiles').update(patch).eq('id', acc.id);
-    if (error) return { ok: false, error: error.message };
-
-    // Cập nhật session nếu chính là user hiện hành
-    if (session && session.username === username) {
-      const newSession: SessionUser = {
-        ...session,
-        displayName: patch.display_name ?? session.displayName,
-        role: patch.role ?? session.role,
-        departmentScope: patch.department_scope !== undefined ? patch.department_scope : session.departmentScope
-      };
-      setSession(newSession);
-    }
-
-    if (session && logDetails.length > 0) {
-      logUserAction({
-        username: session.username,
-        displayName: session.displayName,
-        role: session.role,
-        actionType: updates.displayName ? 'UPDATE_USER_NAME' : updates.role ? 'UPDATE_USER_ROLE' : 'TOGGLE_USER_ACTIVE',
-        targetEntity: username,
-        details: `Cập nhật tài khoản "${username}": ${logDetails.join('; ')}`
-      }).catch(console.error);
-    }
-
-    return { ok: true };
+    return { ok: false, error: DASHBOARD_GUIDE };
   }, [session, rolePermissions]);
 
   const refreshPermissions = async () => {

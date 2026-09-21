@@ -16,20 +16,22 @@ Không còn máy host LAN, không OneDrive JSON, không IndexedDB nghiệp vụ,
 
 1. Mở Supabase Dashboard → project → **SQL Editor** → New query.
 2. Copy toàn bộ nội dung file `supabase/schema.sql` trong repo, paste và **Run**.
-3. Kiểm tra: đủ **14 tables** (`employees`, `profiles`, `shift_classes`, `rbac_roles`,
+3. Kiểm tra: đủ **13 tables** (`employees`, `shift_classes`, `rbac_roles`,
    `raw_attendance_logs`, `daily_timesheets`, `overtime_records`, `leave_requests`,
    `shift_rosters`, `production_lines`, `productivity_quality_rates`, `ocr_scans`,
    `app_settings`, `user_audit_logs`), RLS bật mọi bảng.
 4. Kiểm tra advisors: **Database → Advisors** (Security + Performance) sạch 0 lỗi blocking.
 
-## 3. Tạo 6 users + `profiles`
+## 3. Tạo 6 users (chuẩn Auth, không bảng phụ)
 
-1. **Authentication → Users → Add user**: tạo 6 acc
-   `kieu` / `hoa` / `vinh` / `nguyetanh` / `han` / `glory`
-   (email + password mạnh, bật **Auto Confirm** cho lần đầu).
-2. Với mỗi `auth.users.id` vừa tạo, insert dòng tương ứng vào `public.profiles`
-   (username, full_name, role/scope: kieu+glory = AD System, hoa = HR Manager,
-   vinh = Warehouse, han = Production, nguyetanh = QC).
+1. **Authentication → Users → Add user**: tạo 6 acc email `@leggett.com`
+   (`vinh` / `hoa` / `kieu` / `nguyetanh` / `han` / `glory`), pass ≥ 6 ký tự,
+   bật **Auto Confirm**.
+2. Với mỗi user: **... → Edit user → App Metadata**, dán:
+   `{"username":"vinh","display_name":"Vinh(Glory)","role":"Warehouse Admin","department_scope":"WH"}`
+   (kieu+glory = `AD System`/scope null, hoa = `HR Manager`/scope null,
+   han = `Production Admin`/`Production`, nguyetanh = `QC Admin`/`QC`).
+   Mẫu SQL có sẵn trong `supabase/seed-users.sql`.
 3. Đăng nhập thử 1 acc → vào app thấy đúng quyền theo ma trận `rbac_roles`.
 
 ## 4. Cấu hình `.env`

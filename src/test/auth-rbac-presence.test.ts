@@ -5,14 +5,14 @@ import { presenceManager } from '../services/presence-service';
 
 describe('Auth & RBAC - Ma trận phân quyền 6 vai trò (Supabase profiles)', () => {
   it('username -> email tổng hợp cho Supabase Auth', () => {
-    expect(usernameToEmail('kieu')).toBe('kieu@hr.os');
-    expect(usernameToEmail('Kieu')).toBe('kieu@hr.os');
-    expect(usernameToEmail('  Hoa  ')).toBe('hoa@hr.os');
+    expect(usernameToEmail('kieu')).toBe('kieu@leggett.com');
+    expect(usernameToEmail('Kieu')).toBe('kieu@leggett.com');
+    expect(usernameToEmail('  Hoa  ')).toBe('hoa@leggett.com');
   });
 
   it('6 user chuẩn trong ma trận: Kieu/Hoa/Vinh/NguyetAnh/Han/Glory', () => {
     // User provisioning thực hiện 1 lần trong Supabase Dashboard Authentication
-    // (kieu/hoa/vinh/nguyetanh/han/glory@hr.os) + public.profiles.
+    // (kieu/hoa/vinh/nguyetanh/han/glory@leggett.com) + public.profiles.
     // Test này khóa vai trò/phạm vi chuẩn của từng user.
     const expected: Record<string, { role: string; scope: string | null }> = {
       kieu: { role: 'AD System', scope: null },
@@ -23,7 +23,7 @@ describe('Auth & RBAC - Ma trận phân quyền 6 vai trò (Supabase profiles)',
       glory: { role: 'AD System', scope: null },
     };
     for (const [u, exp] of Object.entries(expected)) {
-      expect(usernameToEmail(u)).toBe(`${u}@hr.os`);
+      expect(usernameToEmail(u)).toBe(`${u}@leggett.com`);
       expect(exp.role).toBeTruthy();
     }
     expect(Object.keys(expected)).toHaveLength(6);

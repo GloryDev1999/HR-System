@@ -21,28 +21,40 @@ import {
   Unlock
 } from 'lucide-react';
 import { useLiveTable } from '../lib/tables';
-import type { IAccount, RoleType, AuditActionType, IUserAuditLog } from '../types';
+import type { RoleType, AuditActionType, IUserAuditLog } from '../types';
+
+/** Danh mục 6 tài khoản vận hành (provisioned trong Supabase Auth, role trong app_metadata).
+ *  Frontend anon-key không liệt kê được auth.users nên dùng danh mục tĩnh này để hiển thị/lọc.
+ *  Mọi thao tác sửa/khóa/reset thực hiện trong Supabase Dashboard → Authentication. */
+interface DirectoryAccount {
+  email: string;
+  username: string;
+  displayName: string;
+  role: RoleType;
+  departmentScope: string | null;
+}
+const KNOWN_ACCOUNTS: DirectoryAccount[] = [
+  { email: 'kieu@leggett.com', username: 'kieu', displayName: 'Kieu(Mia)', role: 'AD System', departmentScope: null },
+  { email: 'hoa@leggett.com', username: 'hoa', displayName: 'Hoa(Molly)', role: 'HR Manager', departmentScope: null },
+  { email: 'vinh@leggett.com', username: 'vinh', displayName: 'Vinh(Glory)', role: 'Warehouse Admin', departmentScope: 'WH' },
+  { email: 'nguyetanh@leggett.com', username: 'nguyetanh', displayName: 'Nguyet Anh', role: 'QC Admin', departmentScope: 'QC' },
+  { email: 'han@leggett.com', username: 'han', displayName: 'Han', role: 'Production Admin', departmentScope: 'Production' },
+  { email: 'glory@leggett.com', username: 'glory', displayName: 'Glory(Software)', role: 'AD System', departmentScope: null },
+];
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 
 export const UserManagementPage: React.FC = () => {
-  const { session, createAccount, updateAccountProfile, resetUserPassword, unlockUser, hasPermission } = useAuth();
+  const { session, createAccount, hasPermission } = useAuth();
   const { success, error, warning } = useToast();
   const { confirm } = useModal();
 
   const [activeTab, setActiveTab] = useState<'users' | 'audit'>('users');
 
-  // Queries (Supabase realtime: profiles thay accounts, audit mới nhất trước)
-  // profiles trả về đã map camelCase (displayName, departmentScope, isLocked...)
-  const accounts = useLiveTable<IAccount>('profiles');
+  // Queries: danh mục tĩnh (Auth không cho anon list users) + audit realtime
+  const accounts = KNOWN_ACCOUNTS;
   const auditLogs = useLiveTable<IUserAuditLog>('userAuditLogs', { orderBy: 'createdAt', ascending: false, limit: 200 });
-
-  // Edit user state
-  const [editingUsername, setEditingUsername] = useState<string | null>(null);
-  const [editDisplayName, setEditDisplayName] = useState('');
-  const [editRole, setEditRole] = useState<RoleType>('HR Admin');
-  const [editDeptScope, setEditDeptScope] = useState<string>('');
 
   // New user modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -56,10 +68,6 @@ export const UserManagementPage: React.FC = () => {
   const [auditActionFilter, setAuditActionFilter] = useState<string>('ALL');
   const [auditSearchQuery, setAuditSearchQuery] = useState('');
 
-  // Reset password state
-  const [resetModalUser, setResetModalUser] = useState<IAccount | null>(null);
-  const [newPasswordInput, setNewPasswordInput] = useState('123456');
-
   // Roles available
   const availableRoles: RoleType[] = [
     'AD System',
@@ -70,102 +78,6 @@ export const UserManagementPage: React.FC = () => {
     'QC Admin'
   ];
 
-  const handleOpenResetPassword = (acc: IAccount) => {
-    setResetModalUser(acc);
-    setNewPasswordInput('123456');
-  };
-
-  const handleConfirmResetPassword = async () => {
-    if (!resetModalUser) return;
-    if (!newPasswordInput.trim()) {
-      warning('Thiếu thông tin', 'Mật khẩu không được để trống.');
-      return;
-    }
-    const res = await resetUserPassword(resetModalUser.username, newPasswordInput.trim());
-    if (res.ok) {
-      success('Mở khóa tài khoản thành công', `Tài khoản "${resetModalUser.username}" đã được mở khóa. Đặt lại mật khẩu thực hiện trong Supabase Dashboard → Authentication → Users (anon key không được đổi pass user khác).`);
-      setResetModalUser(null);
-    } else {
-      error('Lỗi đặt lại mật khẩu', res.error || 'Thao tác không thành công.');
-    }
-  };
-
-  const handleDirectUnlock = async (acc: IAccount) => {
-    const ok = await confirm({
-      title: 'Mở khóa tài khoản',
-      message: `Mở khóa cho tài khoản "${acc.displayName}" (${acc.username}) và đặt lại số lần nhập sai về 0?`,
-      confirmText: 'Mở khóa ngay',
-      cancelText: 'Hủy',
-      type: 'info'
-    });
-    if (ok) {
-      const res = await unlockUser(acc.username);
-      if (res.ok) {
-        success('Mở khóa thành công', `Tài khoản "${acc.username}" đã được mở khóa và có thể đăng nhập bình thường.`);
-      } else {
-        error('Lỗi', res.error || 'Thao tác không thành công.');
-      }
-    }
-  };
-
-  const handleStartEdit = (acc: IAccount) => {
-    setEditingUsername(acc.username);
-    setEditDisplayName(acc.displayName);
-    setEditRole(acc.role);
-    setEditDeptScope(acc.departmentScope || '');
-  };
-
-  const handleCancelEdit = () => {
-    setEditingUsername(null);
-  };
-
-  const handleSaveEdit = async (username: string) => {
-    if (!editDisplayName.trim()) {
-      warning('Thiếu thông tin', 'Tên hiển thị không được để trống.');
-      return;
-    }
-
-    const res = await updateAccountProfile(username, {
-      displayName: editDisplayName.trim(),
-      role: editRole,
-      departmentScope: editDeptScope ? editDeptScope : null
-    });
-
-    if (res.ok) {
-      success('Cập nhật thành công', `Đã lưu thay đổi cho tài khoản "${username}".`);
-      setEditingUsername(null);
-    } else {
-      error('Lỗi cập nhật', res.error || 'Không thể lưu thay đổi.');
-    }
-  };
-
-  const handleToggleActive = async (acc: IAccount) => {
-    if (acc.username === session?.username) {
-      warning('Không thể thao tác', 'Bạn không thể tự khóa tài khoản đang đăng nhập của chính mình.');
-      return;
-    }
-
-    const nextState = !acc.active;
-    const ok = await confirm({
-      title: nextState ? 'Mở khóa tài khoản' : 'Khóa tài khoản',
-      message: nextState 
-        ? `Bạn có chắc chắn muốn mở khóa cho tài khoản "${acc.displayName}" (${acc.username})?`
-        : `Tài khoản "${acc.displayName}" (${acc.username}) sẽ không thể đăng nhập vào hệ thống sau khi khóa. Tiếp tục?`,
-      type: nextState ? 'info' : 'warning',
-      confirmText: nextState ? 'Mở khóa' : 'Khóa tài khoản',
-      cancelText: 'Hủy'
-    });
-
-    if (ok) {
-      const res = await updateAccountProfile(acc.username, { active: nextState });
-      if (res.ok) {
-        success('Thành công', `Đã ${nextState ? 'mở khóa' : 'khóa'} tài khoản "${acc.username}".`);
-      } else {
-        error('Lỗi', res.error || 'Thao tác không thành công.');
-      }
-    }
-  };
-
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUsername.trim()) {
@@ -173,12 +85,13 @@ export const UserManagementPage: React.FC = () => {
       return;
     }
 
-    const uname = newUsername.trim().toLowerCase();
-    const dname = newDisplayName.trim() || newUsername.trim();
+    const rawName = newUsername.trim().toLowerCase();
+    const mail = rawName.includes('@') ? rawName : `${rawName}@leggett.com`;
+    const dname = newDisplayName.trim() || rawName;
 
-    const res = await createAccount(uname, dname, newRole, '123456', newDeptScope || null);
+    const res = await createAccount(mail, dname, newRole, '123456', newDeptScope || null);
     if (res.ok) {
-      success('Tạo tài khoản thành công', `Tài khoản "${uname}" đã được tạo với mật khẩu khởi tạo mặc định là "123456".`);
+      success('Tạo tài khoản thành công', `Tài khoản "${mail}" đã được tạo (mật khẩu "123456"). NHỚ gán vai trò "${newRole}" trong Dashboard → Authentication → user → App Metadata rồi mới phân quyền có hiệu lực.`);
       setShowAddModal(false);
       setNewUsername('');
       setNewDisplayName('');
@@ -240,7 +153,7 @@ export const UserManagementPage: React.FC = () => {
             <span>Quản Lý Người Dùng Hệ Thống & Nhật Ký Hoạt Động (User Management & Audit Trail)</span>
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Quản trị viên có thể xem danh sách 6 tài khoản phân quyền theo vai trò, thêm user mới, đổi tên hiển thị và theo dõi chi tiết toàn bộ transaction hoạt động. Mật khẩu khởi tạo mặc định là <b>123</b>.
+            Tài khoản lưu trong Supabase Auth (vai trò trong App Metadata). Thêm user mới ở đây, còn sửa vai trò / khóa / reset mật khẩu người khác thực hiện trong Supabase Dashboard → Authentication. Mật khẩu khởi tạo mặc định là <b>123456</b>.
           </p>
         </div>
 
@@ -311,164 +224,52 @@ export const UserManagementPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {accounts.map(acc => {
-                  const isEditing = editingUsername === acc.username;
-                  return (
-                    <tr key={acc.username} className={`hover:bg-slate-50/80 transition ${!acc.active ? 'bg-rose-50/30' : ''}`}>
-                      {/* Username */}
-                      <td className="py-3 px-4 font-mono font-bold text-slate-900">
-                        {acc.username}
-                        {acc.username === session?.username && (
-                          <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700 border border-orange-200">
-                            Đang đăng nhập
-                          </span>
-                        )}
-                      </td>
+                {accounts.map(acc => (
+                  <tr key={acc.email} className="hover:bg-slate-50/80 transition">
+                    {/* Email */}
+                    <td className="py-3 px-4 font-mono font-bold text-slate-900">
+                      {acc.email}
+                      {acc.username === session?.username && (
+                        <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700 border border-orange-200">
+                          Đang đăng nhập
+                        </span>
+                      )}
+                    </td>
 
-                      {/* Display Name */}
-                      <td className="py-3 px-4">
-                        {isEditing ? (
-                          <input
-                            type="text"
-                            value={editDisplayName}
-                            onChange={e => setEditDisplayName(e.target.value)}
-                            className="px-2 py-1 text-xs border border-orange-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 w-full max-w-[200px]"
-                          />
-                        ) : (
-                          <div className="font-bold text-slate-800">{acc.displayName}</div>
-                        )}
-                      </td>
+                    {/* Display Name */}
+                    <td className="py-3 px-4">
+                      <div className="font-bold text-slate-800">{acc.displayName}</div>
+                    </td>
 
-                      {/* Role */}
-                      <td className="py-3 px-4">
-                        {isEditing ? (
-                          <select
-                            value={editRole}
-                            onChange={e => {
-                              const r = e.target.value as RoleType;
-                              setEditRole(r);
-                              if (r === 'Warehouse Admin') setEditDeptScope('WH');
-                              else if (r === 'QC Admin') setEditDeptScope('QC');
-                              else if (r === 'Production Admin') setEditDeptScope('Production');
-                              else setEditDeptScope('');
-                            }}
-                            className="px-2 py-1 text-xs border border-orange-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
-                          >
-                            {availableRoles.map(r => (
-                              <option key={r} value={r}>{r}</option>
-                            ))}
-                          </select>
-                        ) : (
-                          <span className="px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-slate-100 text-slate-800 border border-slate-200">
-                            {acc.role}
-                          </span>
-                        )}
-                      </td>
+                    {/* Role */}
+                    <td className="py-3 px-4">
+                      <span className="px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-slate-100 text-slate-800 border border-slate-200">
+                        {acc.role}
+                      </span>
+                    </td>
 
-                      {/* Department Scope */}
-                      <td className="py-3 px-4">
-                        {isEditing ? (
-                          <select
-                            value={editDeptScope}
-                            onChange={e => setEditDeptScope(e.target.value)}
-                            className="px-2 py-1 text-xs border border-orange-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
-                          >
-                            <option value="">Toàn công ty</option>
-                            <option value="WH">Kho (WH)</option>
-                            <option value="QC">Quản lý chất lượng (QC)</option>
-                            <option value="Production">Sản xuất (Production)</option>
-                          </select>
-                        ) : (
-                          <div className="flex items-center gap-1.5 text-slate-600 font-medium">
-                            <Building2 className="w-3.5 h-3.5 text-slate-400" />
-                            <span>{acc.departmentScope ? `${acc.departmentScope}` : 'Toàn công ty'}</span>
-                          </div>
-                        )}
-                      </td>
+                    {/* Department Scope */}
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-1.5 text-slate-600 font-medium">
+                        <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                        <span>{acc.departmentScope ? `${acc.departmentScope}` : 'Toàn công ty'}</span>
+                      </div>
+                    </td>
 
-                      {/* Active / Lock State */}
-                      <td className="py-3 px-4">
-                        <div className="flex flex-col gap-1">
-                          {Boolean(acc.isLocked || ((acc.failedLoginAttempts || 0) >= 10)) ? (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-100 text-rose-700 border border-rose-200">
-                              <Lock className="w-3 h-3 text-rose-600" />
-                              <span>Đã khóa ({acc.failedLoginAttempts || 10}/10 lần sai)</span>
-                            </span>
-                          ) : !acc.active ? (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
-                              <XCircle className="w-3 h-3 text-slate-500" />
-                              <span>Vô hiệu hóa</span>
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              <span>Hoạt động</span>
-                            </span>
-                          )}
-                          {(acc.failedLoginAttempts ?? 0) > 0 && !acc.isLocked ? (
-                            <span className="text-[10px] text-amber-600 font-semibold pl-1">
-                              ⚠️ Sai {acc.failedLoginAttempts}/10 lần
-                            </span>
-                          ) : null}
-                        </div>
-                      </td>
+                    {/* Active State */}
+                    <td className="py-3 px-4">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        <span>Hoạt động</span>
+                      </span>
+                    </td>
 
-                      {/* Actions */}
-                      <td className="py-3 px-4 text-center">
-                        {isEditing ? (
-                          <div className="flex items-center justify-center gap-2">
-                            <button
-                              onClick={() => handleSaveEdit(acc.username)}
-                              className="p-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 shadow-sm transition"
-                              title="Lưu thay đổi"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={handleCancelEdit}
-                              className="p-1.5 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition"
-                              title="Hủy"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="flex items-center justify-center gap-1.5 flex-wrap">
-                            <button
-                              onClick={() => handleStartEdit(acc)}
-                              className="flex items-center gap-1 px-2.5 py-1 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 font-semibold text-xs transition"
-                              title="Chỉnh sửa tên và vai trò"
-                            >
-                              <Edit3 className="w-3 h-3 text-slate-500" />
-                              <span>Sửa</span>
-                            </button>
-
-                            {Boolean(acc.isLocked || ((acc.failedLoginAttempts || 0) >= 10) || !acc.active) && (
-                              <button
-                                onClick={() => handleDirectUnlock(acc)}
-                                className="flex items-center gap-1 px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg font-bold text-xs transition"
-                                title="Mở khóa tài khoản ngay lập tức"
-                              >
-                                <Unlock className="w-3 h-3 text-emerald-600" />
-                                <span>Mở khóa</span>
-                              </button>
-                            )}
-
-                            <button
-                              onClick={() => handleOpenResetPassword(acc)}
-                              className="flex items-center gap-1 px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-lg font-bold text-xs transition"
-                              title="Đặt lại mật khẩu cho tài khoản này"
-                            >
-                              <KeyRound className="w-3 h-3 text-amber-600" />
-                              <span>Đặt lại MK</span>
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
+                    {/* Actions */}
+                    <td className="py-3 px-4 text-center">
+                      <span className="text-[11px] text-slate-400 italic">Quản lý trong Supabase Dashboard</span>
+                    </td>
+                  </tr>
+                ))}              </tbody>
             </table>
           </div>
         </div>
@@ -694,71 +495,6 @@ export const UserManagementPage: React.FC = () => {
         </div>
       )}
 
-      {/* Reset Password Modal */}
-      {resetModalUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <div className="p-2 bg-amber-100 text-amber-700 rounded-xl">
-                  <KeyRound className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-extrabold text-slate-900 text-base">Đặt Lại Mật Khẩu</h3>
-                  <p className="text-xs text-slate-500">Tài khoản: <b className="font-mono text-slate-800">{resetModalUser.username}</b> ({resetModalUser.displayName})</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setResetModalUser(null)}
-                className="text-slate-400 hover:text-slate-600 p-1"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Mật khẩu mới cho tài khoản:</label>
-                <input
-                  type="text"
-                  value={newPasswordInput}
-                  onChange={(e) => setNewPasswordInput(e.target.value)}
-                  placeholder="Nhập mật khẩu mới (mặc định 123)"
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm font-mono"
-                />
-              </div>
-
-              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 text-xs space-y-1">
-                <div className="font-bold flex items-center gap-1.5">
-                  <Unlock className="w-4 h-4 text-amber-700" />
-                  <span>Tự động mở khóa tài khoản</span>
-                </div>
-                <p className="text-[11px] text-amber-800">
-                  Khi đặt lại mật khẩu, hệ thống sẽ tự động đặt số lần đăng nhập sai về 0 và mở khóa tài khoản nếu user đang bị khóa.
-                </p>
-              </div>
-
-              <div className="pt-2 flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setResetModalUser(null)}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition"
-                >
-                  Hủy
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConfirmResetPassword}
-                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center gap-1.5"
-                >
-                  <KeyRound className="w-4 h-4" />
-                  <span>Xác Nhận Đổi Mật Khẩu</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
