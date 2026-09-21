@@ -117,31 +117,31 @@ export const LoginScreen: React.FC = () => {
                   type="button"
                   onClick={() => {
                     setUsername('vinh');
-                    setPassword('123');
+                    setPassword('123456');
                   }}
                   className="px-2.5 py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-xl text-left transition cursor-pointer"
                 >
                   <div className="font-bold text-xs">👤 Vinh</div>
-                  <div className="text-[10px] text-purple-600">Admin system (123)</div>
+                  <div className="text-[10px] text-purple-600">Admin system (123456)</div>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => {
                     setUsername('kieu');
-                    setPassword('123');
+                    setPassword('123456');
                   }}
                   className="px-2.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-left transition cursor-pointer"
                 >
                   <div className="font-bold text-xs">👤 Kiều</div>
-                  <div className="text-[10px] text-blue-600">HR manager (123)</div>
+                  <div className="text-[10px] text-blue-600">HR manager (123456)</div>
                 </button>
               </div>
             </div>
 
             <div className="text-center text-[10px] text-slate-400 leading-relaxed">
-              • <b>Vinh (123)</b>: Toàn quyền hệ thống &amp; Cài đặt RBAC
-              <br />• <b>Kiều (123)</b>: Toàn quyền nhân sự (không vào Cài đặt)
+              • <b>Vinh (123456)</b>: Toàn quyền hệ thống &amp; Cài đặt RBAC
+              <br />• <b>Kiều (123456)</b>: Toàn quyền nhân sự (không vào Cài đặt)
             </div>
           </form>
         </div>

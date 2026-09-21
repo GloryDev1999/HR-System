@@ -262,7 +262,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const resetUserPassword = useCallback(async (
     _username: string,
-    _newPassword: string = '123'
+    _newPassword: string = '123456'
   ): Promise<{ ok: boolean; error?: string }> => {
     if (!makeHasPermission(session?.role ?? null, rolePermissions)('MANAGE_USERS') && !makeHasPermission(session?.role ?? null, rolePermissions)('SYSTEM_SETTINGS')) {
       return { ok: false, error: 'Chỉ System Admin mới có quyền đặt lại mật khẩu' };
@@ -327,7 +327,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     username: string,
     displayName: string,
     role: RoleType,
-    password: string = '123',
+    password: string = '123456',
     departmentScope: string | null = null
   ): Promise<{ ok: boolean; error?: string }> => {
     if (!makeHasPermission(session?.role ?? null, rolePermissions)('MANAGE_USERS') && !makeHasPermission(session?.role ?? null, rolePermissions)('SYSTEM_SETTINGS')) {
@@ -335,7 +335,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     const uname = username.trim().toLowerCase();
     if (!uname) return { ok: false, error: 'Tên đăng nhập không được để trống' };
-    const pass = password.trim() || '123';
+    const pass = password.trim() || '123456';
     const { data: existing } = await supabase.from('profiles').select('id').eq('username', uname).maybeSingle();
     if (existing) return { ok: false, error: `Tài khoản "${uname}" đã tồn tại` };
 

@@ -58,7 +58,7 @@ export const UserManagementPage: React.FC = () => {
 
   // Reset password state
   const [resetModalUser, setResetModalUser] = useState<IAccount | null>(null);
-  const [newPasswordInput, setNewPasswordInput] = useState('123');
+  const [newPasswordInput, setNewPasswordInput] = useState('123456');
 
   // Roles available
   const availableRoles: RoleType[] = [
@@ -72,7 +72,7 @@ export const UserManagementPage: React.FC = () => {
 
   const handleOpenResetPassword = (acc: IAccount) => {
     setResetModalUser(acc);
-    setNewPasswordInput('123');
+    setNewPasswordInput('123456');
   };
 
   const handleConfirmResetPassword = async () => {
@@ -176,9 +176,9 @@ export const UserManagementPage: React.FC = () => {
     const uname = newUsername.trim().toLowerCase();
     const dname = newDisplayName.trim() || newUsername.trim();
 
-    const res = await createAccount(uname, dname, newRole, '123', newDeptScope || null);
+    const res = await createAccount(uname, dname, newRole, '123456', newDeptScope || null);
     if (res.ok) {
-      success('Tạo tài khoản thành công', `Tài khoản "${uname}" đã được tạo với mật khẩu khởi tạo mặc định là "123".`);
+      success('Tạo tài khoản thành công', `Tài khoản "${uname}" đã được tạo với mật khẩu khởi tạo mặc định là "123456".`);
       setShowAddModal(false);
       setNewUsername('');
       setNewDisplayName('');

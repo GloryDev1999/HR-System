@@ -1,6 +1,6 @@
 -- ============================================================================
 -- SmartHR — Seed 6 users Auth + profiles (chạy 1 LẦN trong SQL Editor)
--- Email dạng *@hr.os. Pass mặc định: 123 cho cả 6. User tự đổi trong frontend
+-- Email dạng *@hr.os. Pass mặc định: 123456 cho cả 6 (đúng policy Supabase >= 6 ký tự). User tự đổi trong frontend
 -- (avatar góc phải → Đổi mật khẩu, gọi supabase.auth.updateUser).
 --
 -- Cách chạy: Supabase Dashboard → SQL Editor → New query → paste toàn file → Run.
@@ -23,7 +23,7 @@ DELETE FROM public.profiles AS p
 WHERE NOT EXISTS (SELECT 1 FROM auth.users AS u WHERE u.id = p.id);
 
 -- ----------------------------------------------------------------------------
--- BƯỚC 1: tạo 6 users trong auth.users (bcrypt crypt('123', gen_salt('bf'))).
+-- BƯỚC 1: tạo 6 users trong auth.users (bcrypt crypt('123456', gen_salt('bf'))).
 -- ----------------------------------------------------------------------------
 INSERT INTO auth.users (
   instance_id, id, aud, role, email,
@@ -42,12 +42,12 @@ SELECT
   '{}'::jsonb,
   now(), now()
 FROM (VALUES
-  ('kieu@hr.os',       '123'),
-  ('hoa@hr.os',        '123'),
-  ('vinh@hr.os',       '123'),
-  ('nguyetanh@hr.os',  '123'),
-  ('han@hr.os',        '123'),
-  ('glory@hr.os',      '123')
+  ('kieu@hr.os',       '123456'),
+  ('hoa@hr.os',        '123456'),
+  ('vinh@hr.os',       '123456'),
+  ('nguyetanh@hr.os',  '123456'),
+  ('han@hr.os',        '123456'),
+  ('glory@hr.os',      '123456')
 ) AS n(email, pass)
 WHERE NOT EXISTS (SELECT 1 FROM auth.users u WHERE u.email = n.email);
 
