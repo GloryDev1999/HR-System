@@ -22,6 +22,18 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA "extensions";
 DELETE FROM public.profiles AS p
 WHERE NOT EXISTS (SELECT 1 FROM auth.users AS u WHERE u.id = p.id);
 
+-- BƯỚC 0b: xóa cứng users đã bị soft-delete (deleted_at) — GoTrue ẩn khỏi
+-- API list nhưng unique index vẫn giữ email nên tạo mới báo duplicate,
+-- còn login thì luôn fail. Chỉ chạy khi cột deleted_at tồn tại.
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'auth' AND table_name = 'users' AND column_name = 'deleted_at'
+  ) THEN
+    DELETE FROM auth.users WHERE email LIKE '%@hr.os' AND deleted_at IS NOT NULL;
+  END IF;
+END $$;
+
 -- ----------------------------------------------------------------------------
 -- BƯỚC 1: tạo 6 users trong auth.users (bcrypt crypt('123456', gen_salt('bf'))).
 -- ----------------------------------------------------------------------------
