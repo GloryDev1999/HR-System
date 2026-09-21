@@ -31,10 +31,10 @@ export const DEFAULT_ADMIN_USERNAME = 'kieu';
 /**
  * Email tổng hợp cho Supabase Auth từ username nội bộ.
  * 6 user tạo 1 lần trong Dashboard Authentication với email này:
- * kieu@smarthr.local, hoa@smarthr.local, vinh@smarthr.local,
- * nguyetanh@smarthr.local, han@smarthr.local, glory@smarthr.local
+ * kieu@hr.os, hoa@hr.os, vinh@hr.os,
+ * nguyetanh@hr.os, han@hr.os, glory@hr.os
  */
-export const usernameToEmail = (username: string) => `${username.trim().toLowerCase()}@smarthr.local`;
+export const usernameToEmail = (username: string) => `${username.trim().toLowerCase()}@hr.os`;
 
 function getDepartmentScope(role: RoleType): string | null {
   switch (role) {

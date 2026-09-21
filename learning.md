@@ -355,7 +355,7 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
   - Single-file build + nhúng base64 là yêu cầu của kỷ nguyên offline `file://`, không còn cần khi có mạng + hosting.
 - **Giải pháp xử lý (Resolution)**:
   1. `src/lib/tables.ts` tập trung: `convertRowToCamel` (TIME `HH:mm:ss`→`HH:mm`, alias `created_at`→`timestamp` cho audit), `convertToSnakeShallow` (shallow, object JSONB giữ nguyên, `undefined`→`null`, strip `*_flag`/`fts`/`_*`), `upsertOne/bulkUpsert(500/chunk)/updateByKey/removeByKey/bulkRemove/clearTable/listWhere/deleteWhere/getSetting/putSetting`, `useLiveTable` (select + `postgres_changes` debounce 300ms, channel dùng chung).
-  2. Auth: `username@smarthr.local` tổng hợp cho Supabase Auth; lock/attempt custom bỏ (server-side rate-limit + cờ `is_locked`/`active`); admin đổi pass user khác qua Dashboard.
+  2. Auth: `username@hr.os` tổng hợp cho Supabase Auth; lock/attempt custom bỏ (server-side rate-limit + cờ `is_locked`/`active`); admin đổi pass user khác qua Dashboard.
   3. Worker: bỏ embedded, `MODEL_BASE` từ `VITE_MODEL_BASE_URL` (mặc định `/PaddleOCR-Models`), `wasmPaths` theo origin + Cache Storage; COOP/COEP qua `public/_headers` (Cloudflare Pages) để giữ WASM đa luồng.
   4. Xóa: `src/db`, `db-seeder`, `db-sync`, `json-sync-service`, `lan-push-guard`, `password`, `server.js`, BAT/VBS, `embed-models.mjs`, `viteSingleFile`, `prebuild`; giữ `dexie` cho `ocr-assets-store` (ONNX cache).
 - **Bài học kinh nghiệm (Key Takeaway)**:

@@ -1,16 +1,18 @@
 -- ============================================================================
 -- SmartHR — Seed 6 users Auth + profiles (chạy 1 LẦN trong SQL Editor)
--- Pass mặc định: 123 cho cả 6. User tự đổi trong frontend
+-- Email dạng *@hr.os. Pass mặc định: 123 cho cả 6. User tự đổi trong frontend
 -- (avatar góc phải → Đổi mật khẩu, gọi supabase.auth.updateUser).
 --
 -- Cách chạy: Supabase Dashboard → SQL Editor → New query → paste toàn file → Run.
+-- LƯU Ý KỸ THUẬT: bản GoTrue mới dùng PARTIAL unique index cho auth.users.email
+-- nên ON CONFLICT (email) báo lỗi 42P10. Script này dùng WHERE NOT EXISTS
+-- (chạy lại nhiều lần an toàn, tương thích mọi version).
 -- Yêu cầu extension pgcrypto (Supabase cài sẵn; nếu báo thiếu gen_salt thì chạy
 -- thêm dòng: create extension if not exists "pgcrypto" with schema "extensions";)
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- BƯỚC 1: tạo 6 users trong auth.users (bcrypt crypt('123', gen_salt('bf'))).
--- Chạy lại nhiều lần cũng an toàn (ON CONFLICT DO NOTHING theo email).
 -- ----------------------------------------------------------------------------
 INSERT INTO auth.users (
   instance_id, id, aud, role, email,
@@ -29,14 +31,14 @@ SELECT
   '{}'::jsonb,
   now(), now()
 FROM (VALUES
-  ('kieu@smarthr.local',       '123'),
-  ('hoa@smarthr.local',        '123'),
-  ('vinh@smarthr.local',       '123'),
-  ('nguyetanh@smarthr.local',  '123'),
-  ('han@smarthr.local',        '123'),
-  ('glory@smarthr.local',      '123')
+  ('kieu@hr.os',       '123'),
+  ('hoa@hr.os',        '123'),
+  ('vinh@hr.os',       '123'),
+  ('nguyetanh@hr.os',  '123'),
+  ('han@hr.os',        '123'),
+  ('glory@hr.os',      '123')
 ) AS n(email, pass)
-ON CONFLICT (email) DO NOTHING;
+WHERE NOT EXISTS (SELECT 1 FROM auth.users u WHERE u.email = n.email);
 
 -- ----------------------------------------------------------------------------
 -- BƯỚC 2: sửa profiles do trigger handle_new_user tạo tự động
@@ -50,12 +52,12 @@ UPDATE public.profiles AS p SET
   active           = true,
   is_locked        = false
 FROM (VALUES
-  ('kieu',      'Kieu(Mia)',       'AD System',       NULL::text,            'kieu@smarthr.local'),
-  ('hoa',       'Hoa(Molly)',      'HR Manager',      NULL::text,            'hoa@smarthr.local'),
-  ('vinh',      'Vinh(Glory)',     'Warehouse Admin', 'WH'::text,            'vinh@smarthr.local'),
-  ('nguyetanh', 'Nguyet Anh',      'QC Admin',        'QC'::text,            'nguyetanh@smarthr.local'),
-  ('han',       'Han',             'Production Admin','Production'::text,    'han@smarthr.local'),
-  ('glory',     'Glory(Software)', 'AD System',       NULL::text,            'glory@smarthr.local')
+  ('kieu',      'Kieu(Mia)',       'AD System',       NULL::text,         'kieu@hr.os'),
+  ('hoa',       'Hoa(Molly)',      'HR Manager',      NULL::text,         'hoa@hr.os'),
+  ('vinh',      'Vinh(Glory)',     'Warehouse Admin', 'WH'::text,         'vinh@hr.os'),
+  ('nguyetanh', 'Nguyet Anh',      'QC Admin',        'QC'::text,         'nguyetanh@hr.os'),
+  ('han',       'Han',             'Production Admin','Production'::text, 'han@hr.os'),
+  ('glory',     'Glory(Software)', 'AD System',       NULL::text,         'glory@hr.os')
 ) AS m(username, display_name, role, scope, email)
 WHERE p.username = m.email;
 
@@ -66,7 +68,7 @@ SELECT email,
        (email_confirmed_at IS NOT NULL) AS confirmed,
        last_sign_in_at
 FROM auth.users
-WHERE email LIKE '%@smarthr.local'
+WHERE email LIKE '%@hr.os'
 ORDER BY email;
 
 SELECT username, display_name, role, department_scope, active, is_locked
