@@ -12,6 +12,13 @@
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
+-- BƯỚC 0: dọn profiles mồ côi (id không còn trong auth.users) để tránh trùng
+-- username khi tạo lại. An toàn khi chạy lại nhiều lần.
+-- ----------------------------------------------------------------------------
+DELETE FROM public.profiles AS p
+WHERE NOT EXISTS (SELECT 1 FROM auth.users AS u WHERE u.id = p.id);
+
+-- ----------------------------------------------------------------------------
 -- BƯỚC 1: tạo 6 users trong auth.users (bcrypt crypt('123', gen_salt('bf'))).
 -- ----------------------------------------------------------------------------
 INSERT INTO auth.users (
