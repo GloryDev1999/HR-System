@@ -224,21 +224,61 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, [session]);
 
   const resetUserPassword = useCallback(async (
-    _email: string
+    email: string,
+    newPassword: string = '123456'
   ): Promise<{ ok: boolean; error?: string }> => {
     if (!makeHasPermission(session?.role ?? null, rolePermissions)('MANAGE_USERS') && !makeHasPermission(session?.role ?? null, rolePermissions)('SYSTEM_SETTINGS')) {
       return { ok: false, error: 'Chỉ System Admin mới có quyền đặt lại mật khẩu' };
     }
-    return { ok: false, error: DASHBOARD_GUIDE };
+    const mail = email.trim().toLowerCase();
+    if (!mail.includes('@')) return { ok: false, error: 'Email không hợp lệ' };
+    if (newPassword.trim().length < 6) return { ok: false, error: 'Mật khẩu mới phải tối thiểu 6 ký tự' };
+
+    // Gọi Edge Function admin-user (service_role sống phía server, đã gate AD System).
+    const { data, error } = await supabase.functions.invoke('admin-user', {
+      body: { action: 'reset_password', email: mail, newPassword: newPassword.trim() },
+    });
+    if (error) return { ok: false, error: error.message };
+    if ((data as any)?.error) return { ok: false, error: (data as any).error as string };
+
+    if (session) {
+      logUserAction({
+        username: session.username,
+        displayName: session.displayName,
+        role: session.role,
+        actionType: 'RESET_PASSWORD',
+        targetEntity: mail,
+        details: `Cấp lại mật khẩu cho "${mail}" trực tiếp từ frontend (Edge Function admin-user)`
+      }).catch(console.error);
+    }
+
+    return { ok: true };
   }, [session, rolePermissions]);
 
   const unlockUser = useCallback(async (
-    _email: string
+    email: string
   ): Promise<{ ok: boolean; error?: string }> => {
     if (!makeHasPermission(session?.role ?? null, rolePermissions)('MANAGE_USERS') && !makeHasPermission(session?.role ?? null, rolePermissions)('SYSTEM_SETTINGS')) {
       return { ok: false, error: 'Chỉ System Admin mới có quyền mở khóa tài khoản' };
     }
-    return { ok: false, error: DASHBOARD_GUIDE };
+    const { data, error } = await supabase.functions.invoke('admin-user', {
+      body: { action: 'unban', email: email.trim().toLowerCase() },
+    });
+    if (error) return { ok: false, error: error.message };
+    if ((data as any)?.error) return { ok: false, error: (data as any).error as string };
+
+    if (session) {
+      logUserAction({
+        username: session.username,
+        displayName: session.displayName,
+        role: session.role,
+        actionType: 'TOGGLE_USER_ACTIVE',
+        targetEntity: email,
+        details: `Gỡ ban tài khoản "${email}" (Edge Function admin-user)`
+      }).catch(console.error);
+    }
+
+    return { ok: true };
   }, [session, rolePermissions]);
 
   const createAccount = useCallback(async (

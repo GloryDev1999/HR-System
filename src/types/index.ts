@@ -320,6 +320,7 @@ export type AuditActionType =
   | 'REJECT_LEAVE'
   | 'TIMESHEET_EDIT'
   | 'CREATE_USER'
+  | 'RESET_PASSWORD'
   | 'UPDATE_USER_NAME'
   | 'TOGGLE_USER_ACTIVE'
   | 'UPDATE_USER_ROLE';

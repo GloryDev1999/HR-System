@@ -46,7 +46,7 @@ import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 
 export const UserManagementPage: React.FC = () => {
-  const { session, createAccount, hasPermission } = useAuth();
+  const { session, createAccount, resetUserPassword, hasPermission } = useAuth();
   const { success, error, warning } = useToast();
   const { confirm } = useModal();
 
@@ -102,6 +102,26 @@ export const UserManagementPage: React.FC = () => {
     }
   };
 
+  // Reset password modal (Kieu tự cấp lại, không cần kỹ thuật)
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [newPassInput, setNewPassInput] = useState('123456');
+
+  const handleConfirmReset = async () => {
+    if (!resetEmail) return;
+    if (newPassInput.trim().length < 6) {
+      warning('Mật khẩu quá ngắn', 'Mật khẩu mới phải tối thiểu 6 ký tự.');
+      return;
+    }
+    const res = await resetUserPassword(resetEmail, newPassInput.trim());
+    if (res.ok) {
+      success('Cấp lại mật khẩu thành công', `Tài khoản "${resetEmail}" giờ dùng mật khẩu mới. Báo user đăng nhập lại.`);
+      setShowResetModal(false);
+    } else {
+      error('Cấp lại thất bại', res.error || 'Không thực hiện được. Kiểm tra Edge Function admin-user đã deploy chưa.');
+    }
+  };
+
   // Filtered Audit Logs
   const filteredAuditLogs = useMemo(() => {
     return auditLogs.filter(log => {
@@ -132,6 +152,8 @@ export const UserManagementPage: React.FC = () => {
         return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 text-teal-800 border border-teal-200">Tỷ Lệ Chất Lượng</span>;
       case 'CREATE_USER':
         return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">Tạo User</span>;
+      case 'RESET_PASSWORD':
+        return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">Cấp Lại MK</span>;
       case 'UPDATE_USER_NAME':
         return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800 border border-sky-200">Đổi Tên User</span>;
       case 'UPDATE_USER_ROLE':
@@ -266,7 +288,22 @@ export const UserManagementPage: React.FC = () => {
 
                     {/* Actions */}
                     <td className="py-3 px-4 text-center">
-                      <span className="text-[11px] text-slate-400 italic">Quản lý trong Supabase Dashboard</span>
+                      {acc.username === session?.username ? (
+                        <span className="text-[11px] text-slate-400 italic">Tài khoản của bạn</span>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setResetEmail(acc.email);
+                            setNewPassInput('123456');
+                            setShowResetModal(true);
+                          }}
+                          className="flex items-center gap-1 px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-lg font-bold text-xs transition mx-auto"
+                          title="Cấp lại mật khẩu qua Edge Function (không cần kỹ thuật)"
+                        >
+                          <KeyRound className="w-3 h-3 text-amber-600" />
+                          <span>Đặt lại MK</span>
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}              </tbody>
@@ -472,7 +509,7 @@ export const UserManagementPage: React.FC = () => {
               </div>
 
               <div className="p-3 bg-orange-50 rounded-xl border border-orange-200 text-orange-800 text-[11px] leading-relaxed">
-                ℹ️ <b>Mật khẩu mặc định:</b> Tài khoản mới sẽ được tự động khởi tạo với mật khẩu là <b>123</b>. Người dùng có thể tự thay đổi mật khẩu sau khi đăng nhập.
+                ℹ️ <b>Mật khẩu mặc định:</b> Tài khoản mới sẽ được tự động khởi tạo với mật khẩu là <b>123456</b>. Người dùng có thể tự thay đổi mật khẩu sau khi đăng nhập.
               </div>
 
               <div className="pt-2 flex items-center justify-end gap-3">
@@ -491,6 +528,65 @@ export const UserManagementPage: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CẤP LẠI MẬT KHẨU (Kieu tự làm, không cần kỹ thuật) */}
+      {showResetModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-amber-100 text-amber-700 rounded-xl">
+                  <KeyRound className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-base">Cấp Lại Mật Khẩu</h3>
+                  <p className="text-xs text-slate-500">Tài khoản: <b className="font-mono text-slate-800">{resetEmail}</b></p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowResetModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Mật khẩu mới (tối thiểu 6 ký tự):</label>
+              <input
+                type="text"
+                value={newPassInput}
+                onChange={(e) => setNewPassInput(e.target.value)}
+                placeholder="vd: 123456"
+                className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm font-mono"
+              />
+            </div>
+
+            <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-emerald-900 text-xs">
+              Thực hiện qua Edge Function <b className="font-mono">admin-user</b> (service_role giữ phía server).
+              User dùng mật khẩu mới đăng nhập lại ngay, không cần xác nhận email.
+            </div>
+
+            <div className="pt-2 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowResetModal(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition"
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmReset}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-sm transition flex items-center gap-1.5"
+              >
+                <KeyRound className="w-4 h-4" />
+                <span>Xác Nhận Cấp Lại</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

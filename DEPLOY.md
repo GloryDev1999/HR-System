@@ -62,6 +62,24 @@ Kiểm tra `dist/` có `index.html` + assets + `PaddleOCR-Models/`
 2. Upload toàn bộ nội dung `dist/` (kèm `_headers`).
 3. Mở URL public `https://<project>.pages.dev` → đăng nhập Supabase Auth → dùng.
 
+## 6b. Deploy Edge Function `admin-user` (Kieu tự cấp lại MK, 1 lần)
+
+Không deploy là nút **Đặt lại MK** trong Users báo lỗi thiếu function.
+
+**Cách A — Dashboard (không cần CLI):**
+1. Supabase Dashboard → **Edge Functions** → **Create a new function** → tên `admin-user`.
+2. Mở file `supabase/functions/admin-user/index.ts` trong repo → copy toàn bộ → paste vào editor → **Deploy**.
+3. Không cần set secrets: `SUPABASE_URL` / `ANON_KEY` / `SERVICE_ROLE_KEY` Edge Functions tự có.
+
+**Cách B — CLI:**
+```bash
+supabase login
+supabase link --project-ref <project-ref>
+supabase functions deploy admin-user
+```
+
+Kiểm tra: Users → **Đặt lại MK** cho 1 acc test → đăng nhập bằng pass mới. Mọi lượt cấp lại ghi audit `RESET_PASSWORD`.
+
 ## 7. PaddleOCR-Models serve cùng `dist`
 
 - Mặc định: thư mục `PaddleOCR-Models/` nằm cùng `dist/`, trình duyệt tải model
