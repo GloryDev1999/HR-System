@@ -11,16 +11,14 @@ import {
   Sliders,
   Users
 } from 'lucide-react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../db';
-import { IProductionLine, IProductivityQualityRate } from '../types';
+import { useLiveTable, upsertOne, removeByKey, deleteWhere } from '../lib/tables';
+import type { IEmployee, IProductionLine, IProductivityQualityRate } from '../types';
 import { generateCalendarDays, CalendarDay } from '../services/calendar-utils';
 import { formatPayPeriodLabel } from '../services/pay-period';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 import { useAuth } from '../context/AuthContext';
 import { logUserAction } from '../services/audit-log-service';
-import { stampRateFieldMeta, stampSyncMeta } from '../services/json-sync-service';
 
 export const ProductivityQualityPage: React.FC = () => {
   const { success, warning, error } = useToast();
@@ -54,24 +52,21 @@ export const ProductivityQualityPage: React.FC = () => {
   const [newLineName, setNewLineName] = useState('');
   const [newLineDesc, setNewLineDesc] = useState('');
 
-  // Queries
-  const lines = useLiveQuery(() => db.productionLines.toArray(), []) || [];
-  const rates = useLiveQuery(
-    async () => {
-      if (cycleMode === 'OFFICIAL') {
-        const prevMonth = selectedMonth === 1 ? 12 : selectedMonth - 1;
-        const prevYear = selectedMonth === 1 ? selectedYear - 1 : selectedYear;
-        const [rCurr, rPrev] = await Promise.all([
-          db.productivityQualityRates.where('month').equals(selectedMonth).filter(r => r.year === selectedYear).toArray(),
-          db.productivityQualityRates.where('month').equals(prevMonth).filter(r => r.year === prevYear).toArray()
-        ]);
-        return [...rPrev, ...rCurr];
-      }
-      return db.productivityQualityRates.where('month').equals(selectedMonth).filter(r => r.year === selectedYear).toArray();
-    },
-    [selectedMonth, selectedYear, cycleMode]
-  ) || [];
-  const employees = useLiveQuery(() => db.employees.toArray(), []) || [];
+  // Queries (Supabase realtime — lọc kỳ công ở client)
+  const lines = useLiveTable<IProductionLine>('productionLines');
+  const allRates = useLiveTable<IProductivityQualityRate>('productivityQualityRates');
+  const employees = useLiveTable<IEmployee>('employees');
+  const rates = useMemo(() => {
+    const months = new Set<number>();
+    if (cycleMode === 'OFFICIAL') {
+      const prevMonth = selectedMonth === 1 ? 12 : selectedMonth - 1;
+      const prevYear = selectedMonth === 1 ? selectedYear - 1 : selectedYear;
+      return allRates.filter(r =>
+        (r.month === selectedMonth && r.year === selectedYear) ||
+        (r.month === prevMonth && r.year === prevYear));
+    }
+    return allRates.filter(r => r.month === selectedMonth && r.year === selectedYear);
+  }, [allRates, selectedMonth, selectedYear, cycleMode]);
 
   // Rates map: `${lineId}_${dateStr}` -> IProductivityQualityRate
   const rateMap = useMemo(() => {
@@ -119,17 +114,10 @@ export const ProductivityQualityPage: React.FC = () => {
       updatedAt: at,
       updatedBy: by,
     };
-    // Truy vết field-level để merge JSON không mất dữ liệu han (NS) / nguyetanh (CL)
-    stampSyncMeta(newRate as any, by, at);
-    stampRateFieldMeta(newRate as any, type, by, at);
-    if (existing) {
-      // Giữ lại stamp field đối diện để không mất mốc của người kia
-      const keepKey = type === 'NS' ? '_syncCL' : '_syncNS';
-      if ((existing as any)[keepKey] && !(newRate as any)[keepKey]) (newRate as any)[keepKey] = (existing as any)[keepKey];
-    }
-
+    // Supabase upsert last-write-wins theo dòng; giữ field đối diện từ bản live
+    // để han (NS) / nguyetanh (CL) không ghi đè lẫn nhau.
     try {
-      await db.productivityQualityRates.put(newRate);
+      await upsertOne('productivityQualityRates', newRate);
 
       if (session) {
         logUserAction({
@@ -159,7 +147,7 @@ export const ProductivityQualityPage: React.FC = () => {
     }
     const id = newLineId.trim() || `line_${Date.now()}`;
     try {
-      await db.productionLines.put({
+      await upsertOne('productionLines', {
         id,
         name: newLineName.trim(),
         description: newLineDesc.trim() || undefined,
@@ -189,8 +177,8 @@ export const ProductivityQualityPage: React.FC = () => {
       type: 'danger'
     });
     if (ok) {
-      await db.productionLines.delete(line.id);
-      await db.productivityQualityRates.where('lineId').equals(line.id).delete();
+      await removeByKey('productionLines', line.id);
+      await deleteWhere('productivityQualityRates', 'lineId', line.id);
       success('Đã xóa Line', `Line ${line.name} đã được xóa.`);
     }
   };

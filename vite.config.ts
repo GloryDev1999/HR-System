@@ -1,35 +1,19 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { viteSingleFile } from 'vite-plugin-singlefile';
 import path from 'path';
 
-// Ngăn Vite asset-import-meta-url tự động nhúng đúp 4 lần ort-wasm-simd-threaded.wasm (~70MB thừa)
-function preventOrtWasmDoubleInline() {
-  return {
-    name: 'prevent-ort-wasm-double-inline',
-    enforce: 'pre' as const,
-    transform(code: string, id: string) {
-      if (id.includes('ort.wasm.bundle') || id.includes('onnxruntime-web')) {
-        return {
-          code: code.replaceAll('"ort-wasm-simd-threaded.wasm"', '["ort-wasm-simd-threaded", "wasm"].join(".")'),
-          map: null
-        };
-      }
-    }
-  };
-}
+// Cloud-only (Cloudflare Pages): build multi-file thường, KHÔNG singlefile.
+// Model ONNX + WASM serve rời từ dist/PaddleOCR-Models (copy-offline-assets).
+// COOP/COEP gắn ở public/_headers để bật SharedArrayBuffer (WASM đa luồng).
 
-// (Đã xóa clusterSignalingPlugin Star-Topology RTC ngày 2026-09-16:
-// hệ thống chuyển sang đồng bộ thuần JSON qua thư mục OneDrive HR_Data,
-// không cần relay /api/cluster/signaling nữa.)
+// (Đã xóa clusterSignalingPlugin Star-Topology RTC ngày 2026-09-16;
+// đã xóa viteSingleFile + nhúng base64 model ngày 2026-09-21: cloud-only.)
 
 export default defineConfig({
   plugins: [
-    preventOrtWasmDoubleInline(),
     react(),
     tailwindcss(),
-    viteSingleFile()
   ],
   test: {
     globals: true,
@@ -46,14 +30,12 @@ export default defineConfig({
   worker: {
     format: 'es'
   },
-  // Offline file:// (OneDrive HR-System): mọi asset phải tương đối để mở
-  // trực tiếp dist/index.html vẫn đúng đường dẫn. Không dùng '/'.
+  // Cloudflare Pages: base tương đối để sống cả custom domain lẫn sub-path.
   base: './',
   build: {
     target: 'esnext',
     assetsInlineLimit: 4096,
-    chunkSizeWarningLimit: 100000000,
-    cssCodeSplit: false
+    chunkSizeWarningLimit: 20000000
   },
   server: {
     port: 3000,

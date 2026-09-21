@@ -1,18 +1,18 @@
 {
   "project_metadata": {
-    "project_name": "SmartHR - Single-File In-Browser HRMS & Timekeeping System",
+    "project_name": "SmartHR - Cloud-Native HRMS & Timekeeping System",
     "organization": "Leggett & Platt / SmartHR",
-    "architecture": "Single-File In-Browser Backend (React + TypeScript + Web Worker + Dexie.js + ONNX Runtime Web Hybrid CDN)",
-    "last_updated": "2026-09-20T00:00:00Z",
-    "current_phase": "Phase 38: Chong mo trung tam + hien icon .lnk (mo-ui probe 4179, EADDRINUSE thoat em, xoa .lnk cu truoc khi tao + IconLocation ,0)",
-    "version": "3.1.0"
+    "architecture": "Supabase Cloud Backend (Postgres + Auth + Realtime + RLS) + Cloudflare Pages static frontend (React + TypeScript + Web Workers + ONNX Runtime Web)",
+    "last_updated": "2026-09-21T00:00:00Z",
+    "current_phase": "Phase M30: Supabase full migration + Cloudflare cloud-only (xoa Dexie/LAN/OneDrive/offline-singlefile)",
+    "version": "4.0.0"
   },
   "agent_profile": {
     "role": "Senior Principal System Designer & Staff IT Software Engineer",
     "rules": [
       "Evidence-First: Zero code fabrication without ground truth",
       "No decision on ambiguous data; clarify with user before coding",
-      "100% Client-Side In-Browser Backend (Dexie.js + Web Workers)",
+      "Supabase Cloud Backend (Postgres source-of-truth, RLS everywhere, Realtime, Auth)",
       "Zero Native Browser Dialogs (Custom UI Toast/Modal Only)",
       "Mandatory State Persistence: Always update state.json after every task or fix",
       "Subagent QC Protocol: Independent QC verification loop with learning.md"
@@ -49,32 +49,29 @@
     }
   },
   "verified_schemas": {
-    "db_name": "HRSystem_LeggettPlatt_DB",
-    "db_file": "src/db/index.ts",
-    "current_version": 9,
-    "stores": {
-      "employees": "employeeId PK, erpId, fullName, department, shiftClassId FK→shiftClasses.shiftClassId, contractType, status, productionLine, productivityGroup, [department+status], [contractType+status], [shiftClassId+status], [department+contractType]",
-      "rawAttendanceLogs": "++id PK auto-increment, employeeId FK, date, [employeeId+date], departmentCode, [departmentCode+date]",
-      "dailyTimesheets": "employeeId_date PK composite, employeeId FK, date, statusCode, isViolation (boolean giữ UI), isViolationFlag 0|1 indexed, month, year, [month+year], [employeeId+month+year], [statusCode+month+year], [isViolationFlag+month+year]",
-      "overtimeRecords": "employeeId_date PK composite, employeeId FK, date, verificationStatus, month, year, [month+year], [employeeId+month+year], [verificationStatus+month+year]",
-      "leaveRequests": "id PK string, employeeId FK, date, leaveType, status, department, [status+date], [employeeId+status], [department+status]",
-      "shiftRosters": "employeeId_date PK composite, employeeId FK, date, shiftCode FK→shiftClasses.shiftClassId, isRestViolation (boolean giữ UI), isRestViolationFlag 0|1 indexed, isShiftMismatchFlag 0|1 indexed, department, [isRestViolationFlag+date], [isShiftMismatchFlag+date], [department+date], [shiftCode+date]",
-      "ocrScans": "id PK, extractedEmployeeId, extractedDate, matchStatus, scanTimestamp, [matchStatus+scanTimestamp]",
-      "settings": "key PK",
-      "accounts": "username PK, role FK→rbacRoles.roleId, active (boolean giữ UI), activeFlag 0|1 indexed, [role+activeFlag]",
-      "shiftClasses": "shiftClassId PK, startTime, endTime, standardWorkDays, isRotating (boolean), isRotatingFlag 0|1 indexed, workDaysPattern",
-      "rbacRoles": "roleId PK, roleName, *permissions multiEntry, isSystem (boolean), isSystemFlag 0|1 indexed",
-      "productionLines": "id PK, name, description, createdAt",
-      "productivityQualityRates": "lineId_date PK composite, lineId, date, month, year, [lineId+month+year], [lineId+date]",
-      "userAuditLogs": "id PK, username, actionType, timestamp, [username+timestamp], [actionType+timestamp]"
+    "db_kind": "Supabase Postgres (cloud)",
+    "db_file": "supabase/schema.sql",
+    "auth": "Supabase Auth (email tong hop username@smarthr.local) + public.profiles (username UNIQUE, role, department_scope, active, is_locked)",
+    "tables": {
+      "employees": "employee_id PK TEXT, JSONB custom_allowances/annual_leave_balance, status, indexes [department+status]",
+      "raw_attendance_logs": "BIGSERIAL id PK, employee_id FK, date DATE, TIME check_in/out, month/year GENERATED",
+      "daily_timesheets": "employee_id_date PK TEXT (CHECK = employee_id||date), status_code, is_violation BOOLEAN, partial index violations",
+      "overtime_records": "employee_id_date PK TEXT, hours NUMERIC, verification_status, partial index PENDING",
+      "leave_requests": "UUID id PK, employee_id FK, leave_type, status, partial index PENDING",
+      "shift_rosters": "employeeId_date PK TEXT, shift_code, is_rest_violation/is_shift_mismatch BOOLEAN, partial indexes",
+      "ocr_scans": "UUID id PK, scan_timestamp TIMESTAMPTZ",
+      "app_settings": "key PK TEXT, value JSONB (systemSettings seed san)",
+      "profiles": "UUID id PK FK auth.users, username UNIQUE, role, department_scope",
+      "shift_classes": "shift_class_id PK, TIME start/end, 4 ca seed",
+      "rbac_roles": "role_id PK, permissions TEXT[], 6 roles seed",
+      "production_lines": "id PK TEXT, 2 lines seed",
+      "productivity_quality_rates": "line_id_date PK TEXT, CHECK 0..150/0..100",
+      "user_audit_logs": "UUID id PK, created_at, username/action_type indexes"
     },
-    "persistent_storage": {
-      "helper": "ensurePersistentStorage() in src/db/index.ts + call in src/main.tsx bootstrap, fallback warning via Toast if denied",
-      "quota": "getStorageEstimate() — warn 80%, block import 95%"
-    },
-    "naming_convention_note": "SKILL quy ước snake_case nhưng giữ camelCase store names để không mất IndexedDB người dùng cũ (đã ship v2/v3). Field camelCase, date YYYY-MM-DD cho index. Flag 0|1 là Number hợp lệ IndexedDB, boolean gốc giữ lại cho UI/logic.",
-    "erd_mermaid": "erDiagram EMPLOYEES ||--o{ RAW_ATTENDANCE_LOGS : employeeId; EMPLOYEES ||--o{ DAILY_TIMESHEETS : employeeId; EMPLOYEES ||--o{ OVERTIME_RECORDS : employeeId; EMPLOYEES ||--o{ LEAVE_REQUESTS : employeeId; EMPLOYEES ||--o{ SHIFT_ROSTER_ENTRIES : employeeId; EMPLOYEES }o--|| SHIFT_CLASSES : shiftClassId; DAILY_TIMESHEETS ||--o| OVERTIME_RECORDS : employeeId_date; SHIFT_CLASSES ||--o{ SHIFT_ROSTER_ENTRIES : shiftCode; RBAC_ROLES ||--o{ ACCOUNTS : roleId;",
-    "flag_migration_note": "v6: 5 field boolean (isViolation, isRestViolation, active, isRotating, isSystem) không phải key hợp lệ IndexedDB → thêm shadow Flag Number 0|1, đổi index sang Flag, upgrade modify Flag=boolean?1:0, hooks creating/updating tự đồng bộ.",
+    "rls": "ENABLE RLS 14/14 bang; policies TO authenticated + (select auth.uid()) + USING/WITH CHECK; dept scope cho Warehouse/Production/QC",
+    "realtime": "publication supabase_realtime: employees, daily_timesheets, overtime_records, leave_requests, shift_rosters, productivity_quality_rates, user_audit_logs + presence/broadcast channels",
+    "legacy_note": "Dexie v2-v9 (HRSystem_LeggettPlatt_DB, 14 stores, shadow Flag 0|1) da khai tu 2026-09-21: xoa src/db, lan-sync SSE, server.js, OneDrive JSON, singlefile base64. IndexedDB chi con dung cho ONNX asset cache (ocr-assets-store). Lich su chi tiet giu trong modules_status M0-M28.",
+    "erd_mermaid": "erDiagram EMPLOYEES ||--o{ RAW_ATTENDANCE_LOGS : employee_id; EMPLOYEES ||--o{ DAILY_TIMESHEETS : employee_id; EMPLOYEES ||--o{ OVERTIME_RECORDS : employee_id; EMPLOYEES ||--o{ LEAVE_REQUESTS : employee_id; EMPLOYEES ||--o{ SHIFT_ROSTERS : employee_id; PROFILES ||--o| AUTH_USERS : id; RBAC_ROLES ||--o{ PROFILES : role;",
     "future_pending_stores": {
       "auditLogs": "User chọn không cần (3.không cần) — không tạo"
     }
@@ -98,42 +95,83 @@
     "M1_Dashboard_Analytics": {
       "status": "COMPLETED",
       "completion_pct": 100,
-      "features": ["10+ KPIs", "Department Breakdown", "Turnover Rate", "Violations Chart", "12h Shift Rest Violation Alert with CTA"]
+      "features": [
+        "10+ KPIs",
+        "Department Breakdown",
+        "Turnover Rate",
+        "Violations Chart",
+        "12h Shift Rest Violation Alert with CTA"
+      ]
     },
     "M2_Employee_Master_Class": {
       "status": "COMPLETED",
       "completion_pct": 100,
-      "features": ["102 Ground Truth Employees", "4 Shift Classes", "2 Contract Types", "Custom Allowances (PCCC, Hazardous)", "Annual Leave Quota"]
+      "features": [
+        "102 Ground Truth Employees",
+        "4 Shift Classes",
+        "2 Contract Types",
+        "Custom Allowances (PCCC, Hazardous)",
+        "Annual Leave Quota"
+      ]
     },
     "M3_Timesheet_Calendar_Matrix": {
       "status": "COMPLETED",
       "completion_pct": 100,
-      "features": ["31-Day Matrix", "58 Columns Matching Excel", "Ground Truth COUNTIF Formulas", "Cell Status Badges (W, N, Off, AL, UL, SL)", "Inline Editor"]
+      "features": [
+        "31-Day Matrix",
+        "58 Columns Matching Excel",
+        "Ground Truth COUNTIF Formulas",
+        "Cell Status Badges (W, N, Off, AL, UL, SL)",
+        "Inline Editor"
+      ]
     },
     "M4_Overtime_Tracking_OCR": {
       "status": "COMPLETED",
       "completion_pct": 100,
-      "features": ["31-Day OT Tracking", "Sunday 8h OT rule", "Weekday OT exact minutes", "3 States (Pending Yellow, Matched Green, Mismatch Red)"]
+      "features": [
+        "31-Day OT Tracking",
+        "Sunday 8h OT rule",
+        "Weekday OT exact minutes",
+        "3 States (Pending Yellow, Matched Green, Mismatch Red)"
+      ]
     },
     "M5_Leave_Compensation_Quota": {
       "status": "COMPLETED",
       "completion_pct": 100,
-      "features": ["Automatic 'Off' collection", "AL Quota Enforcement (reject & alert if exhausted)", "Leave types: AL, UL, SL, PL, BT, Maternity"]
+      "features": [
+        "Automatic 'Off' collection",
+        "AL Quota Enforcement (reject & alert if exhausted)",
+        "Leave types: AL, UL, SL, PL, BT, Maternity"
+      ]
     },
     "M6_Shift_Roster_12h_Violation": {
       "status": "COMPLETED",
       "completion_pct": 100,
-      "features": ["Department Shift Scheduling", "12h Rest Violation Detector (e.g. Shift 2 -> Shift 1 = 8h)", "Pulsing Red Alert", "One-click Fix"]
+      "features": [
+        "Department Shift Scheduling",
+        "12h Rest Violation Detector (e.g. Shift 2 -> Shift 1 = 8h)",
+        "Pulsing Red Alert",
+        "One-click Fix"
+      ]
     },
     "M7_System_Settings_RBAC_i18n": {
       "status": "COMPLETED",
       "completion_pct": 100,
-      "features": ["6 RBAC Roles", "Dynamic Permission Matrix for AD System", "Diligence Reduction Settings", "VI/EN Toggle", "Database Reset"]
+      "features": [
+        "6 RBAC Roles",
+        "Dynamic Permission Matrix for AD System",
+        "Diligence Reduction Settings",
+        "VI/EN Toggle",
+        "Database Reset"
+      ]
     },
     "M8_Import_Export_Engine": {
       "status": "COMPLETED",
       "completion_pct": 100,
-      "features": ["Web Worker Stream Chunking for 20k rows", "ExcelJS Styled Exporter with Leggett.jpg logo and formulas"]
+      "features": [
+        "Web Worker Stream Chunking for 20k rows",
+        "ExcelJS Styled Exporter with Leggett.jpg logo and formulas"
+      ]
     },
     "M9_Dexie_v4_Hardening_2026_08_28": {
       "status": "COMPLETED",
@@ -377,7 +415,8 @@
         "Rui ro con lai (ngoai scope, theo thu tu report): applyRemoteMutation blind-put chua LWW (conflict hiem: dept so huu roster phong minh, Hoa so huu master); doi host mat journal (P0-3/P0-4); API LAN chua auth (P1-6)"
       ]
     },
-    "M24_Control_Panel_OneClick_2026_09_20": {      "status": "COMPLETED",
+    "M24_Control_Panel_OneClick_2026_09_20": {
+      "status": "COMPLETED",
       "completion_pct": 100,
       "features": [
         "Giu nguyen kien truc pipeline.md S4: SmartHR-BangDieuKhien.lnk -> wscript mo-ui.vbs -> node launcher-ui.js (:4179 loopback) -> spawn node server.js (:4173 LAN) -> browser 127.0.0.1:4179",
@@ -387,8 +426,20 @@
         "Them npm script control (node launcher-ui.js)",
         "Verify e2e that tren container (PORT=4183/MANAGER_PORT=4189): /api/status offline -> POST /api/start ok -> /api/health online -> /app 200 75MB dist -> POST /api/stop killedPid -> /api/quit; node --check launcher-ui.js + server.js OK"
       ]
+    },
+    "M30_Supabase_FullMigration_Cloudflare_2026_09_21": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "supabase/schema.sql: 14 tables snake_case, FK, partial indexes PENDING/violation, RLS 14/14 (TO authenticated + auth.uid), Realtime 7 bang + presence/broadcast; seed shift_classes/rbac_roles/lines/app_settings",
+        "src/lib: supabaseClient (VITE_* env, throw neu thieu), tables.ts (snake<->camel, TIME trim, LEGACY strip, CRUD + useLiveTable realtime), defaultSettings.ts (fallback)",
+        "AuthContext -> Supabase Auth (username@smarthr.local) + profiles; bo SHA-256 tay, seed tay; admin reset pass qua Dashboard",
+        "12 pages + Header/Sidebar/App migrate useLiveTable + bulkUpsert/updateByKey; xoa ShiftRosterPage chet (P1-8), viewModel received->realtime, Settings tab sync/LAN/smarthr -> cloud card",
+        "Xoa: src/db, db-seeder, db-sync, json-sync-service, lan-push-guard, password, server.js, launcher-ui.js, bat/vbs, make-shortcut, deploy-to-onedrive, embed-models, generated/embedded-manifest, dexie-react-hooks/singlefile/fake-indexeddb; giu dexie cho ocr-assets-store",
+        "Cloud-only build: bo viteSingleFile + prebuild base64, worker fetch model tu MODEL_BASE + Cache Storage, public/_headers COOP/COEP, copy-offline-assets giu, deploy Cloudflare Pages",
+        "Hien phap: agent/subagent/loop/pipeline/DEPLOY/report viet lai Supabase; xoa skill dexie-schema-architect + in-browser-backend-engine; learning KB-021",
+        "Verify: tsc 0 loi, vitest 7 files 116/116 pass"
+      ]
     }
   }
 }
-
-

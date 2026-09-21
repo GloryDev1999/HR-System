@@ -17,8 +17,8 @@ import {
   Table2,
   X
 } from 'lucide-react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../db';
+import { useLiveTable } from '../lib/tables';
+import type { IEmployee, IOvertimeRecord } from '../types';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 import { useAuth } from '../context/AuthContext';
@@ -27,7 +27,6 @@ import { OcrSpreadsheetPreview, SpreadsheetRow } from '../components/ocr/OcrSpre
 import { IExtractedFormRow, reconcileRows, commitVerifiedRows } from '../services/ocr-form-parser';
 import { runOcrPipeline } from '../services/ocr-worker-client';
 import type { OCRWorkerResult } from '../types/ocr-worker-protocol';
-import { IEmployee } from '../types';
 import { testONNXModelRuntime, IONNXModelHealthReport } from '../services/onnx-model-checker';
 import { isFileProtocol, putOcrAsset, guessOcrAssetKey, getStoredOcrAssetKeys, clearOcrAssets } from '../services/ocr-assets-store';
 import {
@@ -171,9 +170,9 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
 
   const canCommit = hasPermission('SCAN_OCR') || hasPermission('SCAN_DEPT_OCR');
 
-  // Live queries
-  const employees = useLiveQuery(() => db.employees.toArray(), []) || [];
-  const overtimeRecords = useLiveQuery(() => db.overtimeRecords.toArray(), []) || [];
+  // Live queries (Supabase realtime)
+  const employees = useLiveTable<IEmployee>('employees');
+  const overtimeRecords = useLiveTable<IOvertimeRecord>('overtimeRecords');
 
   // Dọn dẹp blob URL khi rời trang (cả single và batch queue, cache vĩnh viễn cho model đã tách riêng)
   useEffect(() => () => {
@@ -840,7 +839,7 @@ export const OCRVerificationPage: React.FC<OCRVerificationPageProps> = ({ onNavi
               Cấu hình chuẩn cho form LPVN-HR-F-0004 · Đánh máy, chữ ký viết tay
               {report.protocol === 'file' && (
                 <span className="block mt-1 font-bold text-amber-700">
-                  Chế độ file trực tiếp (không Worker) · Nguồn model: {report.assetSource === 'embedded' ? 'nhúng trong ứng dụng (chạy được file://)' : report.assetSource === 'idb' ? 'kho offline (IndexedDB)' : report.assetSource === 'mixed' ? 'kết hợp server + kho offline' : report.assetSource === 'server' ? 'thư mục PaddleOCR-Models' : 'chưa đủ — cần Nạp model offline'}
+                  Chế độ file trực tiếp (không Worker) · Nguồn model: {report.assetSource === 'idb' ? 'kho offline (IndexedDB)' : report.assetSource === 'mixed' ? 'kết hợp server + kho offline' : report.assetSource === 'server' ? 'hosting/Storage (PaddleOCR-Models)' : 'chưa đủ — cần Nạp model offline'}
                 </span>
               )}
             </div>

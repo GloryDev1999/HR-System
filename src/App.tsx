@@ -6,7 +6,6 @@ import { LanguageProvider } from './context/LanguageContext';
 import { Layout } from './components/layout/Layout';
 import { LoginScreen } from './components/auth/LoginScreen';
 import { NavPageId } from './components/layout/Sidebar';
-import { seedDatabaseIfEmpty } from './services/db-seeder';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
 
 // Pages
@@ -16,7 +15,6 @@ import { TimesheetCalendarPage } from './pages/TimesheetCalendarPage';
 import { ProductivityQualityPage } from './pages/ProductivityQualityPage';
 import { OvertimePage } from './pages/OvertimePage';
 import { LeavePendingPage } from './pages/LeavePendingPage';
-import { ShiftRosterPage } from './pages/ShiftRosterPage';
 import { ShiftAssignmentPage } from './pages/ShiftAssignmentPage';
 import { AttendanceViolationPage } from './pages/AttendanceViolationPage';
 import { OCRVerificationPage } from './pages/OCRVerificationPage';
@@ -30,10 +28,8 @@ const Shell: React.FC = () => {
   const [activePage, setActivePage] = useState<NavPageId>('dashboard');
   const isMasterUser = currentRole === 'AD System' || currentRole === 'HR Manager' || currentRole === 'HR Admin';
 
-  useEffect(() => {
-    // Seed initial data on startup if database is empty
-    seedDatabaseIfEmpty().catch(console.error);
-  }, []);
+  // Seed danh mục mặc định nằm trong supabase/schema.sql (shift_classes,
+  // rbac_roles, production_lines, app_settings) — không seed client-side nữa.
 
   // Tự động điều hướng user restricted (Vinh, Nguyet Anh, Han) vào đúng menu được cấp quyền khi đăng nhập
   useEffect(() => {
@@ -45,9 +41,6 @@ const Shell: React.FC = () => {
         } else if (hasPermission('VIEW_PRODUCTIVITY_QUALITY')) {
           setActivePage('productivityQuality');
         }
-      }
-      if (!isMasterUser && activePage === 'shiftRoster') {
-        setActivePage('shiftAssignment');
       }
     }
   }, [session, activePage, hasPermission, isMasterUser]);
@@ -68,7 +61,6 @@ const Shell: React.FC = () => {
       {activePage === 'productivityQuality' && <ProductivityQualityPage />}
       {activePage === 'overtime' && <OvertimePage onNavigate={setActivePage} />}
       {activePage === 'leavePending' && <LeavePendingPage />}
-      {activePage === 'shiftRoster' && <ShiftAssignmentPage />}
       {activePage === 'shiftAssignment' && <ShiftAssignmentPage />}
       {activePage === 'attendanceViolation' && <AttendanceViolationPage />}
       {activePage === 'ocrVerification' && <OCRVerificationPage onNavigate={setActivePage} />}

@@ -1,100 +1,76 @@
-# HƯỚNG DẪN PHÂN PHỐI — SmartHR Leggett & Platt
+# HƯỚNG DẪN DEPLOY CLOUD — SmartHR Leggett & Platt
 
-Mô hình: **1 máy ADMIN giữ repo gốc → nhiều máy CLIENT tự clone về → build → chạy local**.
-Không cần internet, không cài thêm phần mềm ngoài Node.js + Git, không thực thi file .exe nào của dự án.
+Mô hình: **Supabase Cloud (Postgres + Auth + Realtime + Storage) + Cloudflare Pages (static hosting)**.
+Không còn máy host LAN, không OneDrive JSON, không IndexedDB nghiệp vụ, không file `.lnk`/`.vbs`/`.bat`.
 
 ---
 
-## 1. Nguyên tắc kiến trúc (giữ nguyên 100%)
+## 1. Yêu cầu
 
-- Mỗi máy client có **bản sao độc lập**: source code + `dist/` build + dữ liệu IndexedDB riêng
-  (`HRSystem_LeggettPlatt_DB`) lưu trong trình duyệt của chính máy đó.
-- Máy ADMIN chỉ là **nguồn chuẩn về mã nguồn** (git). Không có dữ liệu nhân sự tập trung ở máy admin
-  trừ khi chủ động dùng tính năng Đồng Bộ OneDrive (xuất/nhập file JSON) để trao đổi dữ liệu.
-- Toàn bộ tính năng chạy offline trong browser: OCR ONNX, formula engine, export Excel.
+- Tài khoản **Supabase** (1 project, gói free đủ chạy) + quyền mở SQL Editor.
+- Tài khoản **Cloudflare** (Pages) + quyền tạo project Pages.
+- Máy build: **Git** + **Node.js ≥ 20**.
+- Không thực thi file `.exe` nào của dự án.
 
-## 2. Trên máy ADMIN — tạo kho phát hành (làm 1 lần)
+## 2. Tạo database: chạy `supabase/schema.sql` trong SQL Editor
 
-```bash
-# Trong thư mục dự án đã có sẵn:
-git clone --bare /path/to/hr-system.git          # hoặc init bare từ bản hiện tại
-# Ví dụ: git clone --bare . /srv/hr-admin.git
-```
+1. Mở Supabase Dashboard → project → **SQL Editor** → New query.
+2. Copy toàn bộ nội dung file `supabase/schema.sql` trong repo, paste và **Run**.
+3. Kiểm tra: đủ **14 tables** (`employees`, `profiles`, `shift_classes`, `rbac_roles`,
+   `raw_attendance_logs`, `daily_timesheets`, `overtime_records`, `leave_requests`,
+   `shift_rosters`, `production_lines`, `productivity_quality_rates`, `ocr_scans`,
+   `app_settings`, `user_audit_logs`), RLS bật mọi bảng.
+4. Kiểm tra advisors: **Database → Advisors** (Security + Performance) sạch 0 lỗi blocking.
 
-Chia sẻ thư mục chứa `hr-admin.git` cho client qua 1 trong 2 cách:
+## 3. Tạo 6 users + `profiles`
 
-| Cách | Lệnh clone phía client | Ghi chú |
-|---|---|---|
-| **SMB/Share mạng** (Windows phổ biến) | `git clone \\ADMIN-PC\share\hr-admin.git hr-system` | Không cần cài gì thêm |
-| **Git daemon** (đã có git) | `git daemon --base-path=/srv --export-all` rồi `git clone git://ADMIN-IP/hr-admin.git` | Port mặc định 9418 |
+1. **Authentication → Users → Add user**: tạo 6 acc
+   `kieu` / `hoa` / `vinh` / `nguyetanh` / `han` / `glory`
+   (email + password mạnh, bật **Auto Confirm** cho lần đầu).
+2. Với mỗi `auth.users.id` vừa tạo, insert dòng tương ứng vào `public.profiles`
+   (username, full_name, role/scope: kieu+glory = AD System, hoa = HR Manager,
+   vinh = Warehouse, han = Production, nguyetanh = QC).
+3. Đăng nhập thử 1 acc → vào app thấy đúng quyền theo ma trận `rbac_roles`.
 
-> Cấm đẩy nhánh chính trực tiếp nếu muốn kiểm soát: đặt `hr-admin.git/hooks/update.sample`
-> thành hook chỉ nhận fast-forward, hoặc quản lý qua tag phiên bản (`v1.x`).
+## 4. Cấu hình `.env`
 
-Phát hành phiên bản mới:
-
-```bash
-git tag v1.2 -m "Bản phát hành tháng X" && git push origin v1.2
-```
-
-## 3. Trên mỗi máy CLIENT — 2 lệnh là chạy được
-
-Yêu cầu máy client: **Git** + **Node.js ≥ 20** (không cần anything else).
+Tạo file `.env` ở root (không commit):
 
 ```bash
-git clone <đường-dẫn-kho-từ-admin> hr-system
-cd hr-system
-npm run setup        # = npm install + tsc + vite build + copy models vào dist/
-npm run serve        # phục vụ tại http://localhost:4173
+VITE_SUPABASE_URL=https://<project-ref>.supabase.co
+VITE_SUPABASE_ANON_KEY=<anon-public-key>
 ```
 
-Mở trình duyệt → `http://localhost:4173` → đăng nhập `admin / admin123` → **đổi mật khẩu ngay**.
+Lấy 2 giá trị tại Supabase Dashboard → **Project Settings → API**.
 
-Tạo icon desktop cho người dùng cuối (tuỳ chọn):
+## 5. Build
 
 ```bash
-npm run shortcut -- localhost     # sinh shortcuts/SmartHR.url kèm icon riêng
+npm install
+npm run build        # sinh dist/ multi-file
 ```
 
-Copy `SmartHR.url` + `smarthr-favicon.ico` ra Desktop là xong.
+Kiểm tra `dist/` có `index.html` + assets + `PaddleOCR-Models/`
+(det + rec + dict + ort wasm) và `public/_headers` (COOP/COEP cho ONNX WASM).
 
-### Cập nhật lên phiên bản mới
+## 6. Deploy `dist/` lên Cloudflare Pages
 
-```bash
-git pull origin main        # hoặc checkout tag: git fetch && git checkout v1.2
-npm run setup               # cài dependency mới (nếu có) + build lại
-# khởi động lại npm run serve
-```
+1. Cloudflare Dashboard → **Workers & Pages → Create → Pages → Upload assets**
+   (hoặc connect repo Git để auto-deploy mỗi push).
+2. Upload toàn bộ nội dung `dist/` (kèm `_headers`).
+3. Mở URL public `https://<project>.pages.dev` → đăng nhập Supabase Auth → dùng.
 
-## 4. Cam kết "không chạy .exe" — kết quả audit thật
+## 7. PaddleOCR-Models serve cùng `dist`
 
-Đã quét toàn bộ dự án:
+- Mặc định: thư mục `PaddleOCR-Models/` nằm cùng `dist/`, trình duyệt tải model
+  qua HTTPS + Cache Storage (không nhúng base64 vào bundle nữa).
+- Thay thế (tuỳ chọn): upload models lên **Supabase Storage** (bucket public),
+  trỏ `MODEL_BASE_URL` sang URL Storage.
+
+## 8. Cam kết "không chạy .exe" — kết quả audit
 
 | Hạng mục | Kết quả |
 |---|---|
 | File `.exe` trong repo / dist | **0** |
-| Quy trình runtime của app | Chỉ là trang web tĩnh do trình duyệt mở; engine AI là WASM chạy TRONG tab |
-| `npm run build` thực thi cái gì | `node.exe` chạy Vite 8/Rolldown + TypeScript — tất cả là module nạp **trong tiến trình node**, không spawn tiến trình .exe lạ |
-| Native binding từ npm | `@rolldown/binding-*`, `@tailwindcss/oxide-*` — là thư viện `.node/.dll` **chính thức có ký số của npm**, được nạp in-process (KHÔNG phải .exe độc lập). Nếu Falcon chặn load DLL chưa duyệt, cần IT whitelist đúng 2 package này |
-
-Lưu ý trung thực: `npm install` luôn tải binding theo hệ điều hành từ registry npm
-(máy client cần ra mạng LAN/internet được tới registry, hoặc admin dựng npm mirror nội bộ —
-ví dụ Verdaccio — nếu chính sách cấm ra ngoài).
-
-## 5. Dữ liệu & tài khoản — điều bắt buộc phải hiểu
-
-- Tài khoản đăng nhập, danh mục NV, chấm công… nằm trong **IndexedDB của từng máy**.
-  Clone repo KHÔNG mang theo dữ liệu (chỉ mang code) — mỗi chi nhánh/máy tự vận hành dữ liệu của mình.
-- Muốn chuyển/trộn dữ liệu giữa các máy: dùng nút **Đồng Bộ OneDrive** trong app
-  (xuất snapshot JSON → mang file → nhập, có validate + transaction).
-- Quên mật khẩu admin trên 1 máy: xoá dữ liệu trình duyệt cho site `localhost:4173`
-  (hoặc DevTools → IndexedDB → xoá `HRSystem_LeggettPlatt_DB`) rồi mở lại — hệ thống tự seed lại
-  tài khoản `admin/admin123`.
-
-## 6. Khắc phục nhanh
-
-| Hiện tượng | Xử lý |
-|---|---|
-| `http://localhost:4173` không vào được | Chưa chạy `npm run serve`, hoặc port bị chiếm → `npm run serve -- --port 5000` |
-| OCR báo lỗi tải model | Kiểm tra `dist/PaddleOCR-Models/` tồn tại (chạy lại `npm run build`) |
-| Falcon cảnh báo lúc `npm install/build` | Chỉ ra với IT: node.exe nạp DLL ký số npm (@rolldown, @tailwindcss/oxide) — không có exe lạ |
+| Quy trình runtime của app | Trang web tĩnh trên Cloudflare Pages; engine AI là WASM chạy TRONG tab |
+| Native binding từ npm | `@rolldown/binding-*`, `@tailwindcss/oxide-*` — thư viện `.node/.dll` **chính thức có ký số của npm**, nạp in-process (KHÔNG phải .exe độc lập) |

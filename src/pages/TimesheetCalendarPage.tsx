@@ -9,9 +9,8 @@ import {
   AlertTriangle,
   Trash2
 } from 'lucide-react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../db';
-import { IEmployee, IDailyTimesheetCell, AttendanceStatusCode } from '../types';
+import { useLiveTable, upsertOne, clearTable } from '../lib/tables';
+import type { IEmployee, IDailyTimesheetCell, IOvertimeRecord, IProductivityQualityRate, AttendanceStatusCode } from '../types';
 import { computeEmployeeTimesheetSummary } from '../services/formula-engine';
 import { generateCalendarDays, CalendarDay } from '../services/calendar-utils';
 import { formatPayPeriodLabel } from '../services/pay-period';
@@ -53,10 +52,10 @@ export const TimesheetCalendarPage: React.FC = () => {
     dateLabel: string;
   } | null>(null);
 
-  const employees = useLiveQuery(() => db.employees.toArray(), []) || [];
-  const timesheets = useLiveQuery(() => db.dailyTimesheets.toArray(), []) || [];
-  const overtimes = useLiveQuery(() => db.overtimeRecords.toArray(), []) || [];
-  const rates = useLiveQuery(() => db.productivityQualityRates.toArray(), []) || [];
+  const employees = useLiveTable<IEmployee>('employees');
+  const timesheets = useLiveTable<IDailyTimesheetCell>('dailyTimesheets');
+  const overtimes = useLiveTable<IOvertimeRecord>('overtimeRecords');
+  const rates = useLiveTable<IProductivityQualityRate>('productivityQualityRates');
 
   const handleClearTimesheetData = async () => {
     if (!hasPermission('MANAGE_TIMESHEET')) {
@@ -71,11 +70,11 @@ export const TimesheetCalendarPage: React.FC = () => {
       type: 'danger'
     });
     if (ok) {
-      await db.dailyTimesheets.clear();
-      await db.rawAttendanceLogs.clear();
-      await db.overtimeRecords.clear();
-      await db.leaveRequests.clear();
-      await db.shiftRosters.clear();
+      await clearTable('dailyTimesheets');
+      await clearTable('rawAttendanceLogs');
+      await clearTable('overtimeRecords');
+      await clearTable('leaveRequests');
+      await clearTable('shiftRosters');
       success('Đã làm sạch bảng chấm công', 'Toàn bộ dữ liệu bảng công, tăng ca, danh sách chờ bù phép và vi phạm ca đã được xóa sạch. Sẵn sàng nạp file nguồn mới.');
     }
   };
@@ -175,7 +174,7 @@ export const TimesheetCalendarPage: React.FC = () => {
         ? (activeEditCell.cell.violationNote || `Điều chỉnh thủ công sang mã vi phạm ${newCode}`)
         : undefined
     };
-    await db.dailyTimesheets.put(updated);
+    await upsertOne('dailyTimesheets', updated);
     success('Đã cập nhật công', `Nhân viên ${activeEditCell.employee.fullName} ngày ${activeEditCell.dateLabel} đã được chuyển sang mã "${newCode}".`);
     setActiveEditCell(null);
   };

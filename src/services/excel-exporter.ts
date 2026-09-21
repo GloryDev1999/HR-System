@@ -3,7 +3,8 @@ import { computeEmployeeTimesheetSummary } from './formula-engine';
 import { FORMULA_DEFS, PRODUCTIVITY_FORMULA, DILIGENCE_FORMULA } from './formula-defs';
 import { generateCalendarDays, CalendarDay } from './calendar-utils';
 import { formatPayPeriodLabel } from './pay-period';
-import { DEFAULT_SETTINGS, db } from '../db';
+import { DEFAULT_SETTINGS } from '../lib/defaultSettings';
+import { listAll } from '../lib/tables';
 
 type CycleMode = 'SEASONAL' | 'OFFICIAL' | 'ALL';
 
@@ -23,7 +24,7 @@ export async function exportTimesheetToExcel(
 
   let productivityQualityRates: IProductivityQualityRate[] = [];
   try {
-    productivityQualityRates = await db.productivityQualityRates.toArray();
+    productivityQualityRates = await listAll<IProductivityQualityRate>('productivityQualityRates');
   } catch (e) {
     console.warn('Failed to load productivityQualityRates for Excel export:', e);
   }

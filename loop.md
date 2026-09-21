@@ -1,6 +1,6 @@
 # OPERATING EXECUTION LOOP (LOOP.MD)
 
-Tài liệu quy chuẩn chu trình làm việc khép kín giữa **Coder (Agy CLI)** và các **Subagents QC Độc Lập** (`db-qc-architect` và `fe-formula-qc`), đảm bảo tính kiểm chứng, bài học ghi nhớ (`learning.md`) và kiểm soát chất lượng tuyệt đối trước khi sang Phase mới.
+Tài liệu quy chuẩn chu trình làm việc khép kín giữa **Coder (Agy CLI)** và các **Subagents QC Độc Lập** (`supabase-qc-architect` và `fe-formula-qc`), đảm bảo tính kiểm chứng, bài học ghi nhớ (`learning.md`) và kiểm soát chất lượng tuyệt đối trước khi sang Phase mới.
 
 ---
 
@@ -12,7 +12,7 @@ flowchart TD
     CoderExec --> SelfCheck[Coder tự kiểm tra: vitest & tsc --noEmit]
     SelfCheck --> HandoverQC{Loại Phase công việc?}
     
-    HandoverQC -->|Database / Schema / Migration| CallDBQC[Gọi Subagent: db-qc-architect]
+    HandoverQC -->|Database / Schema / Migration| CallDBQC[Gọi Subagent: supabase-qc-architect]
     HandoverQC -->|Frontend / UI / Formula / Settings| CallFEQC[Gọi Subagent: fe-formula-qc]
     
     CallDBQC --> ReviewDBResult{Kết quả Review DB?}
@@ -24,7 +24,7 @@ flowchart TD
     LogLearning1 --> FixBug1[Coder Agy CLI sửa lỗi]
     LogLearning2 --> FixBug2[Coder Agy CLI sửa lỗi]
     
-    FixBug1 --> ReCallDB[Gọi lại db-qc-architect re-review]
+    FixBug1 --> ReCallDB[Gọi lại supabase-qc-architect re-review]
     FixBug2 --> ReCallFE[Gọi lại fe-formula-qc re-review]
     
     ReCallDB --> ReviewDBResult
@@ -43,8 +43,8 @@ flowchart TD
 ## 2. Quy tắc giao tiếp & Điều hướng (Routing Rules)
 
 ### Quy tắc 1: Coder xong việc gì thì gọi ai?
-- **Khi hoàn thành các công việc liên quan Database** (Schema Dexie.js, Migration `v6 -> v7`, Data Types, Store Indexes, DB Tests):
-  👉 **BẮT BUỘC gọi Subagent `db-qc-architect`** để kiểm định độc lập.
+- **Khi hoàn thành các công việc liên quan Database** (SQL migration trong `supabase/schema.sql`, RLS policies, Indexes, Supabase advisors + test query):
+  👉 **BẮT BUỘC gọi Subagent `supabase-qc-architect`** để kiểm định độc lập.
 - **Khi hoàn thành các công việc liên quan Frontend & Formula** (Căn chỉnh CSS chống tràn chữ `EmployeeListPage`, Bảng chấm công `TimesheetCalendarPage`, Menu mới `ProductivityQualityPage`, Cấu hình `SettingsPage`, Công thức `formula-defs` & `formula-engine`):
   👉 **BẮT BUỘC gọi Subagent `fe-formula-qc`** để kiểm định độc lập.
 
@@ -69,6 +69,8 @@ flowchart TD
 ---
 
 ## 3. Phân rã Phase chi tiết cho đợt nâng cấp hiện tại
+
+> **Ghi chú 2026-09-21:** Bảng Phase A–E dưới đây là **lịch sử đã hoàn thành của kỷ nguyên Local-First** (Dexie.js IndexedDB) — giữ nguyên nội dung để tra cứu. Các phase mới nhắm vào `supabase/` (schema, RLS, migration) + deploy Cloudflare Pages, nghiệm thu bởi `supabase-qc-architect` (backend) và `fe-formula-qc` (frontend).
 
 | Phase | Nội dung công việc | Coder thực hiện | Subagent nghiệm thu | Tiêu chí PASS bắt buộc |
 |---|---|---|---|---|

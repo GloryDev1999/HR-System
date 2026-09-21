@@ -1,5 +1,6 @@
-import { db } from '../db';
 import { IUserAuditLog, AuditActionType, RoleType } from '../types';
+import { supabase } from '../lib/supabaseClient';
+import { convertRowToCamel } from '../lib/tables';
 
 export interface LogActionParams {
   username: string;
@@ -11,14 +12,13 @@ export interface LogActionParams {
 }
 
 /**
- * Ghi nhận một giao dịch / hoạt động của người dùng vào IndexedDB store userAuditLogs
+ * Ghi nhận một giao dịch / hoạt động của người dùng vào Supabase user_audit_logs
  */
 export async function logUserAction(params: LogActionParams): Promise<IUserAuditLog> {
-  const id = `LOG_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   const timestamp = new Date().toISOString();
 
   const entry: IUserAuditLog = {
-    id,
+    id: `LOG_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
     timestamp,
     username: params.username,
     displayName: params.displayName,
@@ -29,7 +29,16 @@ export async function logUserAction(params: LogActionParams): Promise<IUserAudit
   };
 
   try {
-    await db.userAuditLogs.put(entry);
+    const { error } = await supabase.from('user_audit_logs').insert({
+      id: entry.id,
+      username: entry.username,
+      display_name: entry.displayName,
+      role: entry.role,
+      action_type: entry.actionType,
+      target_entity: entry.targetEntity,
+      details: entry.details,
+    });
+    if (error) throw error;
   } catch (err) {
     console.error('Failed to write user audit log:', err);
   }
@@ -46,25 +55,28 @@ export async function getAuditLogs(options?: {
   limit?: number;
 }): Promise<IUserAuditLog[]> {
   try {
-    let collection = db.userAuditLogs.toCollection();
+    let q = supabase.from('user_audit_logs').select('*').order('created_at', { ascending: false });
 
     if (options?.username && options.username !== 'ALL') {
-      collection = db.userAuditLogs.where('username').equals(options.username);
-    } else if (options?.actionType && (options.actionType as string) !== 'ALL') {
-      collection = db.userAuditLogs.where('actionType').equals(options.actionType);
+      q = q.eq('username', options.username);
     }
-
-    let results = await collection.reverse().sortBy('timestamp');
-
-    if (options?.username && options.username !== 'ALL' && options?.actionType && (options.actionType as string) !== 'ALL') {
-      results = results.filter(r => r.actionType === options.actionType);
+    if (options?.actionType && (options.actionType as string) !== 'ALL') {
+      q = q.eq('action_type', options.actionType);
     }
-
     if (options?.limit && options.limit > 0) {
-      return results.slice(0, options.limit);
+      q = q.limit(options.limit);
+    } else {
+      q = q.limit(500);
     }
 
-    return results;
+    const { data, error } = await q;
+    if (error) throw error;
+    return ((data ?? []) as any[]).map((r) => {
+      const c = convertRowToCamel(r);
+      // bảng dùng created_at làm thời gian ghi; map về timestamp cho UI cũ
+      if (!c.timestamp && r.created_at) c.timestamp = r.created_at;
+      return c as IUserAuditLog;
+    });
   } catch (err) {
     console.error('Failed to query audit logs:', err);
     return [];

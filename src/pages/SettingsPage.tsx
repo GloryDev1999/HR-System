@@ -32,9 +32,8 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 import { RoleType, ISystemSettings } from '../types';
-import { DEFAULT_SETTINGS, db } from '../db';
-import { seedDatabaseIfEmpty } from '../services/db-seeder';
-import { jsonSyncService, ScanResult, IngestResult } from '../services/json-sync-service';
+import { DEFAULT_SETTINGS } from '../lib/defaultSettings';
+import { putSetting, clearTable } from '../lib/tables';
 
 export const SettingsPage: React.FC = () => {
   const { session, currentRole, systemSettings, refreshPermissions, hasPermission, changePassword } = useAuth();
@@ -45,98 +44,6 @@ export const SettingsPage: React.FC = () => {
   const canManageSystem = hasPermission('SYSTEM_SETTINGS');
 
   const [settings, setSettings] = useState<ISystemSettings>(systemSettings);
-
-  // Đồng bộ thuần JSON qua thư mục OneDrive HR_Data (phương án A dual-master)
-  const [hasSyncHandle, setHasSyncHandle] = useState(() => jsonSyncService.folder.hasHandle());
-  const [isSyncGranted, setIsSyncGranted] = useState(() => jsonSyncService.folder.isGranted());
-  const [syncFolderName, setSyncFolderName] = useState(() => jsonSyncService.folder.getFolderName());
-  const [scanResult, setScanResult] = useState<ScanResult | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
-  const [ingestingFile, setIngestingFile] = useState<string | null>(null);
-  const [lastIngest, setLastIngest] = useState<IngestResult | null>(null);
-
-  React.useEffect(() => {
-    return jsonSyncService.folder.onStatus((s) => {
-      setHasSyncHandle(s.hasHandle);
-      setSyncFolderName(s.folderName);
-      setIsSyncGranted(s.granted);
-    });
-  }, []);
-
-  React.useEffect(() => {
-    if (!hasSyncHandle || !isSyncGranted) return;
-    return jsonSyncService.startAutoScan((r) => setScanResult(r), 8000);
-  }, [hasSyncHandle, isSyncGranted]);
-
-  const handleConnectSyncFolder = async () => {
-    try {
-      const ok = await jsonSyncService.folder.connect();
-      if (ok) {
-        success('Đã liên kết thư mục', `Đã kết nối "${jsonSyncService.folder.getFolderName()}". Chỉ cần cấp quyền 1 lần.`);
-        await handleScanNow();
-      }
-    } catch (err: any) {
-      if (err?.name !== 'AbortError') error('Lỗi chọn thư mục', err?.message || 'Không thể liên kết.');
-    }
-  };
-
-  const handleScanNow = async () => {
-    setIsScanning(true);
-    try {
-      const r = await jsonSyncService.scanFolder();
-      setScanResult(r);
-    } catch (err: any) {
-      error('Quét thất bại', err?.message || 'Không đọc được thư mục.');
-    } finally {
-      setIsScanning(false);
-    }
-  };
-
-  const handleIngest = async (file: string, kind: 'dept' | 'master') => {
-    if (!session) return;
-    setIngestingFile(file);
-    try {
-      const res = kind === 'dept'
-        ? await jsonSyncService.ingestDeptFile(file, { username: session.username, displayName: session.displayName })
-        : await jsonSyncService.ingestMasterFile(file, { username: session.username, displayName: session.displayName });
-      setLastIngest(res);
-      if (res.blocked.length > 0) warning('Có NV bị chặn', `${res.note}. Chặn ${res.blocked.length} NV trùng ERP — cần xử lý tay.`);
-      else if (res.conflicts.length > 0) warning('Có conflict', `${res.note}. Conflict ${res.conflicts.length} (auto kieu>hoa).`);
-      else success('Tiếp nhận xong', `${res.note}. Áp dụng ${res.applied}.`);
-      await handleScanNow();
-    } catch (err: any) {
-      error('Tiếp nhận thất bại', err?.message || 'Không merge được.');
-    } finally {
-      setIngestingFile(null);
-    }
-  };
-
-  const handleExportMaster = async () => {
-    if (!session) return;
-    try {
-      const { file, masterVersion } = await jsonSyncService.exportMasterFile(session.username);
-      success('Đã xuất master', `File ${file} v${masterVersion} đã ghi vào HR_Data.`);
-      await handleScanNow();
-    } catch (err: any) {
-      error('Xuất master thất bại', err?.message || 'Chỉ kieu/hoa mới xuất master.');
-    }
-  };
-
-  const handleExportDept = async () => {
-    if (!session) return;
-    try {
-      const { file, counts } = await jsonSyncService.exportDeptFile(session.username, session.displayName);
-      success('Đã xuất file dept', `${file}: ${counts.shiftRosters} ca + ${counts.rates} rates.`);
-      await handleScanNow();
-    } catch (err: any) {
-      error('Xuất dept thất bại', err?.message || 'Chỉ vinh/nguyetanh/han mới xuất dept.');
-    }
-  };
-
-  // Sync when AuthContext updates (Dexie live)
-  React.useEffect(() => {
-    setSettings(systemSettings);
-  }, [systemSettings]);
 
   // Đổi mật khẩu tài khoản hiện tại
   const [pwCurrent, setPwCurrent] = useState('');
@@ -163,247 +70,10 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
-  const [activeTab, setActiveTab] = useState<'rbac' | 'diligence' | 'formula' | 'sync' | 'system' | 'lan-server'>('rbac');
+  const [activeTab, setActiveTab] = useState<'rbac' | 'diligence' | 'formula' | 'system' | 'cloud'>('rbac');
   const [serverHealth, setServerHealth] = useState<LanServerHealth | null>(null);
   const [isPinging, setIsPinging] = useState(false);
   const [lanOnlineUsers, setLanOnlineUsers] = useState<LanOnlineUser[]>([]);
-  const [copiedIp, setCopiedIp] = useState<string | null>(null);
-  const [isStartingServer, setIsStartingServer] = useState(false);
-
-  // ---- One-click kich hoat: noi dung file register BAT ban ASCII-only (khong dau) ----
-  // LUU Y HIEN PHAP: trinh duyet KHONG the tu chay .bat/.vbs (sandbox + Falcon EDR chan
-  // auto-execution). Flow hop le duy nhat: 1 click tai file/copy lenh (user consent) ->
-  // user double-click 1 lan duy nhat -> tu do nut Kich Hoat moi chay ngam that su qua smarthr://.
-  // File .bat BAT BUOC ASCII-only + CRLF, chi ghi HKCU, khong Admin, khong HKLM, khong Startup.
-  const REGISTER_BAT_LINES: string[] = [
-    '@echo off',
-    'REM ============================================================',
-    'REM  SmartHR Enterprise - Dang ky giao thuc smarthr://',
-    'REM  Falcon EDR Safe 100%% - Chi ghi HKCU, khong can Admin',
-    'REM  QUAN TRONG: File nay BAT BUOC luu dang ASCII (khong dau).',
-    'REM  Khong luu UTF-8 co dau - cmd.exe se bao loi font.',
-    'REM  Duong dan OneDrive co dau & (vd Leggett & Platt) -> BAT BUOC',
-    'REM  dung Delayed Expansion (!VAR!) de ky tu dac biet an toan.',
-    'REM ============================================================',
-    'setlocal EnableDelayedExpansion',
-    'chcp 65001 >nul',
-    'title SmartHR - Register smarthr protocol (Falcon EDR Safe)',
-    '',
-    'echo ============================================================',
-    'echo   SmartHR Enterprise - Dang ky giao thuc smarthr://',
-    'echo   (Khong yeu cau quyen Admin, khong khoa cung ten User)',
-    'echo ============================================================',
-    'echo.',
-    '',
-    'set "SCRIPT_DIR=%~dp0"',
-    'set "VBS_PATH=%SCRIPT_DIR%start-server-hidden.vbs"',
-    '',
-    'if not exist "%VBS_PATH%" (',
-    '    echo [LOI] Khong tim thay file start-server-hidden.vbs trong thu muc:',
-    '    echo "%SCRIPT_DIR%"',
-    '    echo.',
-    '    pause',
-    '    exit /b 1',
-    ')',
-    '',
-    'echo Duong dan file kich hoat:',
-    'echo "%VBS_PATH%"',
-    'echo.',
-    'echo Dang dang ky giao thuc smarthr:// vao HKCU\\Software\\Classes...',
-    '',
-    'reg add "HKCU\\Software\\Classes\\smarthr" /ve /d "URL:SmartHR Server Launcher" /f >nul',
-    'reg add "HKCU\\Software\\Classes\\smarthr" /v "URL Protocol" /d "" /f >nul',
-    'reg add "HKCU\\Software\\Classes\\smarthr\\shell" /f >nul',
-    'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open" /f >nul',
-    'REM Dung !VBS_PATH! (Delayed Expansion) thay %VBS_PATH% de dau & trong',
-    'REM duong dan OneDrive (vd Leggett & Platt) khong bi cat lenh.',
-    'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open\\command" /ve /d "wscript.exe \\"!VBS_PATH!\\" \\"%%1\\"" /f >nul',
-    '',
-    'if %errorlevel% equ 0 (',
-    '    echo.',
-    '    echo ============================================================',
-    '    echo   [THANH CONG] Da dang ky giao thuc smarthr:// thanh cong!',
-    '    echo ============================================================',
-    '    echo   - Nguoi dung: %USERNAME%',
-    '    echo   - Thu muc:    %SCRIPT_DIR%',
-    '    echo   - An toan:    Chi ghi vao HKCU (User Registry, 0 can thiep Admin)',
-    '    echo.',
-    '    echo Gia tri lenh da luu trong Registry (kiem tra duong dan day du):',
-    '    reg query "HKCU\\Software\\Classes\\smarthr\\shell\\open\\command" /ve',
-    '    echo.',
-    '    echo Bay gio ban co the bam nut "Kich Hoat Server" truc tiep tu',
-    '    echo muc Cai Dat tren trinh duyet Web ma khong can mo thu muc!',
-    '    echo.',
-    ') else (',
-    '    echo.',
-    '    echo [THAT BAI] Co loi khi them khoa Registry.',
-    ')',
-    '',
-    'pause',
-    '',
-  ];
-
-  const REGISTER_CMDS_TEMPLATE: string = [
-    'REM Chay trong CMD tai dung thu muc chua start-server-hidden.vbs',
-    'REM Thay C:\\DUONG\\DAN\\DEN\\THU-MUC-DU-AN bang duong dan that tren may anh',
-    'REM Dong setlocal bat buoc neu duong dan co dau & (vd OneDrive - Leggett & Platt)',
-    'setlocal EnableDelayedExpansion',
-    'set "VBS_PATH=C:\\DUONG\\DAN\\DEN\\THU-MUC-DU-AN\\start-server-hidden.vbs"',
-    'reg add "HKCU\\Software\\Classes\\smarthr" /ve /d "URL:SmartHR Server Launcher" /f',
-    'reg add "HKCU\\Software\\Classes\\smarthr" /v "URL Protocol" /d "" /f',
-    'reg add "HKCU\\Software\\Classes\\smarthr\\shell" /f',
-    'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open" /f',
-    'reg add "HKCU\\Software\\Classes\\smarthr\\shell\\open\\command" /ve /d "wscript.exe \\"!VBS_PATH!\\" \\"%1\\"" /f',
-  ].join('\r\n');
-
-  const handleDownloadRegisterBat = () => {
-    try {
-      const blob = new Blob([REGISTER_BAT_LINES.join('\r\n')], { type: 'text/plain;charset=ascii' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'register-protocol-FIXED.bat';
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        try {
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        } catch {}
-      }, 1000);
-      success(
-        'Đã tải file kích hoạt bản fix lỗi font',
-        'File register-protocol-FIXED.bat (ASCII-only). Anh chuột phải → Merge/Double-click 1 lần duy nhất, không cần quyền Admin.'
-      );
-    } catch {
-      error('Không tải được file', 'Trình duyệt đã chặn download. Hãy dùng nút Copy lệnh HKCU bên cạnh.');
-    }
-  };
-
-  const handleCopyRegisterCommands = async () => {
-    try {
-      await navigator.clipboard.writeText(REGISTER_CMDS_TEMPLATE);
-      success(
-        'Đã sao chép lệnh đăng ký HKCU',
-        'Mở CMD tại thư mục dự án, sửa đường dẫn VBS_PATH cho đúng rồi Paste + Enter từng dòng.'
-      );
-    } catch {
-      warning(
-        'Không sao chép tự động được',
-        'Trình duyệt chặn clipboard. Hãy mở file register-protocol-FIXED.bat bằng Notepad để copy thủ công.'
-      );
-    }
-  };
-
-  const handleOpenRegisterHelp = () => {
-    openCustomModal(
-      'Kích hoạt Server 1-Click — Khắc phục lỗi font & mở thư mục cấp quyền',
-      (
-        <div className="space-y-3 text-sm text-slate-700 leading-relaxed">
-          <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs">
-            <div className="font-bold text-rose-900">Vì sao anh gặp lỗi 'Thức', 'SCRIPT_DIR"', 'cript.exe'...?</div>
-            <p className="mt-1 text-rose-800">
-              File <code className="font-mono font-bold">register-protocol.bat</code> cũ có 2 lỗi: (1) lưu dạng UTF-8 có dấu nên cmd.exe chẻ ký tự đa byte thành rác
-              ('Thức', 'SCRIPT_DIR"', 'cript.exe'...); (2) đường dẫn OneDrive chứa dấu <code className="font-mono font-bold">&</code> (vd{' '}
-              <code className="font-mono">OneDrive - Leggett & Platt</code>) bị cmd.exe hiểu là dấu ngắt lệnh, gây lỗi{' '}
-              <code className="font-mono">'Platt' is not recognized</code> và báo [THẤT BẠI] giả dù reg đã ghi. Bản fix dùng ASCII-only + CRLF +{' '}
-              <code className="font-mono">setlocal EnableDelayedExpansion</code> với <code className="font-mono">!VBS_PATH!</code> để ký tự đặc biệt an toàn,
-              kèm lệnh <code className="font-mono">reg query</code> in giá trị đã lưu ra màn hình để anh đối chiếu.
-            </p>
-          </div>
-          <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs">
-            <div className="font-bold text-amber-900">Vì sao web không thể “tự chạy file” khi bấm 🚀?</div>
-            <p className="mt-1 text-amber-800">
-              Trình duyệt bị sandbox chặn thực thi file cục bộ — nếu bypass được thì đó chính là lỗ hổng mà Falcon EDR bắt buộc chặn
-              (Living-off-the-Land / auto-execution). Chính sách Falcon nghiêm ngặt yêu cầu <b>user phải double-click xác nhận 1 lần duy nhất</b> (user consent).
-              Sau lần đó, nút <b>🚀 Kích Hoạt Server (Chạy Ngầm)</b> mới chạy ngầm thật sự qua giao thức <code className="font-mono">smarthr://</code> mà không cần mở thư mục nữa.
-            </p>
-          </div>
-          <ol className="list-decimal ml-5 space-y-1.5 text-xs">
-            <li><b>Bước 1:</b> Bấm <b>“Tải file kích hoạt (fix lỗi font)”</b> bên dưới → được file <code className="font-mono">register-protocol-FIXED.bat</code> (ASCII-only, chỉ ghi HKCU, không cần Admin).</li>
-            <li><b>Bước 2:</b> Mở thư mục Downloads → chuột phải file → <b>Run / Merge</b> (hoặc double-click) 1 lần duy nhất. Cho phép ghi Registry HKCU của chính tài khoản khi Windows hỏi.</li>
-            <li><b>Bước 3:</b> Quay lại web, bấm <b>🚀 Kích Hoạt Server (Chạy Ngầm)</b> → trình duyệt đánh thức <code className="font-mono">start-server-hidden.vbs</code> chạy Node.js ẩn hoàn toàn (không hiện CMD đen).</li>
-            <li><b>Dự phòng không cần file:</b> Bấm <b>“Copy lệnh HKCU”</b> → mở CMD tại thư mục dự án → sửa đường dẫn VBS_PATH → Paste từng dòng.</li>
-          </ol>
-          <p className="text-[11px] italic text-slate-500">
-            Falcon-safe: chỉ ghi HKCU\Software\Classes\smarthr của user hiện tại, không HKLM, không quyền Admin, không Startup/Scheduled Task,
-            không PowerShell bypass, không khóa cứng tên User. Muốn gỡ: chạy unregister-protocol.bat.
-          </p>
-        </div>
-      ),
-      (
-        <>
-          <button
-            onClick={handleDownloadRegisterBat}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Tải file kích hoạt (fix lỗi font)</span>
-          </button>
-          <button
-            onClick={handleCopyRegisterCommands}
-            className="px-4 py-2 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl transition flex items-center gap-1.5"
-          >
-            <Copy className="w-3.5 h-3.5" />
-            <span>Copy lệnh HKCU</span>
-          </button>
-          <button
-            onClick={closeCustomModal}
-            className="px-4 py-2 text-xs font-medium text-slate-500 hover:bg-slate-100 rounded-xl transition"
-          >
-            Đóng
-          </button>
-        </>
-      )
-    );
-  };
-
-  const handleLaunchServerProtocol = () => {
-    if (isStartingServer) return;
-    setIsStartingServer(true);
-
-    try {
-      const iframe = document.createElement('iframe');
-      iframe.style.display = 'none';
-      iframe.src = 'smarthr://start';
-      document.body.appendChild(iframe);
-      setTimeout(() => {
-        try {
-          document.body.removeChild(iframe);
-        } catch {}
-      }, 2000);
-    } catch {
-      window.location.href = 'smarthr://start';
-    }
-
-    let attempts = 0;
-    const maxAttempts = 6;
-    const pollInterval = setInterval(async () => {
-      attempts++;
-      const health = await lanSyncService.checkServerHealth();
-      if (health?.status === 'online') {
-        clearInterval(pollInterval);
-        setIsStartingServer(false);
-        setServerHealth(health);
-        success(
-          'Máy chủ đã khởi động thành công!',
-          `Server đang chạy ngầm trên cổng ${health.port}. Đã sẵn sàng kết nối mạng LAN.`
-        );
-      } else if (attempts >= maxAttempts) {
-        clearInterval(pollInterval);
-        setIsStartingServer(false);
-        warning(
-          'Chưa phát hiện máy chủ',
-          'Giao thức smarthr:// chưa được đăng ký (thường do file BAT cũ lỗi font UTF-8). Đang mở hộp hướng dẫn 1-click fix lỗi font.'
-        );
-        info(
-          'Mẹo one-click Falcon-safe',
-          'Bấm "Tải file kích hoạt" trong hộp thoại → double-click 1 lần duy nhất (HKCU, không Admin) → bấm lại nút 🚀.'
-        );
-        handleOpenRegisterHelp();
-      }
-    }, 1000);
-  };
 
   React.useEffect(() => {
     lanSyncService.checkServerHealth().then(h => setServerHealth(h));
@@ -423,27 +93,15 @@ export const SettingsPage: React.FC = () => {
       const h = await lanSyncService.checkServerHealth();
       setServerHealth(h);
       if (h?.status === 'online') {
-        success('Máy chủ trực tuyến', `Độ trễ phản hồi: ${h.latencyMs}ms. Cổng: ${h.port}.`);
+        success('Supabase trực tuyến', `Độ trễ phản hồi: ${h.latencyMs}ms.`);
       } else {
-        warning('Máy chủ ngoại tuyến', 'Không thể kết nối đến máy chủ LAN. Vui lòng chạy start-server.bat hoặc start-server-hidden.vbs.');
+        warning('Supabase ngoại tuyến', 'Không thể kết nối Supabase. Kiểm tra mạng và VITE_SUPABASE_URL/ANON_KEY trong .env.');
       }
     } catch {
       error('Lỗi kết nối', 'Không thể ping máy chủ.');
     } finally {
       setIsPinging(false);
     }
-  };
-
-  const handleCopyLink = (url: string) => {
-    navigator.clipboard.writeText(url);
-    setCopiedIp(url);
-    success('Đã sao chép liên kết', url);
-    setTimeout(() => setCopiedIp(null), 2000);
-  };
-
-  const handleManualCatchUp = async () => {
-    await lanSyncService.pullCatchUp();
-    success('Đã kéo bù dữ liệu', 'Đã kiểm tra và đồng bộ các thay đổi mới nhất từ máy chủ LAN.');
   };
 
   const rolesList: RoleType[] = [
@@ -469,12 +127,11 @@ export const SettingsPage: React.FC = () => {
 
   const persistSettings = async (updated: ISystemSettings) => {
     setSettings(updated);
-    localStorage.setItem('smarthr_settings', JSON.stringify(updated));
     try {
-      await db.settings.put({ key: 'systemSettings', value: updated });
+      await putSetting('systemSettings', updated);
       await refreshPermissions();
     } catch (e) {
-      console.warn('Dexie settings persist failed', e);
+      console.warn('Supabase settings persist failed', e);
     }
   };
 
@@ -503,12 +160,12 @@ export const SettingsPage: React.FC = () => {
     };
 
     await persistSettings(updatedSettings);
-    success('Đã cập nhật phân quyền (Dexie + localStorage)', `Quyền ${permId} cho vai trò ${role} đã được cập nhật và đồng bộ vào IndexedDB.`);
+    success('Đã cập nhật phân quyền (Supabase)', `Quyền ${permId} cho vai trò ${role} đã được cập nhật và đồng bộ realtime tới mọi máy.`);
   };
 
   const handleSaveDiligenceRules = async () => {
     await persistSettings(settings);
-    success('Đã lưu cấu hình chuyên cần', 'Tỷ lệ giảm trừ tiền chuyên cần đã được áp dụng toàn hệ thống và đồng bộ Dexie.');
+    success('Đã lưu cấu hình chuyên cần', 'Tỷ lệ giảm trừ tiền chuyên cần đã được áp dụng toàn hệ thống và đồng bộ Supabase.');
   };
 
   const handleSaveFormula = async () => {
@@ -518,23 +175,27 @@ export const SettingsPage: React.FC = () => {
 
   const handleResetDatabase = async () => {
     if (!canManageSystem) {
-      warning('Không đủ quyền', 'Chỉ tài khoản có quyền SYSTEM_SETTINGS mới được khôi phục dữ liệu.');
+      warning('Không đủ quyền', 'Chỉ tài khoản có quyền SYSTEM_SETTINGS mới được làm sạch dữ liệu.');
       return;
     }
     const ok = await confirm({
-      title: 'Khôi phục dữ liệu mặc định',
-      message: 'Hành động này sẽ xóa toàn bộ dữ liệu hiện tại trong IndexedDB và nạp lại dữ liệu chuẩn từ file KIỂM TRA CHÔT CÔNG THÁNG 08.2026.xlsx. Bạn có chắc chắn không?',
+      title: 'Làm sạch dữ liệu giao dịch',
+      message: 'Hành động này sẽ xóa toàn bộ dữ liệu chấm công, tăng ca, nghỉ phép, sắp ca, OCR và nhật ký trên Supabase (giữ lại danh mục nhân viên, ca, quyền, chuyền và cấu hình). Bạn có chắc chắn không?',
       type: 'danger',
-      confirmText: 'Khôi phục ngay',
+      confirmText: 'Làm sạch ngay',
       cancelText: 'Hủy bỏ'
     });
 
     if (ok) {
-      await db.delete();
-      await db.open();
-      await seedDatabaseIfEmpty();
+      await clearTable('dailyTimesheets');
+      await clearTable('overtimeRecords');
+      await clearTable('rawAttendanceLogs');
+      await clearTable('leaveRequests');
+      await clearTable('shiftRosters');
+      await clearTable('ocrScans');
+      await clearTable('userAuditLogs');
       await refreshPermissions();
-      success('Khôi phục dữ liệu thành công', 'Toàn bộ danh mục nhân viên và bảng chốt công đã được đồng bộ lại.');
+      success('Làm sạch thành công', 'Dữ liệu giao dịch đã xóa. Nạp file chấm công mới từ thanh header để tiếp tục.');
     }
   };
 
@@ -607,27 +268,15 @@ export const SettingsPage: React.FC = () => {
         </button>
 
         <button
-          onClick={() => setActiveTab('sync')}
+          onClick={() => setActiveTab('cloud')}
           className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
-            activeTab === 'sync'
-              ? 'bg-slate-900 text-white shadow-sm'
-              : 'text-slate-600 hover:bg-slate-100'
-          }`}
-        >
-          <FileJson className="w-4 h-4 text-cyan-400" />
-          <span>Đồng Bộ JSON (OneDrive HR_Data)</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('lan-server')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
-            activeTab === 'lan-server'
+            activeTab === 'cloud'
               ? 'bg-slate-900 text-white shadow-sm'
               : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
           <Wifi className="w-4 h-4 text-emerald-400" />
-          <span>Máy Chủ & Đồng Bộ LAN Realtime</span>
+          <span>Kết Nối Supabase Realtime</span>
           {lanOnlineUsers.length > 0 && (
             <span className="px-1.5 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-bold">
               {lanOnlineUsers.length}
@@ -1107,122 +756,10 @@ export const SettingsPage: React.FC = () => {
         </div>
       )}
 
-      {/* Tab: Đồng bộ JSON thuần qua OneDrive HR_Data (phương án A) */}
-      {activeTab === 'sync' && (
-        <div className="space-y-6">
-          <div className="bg-gradient-to-r from-emerald-950 via-teal-900 to-emerald-950 text-white p-6 rounded-2xl border border-emerald-800/50 shadow-xl">
-            <h3 className="text-base font-bold flex items-center gap-2">
-              <FileJson className="w-5 h-5 text-emerald-300" />
-              <span>Đồng Bộ Thuần JSON — 2 Master (kieu + hoa) + 3 File Dept Riêng</span>
-            </h3>
-            <p className="text-xs text-emerald-100/80 mt-1">
-              Không realtime RTC. Mỗi user chỉ ghi file của mình. kieu/hoa quét + merge LWW (kieu &gt; hoa khi cùng giờ). NV không bao giờ bị xóa khi merge.
-            </p>
-            <div className="mt-3 p-3 bg-white/5 rounded-xl border border-white/10 text-xs font-mono">
-              HR_Data/ master_kieu.json · master_hoa.json · dept_WH_vinh.json · dept_QC_nguyetanh.json · dept_PRD_han.json
-            </div>
-          </div>
-
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 flex-wrap gap-2">
-              <h4 className="text-sm font-bold text-slate-900">Thư mục đồng bộ (cấp quyền 1 lần)</h4>
-              <span className="text-xs text-slate-400">Handle lưu IndexedDB — lần sau chỉ 1 click</span>
-            </div>
-            <div className="flex items-center gap-2 flex-wrap text-xs">
-              <span className={`px-2.5 py-1 rounded-full font-bold border ${hasSyncHandle && isSyncGranted ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-amber-50 text-amber-800 border-amber-300'}`}>
-                {hasSyncHandle && isSyncGranted ? `Đã kết nối: ${syncFolderName}` : hasSyncHandle ? `Cần cấp quyền: ${syncFolderName}` : 'Chưa chọn thư mục HR_Data'}
-              </span>
-              <button onClick={handleConnectSyncFolder} className="flex items-center gap-1.5 px-4 py-2 rounded-xl font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition">
-                <Folder className="w-4 h-4 text-amber-500" />
-                <span>{hasSyncHandle && !isSyncGranted ? 'Cấp Quyền (1 click)' : 'Chọn Thư Mục HR_Data'}</span>
-              </button>
-              <button onClick={handleScanNow} disabled={isScanning || !isSyncGranted} className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl transition disabled:opacity-50">
-                {isScanning ? 'Đang quét...' : 'Quét Ngay'}
-              </button>
-            </div>
-            {!hasSyncHandle && (
-              <p className="text-[11px] text-slate-500">Tạo thư mục <b>HR_Data</b> trong OneDrive dùng chung, bấm nút trên 1 lần duy nhất trên mỗi máy.</p>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3">
-              <h4 className="text-sm font-bold text-slate-900">Xuất dữ liệu của tôi</h4>
-              {session && jsonSyncService.isMasterUser(session.username) ? (
-                <div className="space-y-2 text-xs">
-                  <p className="text-slate-500">kieu/hoa xuất toàn bộ master (tăng version, không đè file nhau).</p>
-                  <button onClick={handleExportMaster} className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-bold rounded-xl shadow-sm">
-                    <Upload className="w-4 h-4" /><span>Xuất Master Của Tôi</span>
-                  </button>
-                </div>
-              ) : session && jsonSyncService.getDeptFilename(session.username) ? (
-                <div className="space-y-2 text-xs">
-                  <p className="text-slate-500">Dept Admin chỉ xuất file dept thuộc phòng mình.</p>
-                  <button onClick={handleExportDept} className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-bold rounded-xl shadow-sm">
-                    <Upload className="w-4 h-4" /><span>Xuất File Dept Của Tôi</span>
-                  </button>
-                </div>
-              ) : (
-                <p className="text-xs text-slate-500">Tài khoản hiện tại không thuộc nhóm sync dept/master.</p>
-              )}
-              <div className="pt-2 border-t border-slate-100 text-[11px] text-slate-500">
-                Fallback không cần thư mục: dùng nút tải file / upload trong Header (Quét JSON) khi OneDrive chưa kịp sync.
-              </div>
-            </div>
-
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3">
-              <h4 className="text-sm font-bold text-slate-900">File chờ xử lý</h4>
-              {!scanResult ? (
-                <p className="text-xs text-slate-500">Bấm “Quét Ngay” để liệt kê file dept/master mới.</p>
-              ) : (scanResult.pendingDept.length + scanResult.pendingMaster.length === 0 && scanResult.conflictCopies.length === 0) ? (
-                <p className="text-xs text-emerald-700 font-semibold flex items-center gap-1"><CheckCircle2 className="w-4 h-4" /> Đã đồng bộ, không có file mới.</p>
-              ) : (
-                <div className="space-y-2 max-h-[260px] overflow-y-auto">
-                  {scanResult.pendingDept.map((it) => (
-                    <div key={it.file} className="p-2.5 border border-slate-200 rounded-xl flex items-center justify-between gap-2 text-xs">
-                      <div><div className="font-mono font-bold">{it.file}</div><div className="text-slate-500">{it.note}</div></div>
-                      <button disabled={ingestingFile === it.file} onClick={() => handleIngest(it.file, 'dept')} className="px-3 py-1.5 bg-emerald-600 text-white font-bold rounded-xl disabled:opacity-50 shrink-0">
-                        {ingestingFile === it.file ? '...' : 'Tiếp Nhận'}
-                      </button>
-                    </div>
-                  ))}
-                  {scanResult.pendingMaster.map((it) => (
-                    <div key={it.file} className="p-2.5 border border-indigo-200 bg-indigo-50/50 rounded-xl flex items-center justify-between gap-2 text-xs">
-                      <div><div className="font-mono font-bold text-indigo-900">{it.file}</div><div className="text-slate-500">{it.note}</div></div>
-                      <button disabled={ingestingFile === it.file} onClick={() => handleIngest(it.file, 'master')} className="px-3 py-1.5 bg-indigo-600 text-white font-bold rounded-xl disabled:opacity-50 shrink-0">
-                        {ingestingFile === it.file ? '...' : 'Merge'}
-                      </button>
-                    </div>
-                  ))}
-                  {scanResult.conflictCopies.map((f) => (
-                    <div key={f} className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-[11px] font-semibold">Conflict copy: <code className="font-mono">{f}</code> — nhờ kieu xử lý tay.</div>
-                  ))}
-                </div>
-              )}
-              {lastIngest && (
-                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] text-slate-600">
-                  Lần nhận gần nhất: <b>{lastIngest.file}</b> — áp dụng {lastIngest.applied}, bỏ qua {lastIngest.skipped}, conflict {lastIngest.conflicts.length}, chặn {lastIngest.blocked.length}.
-                  {lastIngest.blocked.slice(0, 3).map((b) => (<div key={b.pk} className="text-rose-700">• {b.reason}</div>))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="p-5 bg-amber-50/60 border border-amber-200 rounded-2xl text-xs text-amber-900 space-y-1.5">
-            <p className="font-bold">An toàn NV cũ/mới (bắt buộc):</p>
-            <p>• employeeId bất biến, cấm tái sử dụng. Nghỉ việc chỉ đổi status RESIGNED, không xóa.</p>
-            <p>• NV mới trùng mã ERP bị chặn tự động, kieu xử lý tay.</p>
-            <p>• Ai sửa được truy vết qua _sync.by + nhật ký audit (TIMESHEET_EDIT / ASSIGN_SHIFT / UPDATE_RATE_*).</p>
-            <p>• han (NS) và nguyetanh (CL) sửa cùng ngày-line không mất nhau nhờ merge theo field.</p>
-          </div>
-        </div>
-      )}
-
-      {/* Tab Content 5: LAN Server & Realtime Sync */}
-      {activeTab === 'lan-server' && (
+      {activeTab === 'cloud' && (
         <div className="space-y-6 animate-in fade-in duration-200">
           {/* Header Card */}
-          <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white p-6 rounded-2xl shadow-sm border border-slate-700/50 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-emerald-950 text-white p-6 rounded-2xl shadow-sm border border-slate-700/50 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
             <div className="space-y-1.5">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 bg-emerald-500/20 rounded-xl text-emerald-400 border border-emerald-500/30">
@@ -1230,45 +767,24 @@ export const SettingsPage: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-base font-bold flex items-center gap-2">
-                    Máy Chủ LAN & Đồng Bộ Realtime (Falcon EDR Safe)
+                    Supabase Realtime (thay máy chủ LAN)
                     <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold border ${
                       serverHealth?.status === 'online'
                         ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
                         : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
                     }`}>
                       <span className={`w-2 h-2 rounded-full ${serverHealth?.status === 'online' ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-                      {serverHealth?.status === 'online' ? 'MÁY CHỦ ĐANG CHẠY' : 'CHƯA KẾT NỐI MÁY CHỦ'}
+                      {serverHealth?.status === 'online' ? 'ĐÃ KẾT NỐI' : 'CHƯA KẾT NỐI'}
                     </span>
                   </h3>
                   <p className="text-xs text-slate-300 mt-0.5">
-                    Tự động đồng bộ hai chiều giữa các máy phòng ban (HR, Kho, QC, Sản Xuất) mà không cần xuất/nhập file thủ công.
+                    Mọi máy đọc/ghi chung một Postgres. Presence, broadcast và thay đổi dữ liệu đồng bộ tức thời — không còn server LAN, file JSON hay quét thư mục.
                   </p>
                 </div>
               </div>
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              {serverHealth?.status !== 'online' ? (
-                <button
-                  onClick={handleLaunchServerProtocol}
-                  disabled={isStartingServer}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-bold transition shadow-md hover:shadow-emerald-500/25 active:scale-95 disabled:opacity-50"
-                  title="Khởi động server.js chạy ngầm qua giao thức smarthr://"
-                >
-                  <Play className={`w-3.5 h-3.5 ${isStartingServer ? 'animate-spin' : 'fill-white'}`} />
-                  <span>{isStartingServer ? 'Đang kích hoạt server...' : '🚀 Kích Hoạt Server (Chạy Ngầm)'}</span>
-                </button>
-              ) : (
-                <button
-                  onClick={handleLaunchServerProtocol}
-                  disabled={isStartingServer}
-                  className="flex items-center gap-1.5 px-3 py-2 bg-slate-800/80 hover:bg-slate-700/80 text-emerald-400 border border-emerald-500/30 rounded-xl text-xs font-bold transition shadow-xs"
-                  title="Máy chủ đang chạy. Bấm nếu muốn gửi tín hiệu kích hoạt ngầm."
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Máy Chủ Đang Chạy</span>
-                </button>
-              )}
               <button
                 onClick={handlePingServer}
                 disabled={isPinging}
@@ -1277,35 +793,20 @@ export const SettingsPage: React.FC = () => {
                 <RefreshCw className={`w-3.5 h-3.5 ${isPinging ? 'animate-spin' : ''}`} />
                 <span>{isPinging ? 'Đang kiểm tra...' : 'Kiểm tra Ping'}</span>
               </button>
-              <button
-                onClick={handleManualCatchUp}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition shadow-xs"
-              >
-                <Zap className="w-3.5 h-3.5" />
-                <span>Kéo Bù Dữ Liệu</span>
-              </button>
             </div>
           </div>
 
           {/* KPI Metrics */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-2 gap-4">
             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
-              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Độ Trễ Phản Hồi (Ping)</div>
+              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Độ Trễ Supabase (Ping)</div>
               <div className="text-2xl font-black text-slate-900 mt-1 flex items-baseline gap-1">
                 {serverHealth?.status === 'online' ? serverHealth.latencyMs : '--'}
                 <span className="text-xs font-semibold text-slate-500">ms</span>
               </div>
               <div className="text-[10px] text-emerald-600 font-semibold mt-1 flex items-center gap-1">
-                <Activity className="w-3 h-3" /> Kết nối mạng LAN nội bộ
+                <Activity className="w-3 h-3" /> Supabase REST + Realtime
               </div>
-            </div>
-
-            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
-              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Cổng Mạng (Port)</div>
-              <div className="text-2xl font-black text-indigo-600 mt-1">
-                {serverHealth?.port || 4173}
-              </div>
-              <div className="text-[10px] text-slate-500 mt-1">Giao thức HTTP Stream I/O</div>
             </div>
 
             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
@@ -1313,78 +814,7 @@ export const SettingsPage: React.FC = () => {
               <div className="text-2xl font-black text-emerald-600 mt-1">
                 {lanOnlineUsers.length} <span className="text-xs font-semibold text-slate-500">user</span>
               </div>
-              <div className="text-[10px] text-slate-500 mt-1">Cập nhật qua SSE realtime</div>
-            </div>
-
-            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
-              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Lượt Đồng Bộ (Mutations)</div>
-              <div className="text-2xl font-black text-orange-600 mt-1">
-                {serverHealth?.totalMutations || 0}
-              </div>
-              <div className="text-[10px] text-slate-500 mt-1">Ghi nhận vào Master Store</div>
-            </div>
-          </div>
-
-          {/* LAN Addresses & Links */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <Radio className="w-4 h-4 text-indigo-600" />
-                  <span>Địa Chỉ Kết Nối Dành Cho Máy Khác Trong Mạng LAN</span>
-                </h4>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Gửi các liên kết dưới đây cho đồng nghiệp (hoặc mở trên điện thoại cùng mạng Wi-Fi/LAN) để truy cập hệ thống:
-                </p>
-              </div>
-              <a
-                href="/status"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition"
-              >
-                <span>Bảng Giám Sát /status</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </a>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {serverHealth?.lanAddresses && serverHealth.lanAddresses.length > 0 ? (
-                serverHealth.lanAddresses.map((net) => {
-                  const url = `http://${net.address}:${serverHealth.port}`;
-                  return (
-                    <div key={net.address} className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="text-[11px] font-bold text-slate-500 uppercase">{net.name} (Card mạng)</div>
-                        <div className="font-mono text-xs font-bold text-slate-900 truncate mt-0.5">{url}</div>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          onClick={() => handleCopyLink(url)}
-                          className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 text-[11px] font-semibold rounded-lg transition flex items-center gap-1"
-                          title="Sao chép địa chỉ"
-                        >
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>{copiedIp === url ? 'Đã chép!' : 'Chép'}</span>
-                        </button>
-                        <a
-                          href={url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-lg transition"
-                          title="Mở liên kết"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                        </a>
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-500">
-                  Đang tải danh sách địa chỉ card mạng... Hoặc mở tại: <code className="font-bold text-slate-800">http://localhost:4173</code>
-                </div>
-              )}
+              <div className="text-[10px] text-slate-500 mt-1">Cập nhật qua Supabase Presence</div>
             </div>
           </div>
 
@@ -1394,7 +824,7 @@ export const SettingsPage: React.FC = () => {
               <div>
                 <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                   <Users className="w-4 h-4 text-emerald-600" />
-                  <span>Danh Sách Nhân Sự Đang Trực Tuyến ({lanOnlineUsers.length})</span>
+                  <span>Người Dùng Đang Trực Tuyến ({lanOnlineUsers.length})</span>
                 </h4>
                 <p className="text-xs text-slate-500 mt-0.5">Hiển thị tức thời khi có người mở tab hoặc đổi phân hệ</p>
               </div>
@@ -1406,9 +836,7 @@ export const SettingsPage: React.FC = () => {
                   <tr>
                     <th className="py-3 px-4">Nhân Sự & Tài Khoản</th>
                     <th className="py-3 px-3">Vai Trò</th>
-                    <th className="py-3 px-3">Địa Chỉ IP</th>
                     <th className="py-3 px-3">Phân Hệ Đang Mở</th>
-                    <th className="py-3 px-3">Thiết Bị</th>
                     <th className="py-3 px-3 text-right">Trạng Thái</th>
                   </tr>
                 </thead>
@@ -1432,9 +860,7 @@ export const SettingsPage: React.FC = () => {
                             {u.role}
                           </span>
                         </td>
-                        <td className="py-3 px-3 font-mono text-slate-600">{u.ip}</td>
                         <td className="py-3 px-3 text-slate-700 font-medium">{u.currentTab || 'Bảng điều khiển'}</td>
-                        <td className="py-3 px-3 text-slate-500 text-[11px]">{u.deviceLabel || 'Trình duyệt Web'}</td>
                         <td className="py-3 px-3 text-right">
                           <span className="inline-flex items-center gap-1 text-emerald-600 font-bold text-[11px]">
                             <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
@@ -1445,115 +871,14 @@ export const SettingsPage: React.FC = () => {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={6} className="py-8 text-center text-slate-400 italic">
-                        Chưa có người dùng nào khác kết nối qua mạng LAN.
+                      <td colSpan={4} className="py-8 text-center text-slate-400 italic">
+                        Chưa có người dùng nào khác trực tuyến.
                       </td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
-          </div>
-
-          {/* Guide Card: How to remove "Insecure" warnings */}
-          <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-5 space-y-3 text-xs">
-            <div className="flex items-center gap-2 text-amber-900 font-bold text-sm">
-              <Shield className="w-4 h-4 text-amber-600" />
-              <span>Cách Ẩn Hoàn Toàn Cảnh Báo "Kết Nối Không An Toàn" Trên Máy Khách (Edge / Chrome)</span>
-            </div>
-            <p className="text-amber-800 leading-relaxed">
-              Trình duyệt Chromium (Edge, Chrome) mặc định cảnh báo khi mở trang qua HTTP IP mạng LAN có ô mật khẩu. Để xóa vĩnh viễn cảnh báo này (chỉ cần làm 1 lần trên máy khách):
-            </p>
-            <div className="bg-white/80 p-3 rounded-xl border border-amber-200 font-mono space-y-1.5 text-[11px]">
-              <div><b>Bước 1:</b> Mở tab mới trên Edge/Chrome, gõ vào thanh địa chỉ: <code className="bg-amber-100 px-1.5 py-0.5 rounded text-amber-900">edge://flags</code> (hoặc <code className="bg-amber-100 px-1.5 py-0.5 rounded text-amber-900">chrome://flags</code>)</div>
-              <div><b>Bước 2:</b> Tìm từ khóa: <code className="bg-amber-100 px-1.5 py-0.5 rounded text-amber-900">Insecure origins treated as secure</code> &rarr; chuyển sang <b>Enabled</b></div>
-              <div><b>Bước 3:</b> Dán địa chỉ IP máy chủ của bạn vào ô bên dưới &rarr; bấm <b>Restart / Relaunch</b> trình duyệt.</div>
-            </div>
-            <p className="text-amber-700 text-[11px] italic">
-              * Sau khi làm xong, trình duyệt sẽ công nhận IP mạng LAN an toàn như HTTPS, không bao giờ hiện cảnh báo nhạy cảm nữa!
-            </p>
-          </div>
-
-          {/* Guide Card: 1-Click Launch Protocol */}
-          <div className="bg-indigo-50/70 border border-indigo-200 rounded-2xl p-5 space-y-3 text-xs text-indigo-950">
-            <div className="font-bold flex items-center justify-between">
-              <div className="flex items-center gap-2 text-indigo-900 text-sm">
-                <Play className="w-4 h-4 text-indigo-600 fill-indigo-600" />
-                <span>Tính Năng Mở Máy Chủ 1-Click Trực Tiếp Từ Trình Duyệt (Giao thức smarthr://)</span>
-              </div>
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                Falcon EDR Safe 100%
-              </span>
-            </div>
-            <p className="leading-relaxed text-indigo-900">
-              Bạn có thể khởi động <code className="font-mono font-bold bg-indigo-100 px-1 py-0.5 rounded text-indigo-900">server.js</code> ngay tại nút bấm góc trên mà không cần mở thư mục hay gõ lệnh. Cơ chế hoạt động qua Custom Protocol Handler của Windows (tương tự như Teams, Zoom, Slack) và hoàn toàn không bị Falcon chặn:
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
-              <div className="bg-white/90 p-3.5 rounded-xl border border-indigo-200 space-y-1.5">
-                <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                  <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold">1</span>
-                  Kích hoạt 1 lần duy nhất (Máy chủ) — One-click fix lỗi font
-                </div>
-                <p className="text-slate-600">
-                  Bản <code className="font-mono font-bold text-indigo-700 bg-indigo-50 px-1 py-0.5 rounded">register-protocol.bat</code> cũ lưu UTF-8 có dấu nên cmd.exe báo lỗi font
-                  ('Thức', 'SCRIPT_DIR"', 'cript.exe'...). Đã fix sang <b>ASCII-only + CRLF</b>. Bấm nút bên dưới để tải bản fix (không cần mở thư mục thủ công),
-                  sau đó double-click 1 lần duy nhất. Script chỉ ghi vào <code className="font-mono text-slate-700">HKCU\Software\Classes</code> của tài khoản hiện tại, <b>không đòi hỏi quyền Admin</b> và <b>không khóa cứng tên User</b>.
-                </p>
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <button
-                    onClick={handleDownloadRegisterBat}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold rounded-lg transition shadow-xs"
-                    title="Tải bản register-protocol-FIXED.bat (ASCII-only, Falcon-safe)"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Tải file kích hoạt (fix lỗi font)</span>
-                  </button>
-                  <button
-                    onClick={handleCopyRegisterCommands}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 text-[11px] font-bold rounded-lg transition"
-                    title="Copy 5 lệnh reg add HKCU để paste vào CMD"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                    <span>Copy lệnh HKCU</span>
-                  </button>
-                  <button
-                    onClick={handleOpenRegisterHelp}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-[11px] font-bold rounded-lg transition"
-                    title="Mở hộp hướng dẫn mở thư mục cấp quyền từng bước"
-                  >
-                    <Folder className="w-3.5 h-3.5" />
-                    <span>Hướng dẫn mở thư mục cấp quyền</span>
-                  </button>
-                </div>
-                <p className="text-[10px] italic text-slate-500">
-                  Lưu ý Falcon: trình duyệt không thể tự chạy .bat (sandbox). Luồng one-click hợp lệ = 1 click tải file/copy lệnh (user consent) → double-click 1 lần → từ đó nút 🚀 chạy ngầm thật sự.
-                </p>
-              </div>
-              <div className="bg-white/90 p-3.5 rounded-xl border border-indigo-200 space-y-1.5">
-                <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                  <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold">2</span>
-                  Bấm nút trên web để chạy ngầm
-                </div>
-                <p className="text-slate-600">
-                  Sau khi đăng ký, mỗi khi cần mở server, bạn chỉ cần bấm nút <b>"🚀 Kích Hoạt Server (Chạy Ngầm)"</b> ở góc trên. Trình duyệt sẽ đánh thức script VBS chạy Node.js ngầm hoàn toàn, không hiện cửa sổ đen CMD.
-                </p>
-              </div>
-            </div>
-            <p className="text-[11px] text-slate-500 italic">
-              * Nếu chuyển dự án sang máy khác hoặc tài khoản khác, chỉ cần chạy lại <code className="font-mono">register-protocol.bat</code> trên máy đó. Muốn gỡ bỏ: Chạy <code className="font-mono">unregister-protocol.bat</code>.
-            </p>
-          </div>
-
-          {/* Guide Card: Silent Runner */}
-          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-2 text-xs text-slate-600">
-            <div className="font-bold text-slate-900 flex items-center gap-2">
-              <Server className="w-4 h-4 text-slate-700" />
-              <span>Khởi Động Máy Chủ Chạy Ẩn Không Hiện Bảng CMD (Windows Silent Runner)</span>
-            </div>
-            <p className="leading-relaxed">
-              Nếu không muốn thấy cửa sổ đen CMD xuất hiện trên màn hình khi làm việc, anh chỉ cần nhấp đúp vào file <code className="font-mono font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">start-server-hidden.vbs</code> trong thư mục dự án.
-              Máy chủ sẽ tự động chạy ngầm dưới dạng tiến trình nền (tiêu tốn &lt; 15MB RAM), hoàn toàn không làm giật màn hình và 100% tuân thủ chính sách CrowdStrike Falcon EDR.
-            </p>
           </div>
         </div>
       )}

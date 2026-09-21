@@ -1,8 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { AlertTriangle, CheckCircle2, Clock, Filter, Search, FileCheck2, UserCheck, LogOut, LogIn, ShieldAlert, CalendarDays } from 'lucide-react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../db';
-import { IDailyTimesheetCell, AttendanceStatusCode } from '../types';
+import { useLiveTable, upsertOne } from '../lib/tables';
+import type { IEmployee, IShiftRosterEntry, IDailyTimesheetCell, AttendanceStatusCode } from '../types';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 
@@ -16,9 +15,9 @@ export const AttendanceViolationPage: React.FC = () => {
   const [filterCode, setFilterCode] = useState<ViolationFilter>('ALL');
   const [onlyPending, setOnlyPending] = useState<boolean>(false);
 
-  const employees = useLiveQuery(() => db.employees.toArray(), []) || [];
-  const timesheets = useLiveQuery(() => db.dailyTimesheets.toArray(), []) || [];
-  const shiftRosters = useLiveQuery(() => db.shiftRosters.toArray(), []) || [];
+  const employees = useLiveTable<IEmployee>('employees');
+  const timesheets = useLiveTable<IDailyTimesheetCell>('dailyTimesheets');
+  const shiftRosters = useLiveTable<IShiftRosterEntry>('shiftRosters');
 
   const departments = Array.from(new Set(employees.map(e => e.department))).filter(Boolean);
 
@@ -96,7 +95,7 @@ export const AttendanceViolationPage: React.FC = () => {
       violationNote: newCode === 'W' ? `Đã xác thực thủ công - duyệt ${cell.statusCode} → W (${new Date().toLocaleDateString('vi-VN')})` : `Đã duyệt ${cell.statusCode} → ${newCode}`,
     };
     // Nếu duyệt về W thì giữ nguyên checkIn/checkOut, clear lateMinutes nếu cần? Giữ lại để trace.
-    await db.dailyTimesheets.put(updated);
+    await upsertOne('dailyTimesheets', updated);
     success('Đã xác thực thủ công', `Đã chuyển ${cell.employeeId} ngày ${cell.date} từ ${cell.statusCode} → ${newCode}`);
   };
 

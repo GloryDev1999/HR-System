@@ -20,9 +20,8 @@ import {
   UserMinus,
   Gift
 } from 'lucide-react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../db';
-import { IEmployee, ShiftClassType, ContractType } from '../types';
+import { useLiveTable, upsertOne, updateByKey, removeByKey, bulkRemove, listWhere } from '../lib/tables';
+import type { IEmployee, IProductionLine, ShiftClassType, ContractType } from '../types';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 import { useAuth } from '../context/AuthContext';
@@ -57,9 +56,9 @@ export const EmployeeListPage: React.FC = () => {
   const [tripEnd, setTripEnd] = useState<string>('');
   const [tripLocation, setTripLocation] = useState<string>('');
 
-  // Query live employees & production lines
-  const rawEmployees = useLiveQuery(() => db.employees.toArray(), []) || [];
-  const rawProductionLines = useLiveQuery(() => db.productionLines.toArray(), []) || [];
+  // Query live employees & production lines (Supabase realtime)
+  const rawEmployees = useLiveTable<IEmployee>('employees');
+  const rawProductionLines = useLiveTable<IProductionLine>('productionLines');
 
   // Filter based on department scope and filters
   const filteredEmployees = rawEmployees.filter(emp => {
@@ -134,7 +133,7 @@ export const EmployeeListPage: React.FC = () => {
     }
 
     try {
-      await db.employees.put(editingEmployee);
+      await upsertOne('employees', editingEmployee);
       success(
         'Lưu nhân viên thành công!',
         `Đã cập nhật thông tin và phụ cấp cho nhân viên ${editingEmployee.employeeId} - ${editingEmployee.fullName}.`
@@ -149,7 +148,7 @@ export const EmployeeListPage: React.FC = () => {
   React.useEffect(() => {
     const purgeExpiredResignedEmployees = async () => {
       try {
-        const allResigned = await db.employees.where('status').equals('RESIGNED').toArray();
+        const allResigned = await listWhere<IEmployee>('employees', 'status', 'RESIGNED');
         if (allResigned.length === 0) return;
 
         const savedMonth = localStorage.getItem('smarthr_selected_month');
@@ -170,7 +169,7 @@ export const EmployeeListPage: React.FC = () => {
         }
 
         if (idsToDelete.length > 0) {
-          await db.employees.bulkDelete(idsToDelete);
+          await bulkRemove('employees', idsToDelete);
           console.log(`[AUTO-PURGE] Đã tự động xóa ${idsToDelete.length} nhân viên nghỉ việc từ tháng cũ:`, idsToDelete);
         }
       } catch (err) {
@@ -193,7 +192,7 @@ export const EmployeeListPage: React.FC = () => {
         type: 'danger'
       });
       if (ok) {
-        await db.employees.delete(emp.employeeId);
+        await removeByKey('employees', emp.employeeId);
         success('Đã xóa nhân viên', `Nhân viên ${emp.employeeId} - ${emp.fullName} đã được xóa vĩnh viễn.`);
       }
       return;
@@ -208,7 +207,7 @@ export const EmployeeListPage: React.FC = () => {
     });
 
     if (ok) {
-      await db.employees.update(emp.employeeId, {
+      await updateByKey('employees', emp.employeeId, {
         status: 'RESIGNED',
         resignedDate: today
       } as any);
@@ -300,7 +299,7 @@ export const EmployeeListPage: React.FC = () => {
         updates.businessTripLocation = undefined;
       }
 
-      await db.employees.update(specialModalEmp.employeeId, updates);
+      await updateByKey('employees', specialModalEmp.employeeId, updates);
       success(
         'Lưu cấu hình thành công!',
         `Đã cập nhật chế độ Thai sản & Công tác cho nhân viên ${specialModalEmp.fullName}. Khi nạp bảng quẹt thẻ sẽ tự động áp dụng mã tương ứng (ML/BT).`

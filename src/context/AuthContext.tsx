@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { RoleType, ISystemSettings, IAccount, SessionUser } from '../types';
-import { db, DEFAULT_SETTINGS } from '../db';
-import { generateSalt, hashPassword, verifyPassword } from '../services/password';
+import { RoleType, ISystemSettings, SessionUser } from '../types';
+import { DEFAULT_SETTINGS } from '../lib/defaultSettings';
+import { supabase } from '../lib/supabaseClient';
+import { getSetting } from '../lib/tables';
 import { logUserAction } from '../services/audit-log-service';
 
 interface AuthContextType {
@@ -25,60 +25,16 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const SESSION_KEY = 'smarthr_session';
-
 /** Tài khoản mặc định khởi tạo lần đầu */
 export const DEFAULT_ADMIN_USERNAME = 'kieu';
-const DEFAULT_ADMIN_PASSWORD = '123';
 
-export async function ensureDefaultAccounts(): Promise<void> {
-  const seedUser = async (username: string, displayName: string, role: RoleType, pass: string, departmentScope: string | null = null) => {
-    const existing = await db.accounts.get(username);
-    if (!existing) {
-      const salt = generateSalt();
-      const account: IAccount = {
-        username,
-        displayName,
-        role,
-        departmentScope,
-        salt,
-        passwordHash: await hashPassword(pass, salt),
-        active: true,
-        activeFlag: 1,
-        createdAt: new Date().toISOString(),
-      };
-      await db.accounts.put(account);
-    } else {
-      // Cập nhật đảm bảo vai trò & tên hiển thị và departmentScope
-      const updatePayload: Partial<IAccount> = {
-        displayName,
-        role,
-        departmentScope,
-        active: true,
-        activeFlag: 1,
-      };
-      await db.accounts.update(username, updatePayload as any);
-    }
-  };
-
-  // 1. Kieu(Mia): System Admin, nắm toàn bộ master data toàn quyền hệ thống
-  await seedUser('kieu', 'Kieu(Mia)', 'AD System', '123', null);
-
-  // 2. Hoa(Molly): HR-System, thao tác toàn quyền hệ thống nhưng chỉ là client
-  await seedUser('hoa', 'Hoa(Molly)', 'HR Manager', '123', null);
-
-  // 3. Vinh(Glory): WH-Admin, chỉ duy nhất thao tác sắp ca cho duy nhất bộ phận wh
-  await seedUser('vinh', 'Vinh(Glory)', 'Warehouse Admin', '123', 'WH');
-
-  // 4. Nguyet Anh: QC-Admin, thao tác sắp ca cho bộ phận QC, chỉ duy nhất điền tỷ lệ chất lượng
-  await seedUser('nguyetanh', 'Nguyet Anh', 'QC Admin', '123', 'QC');
-
-  // 5. Han: Prd-Admin, thao tác sắp ca cho bộ phận sản xuất, chỉ chỉnh sửa tỷ lệ năng suất
-  await seedUser('han', 'Han', 'Production Admin', '123', 'Production');
-
-  // 6. Glory(Software): toàn quyền thao tác hệ thống để chịu trách nhiệm kỹ thuật
-  await seedUser('glory', 'Glory(Software)', 'AD System', '123', null);
-}
+/**
+ * Email tổng hợp cho Supabase Auth từ username nội bộ.
+ * 6 user tạo 1 lần trong Dashboard Authentication với email này:
+ * kieu@smarthr.local, hoa@smarthr.local, vinh@smarthr.local,
+ * nguyetanh@smarthr.local, han@smarthr.local, glory@smarthr.local
+ */
+export const usernameToEmail = (username: string) => `${username.trim().toLowerCase()}@smarthr.local`;
 
 function getDepartmentScope(role: RoleType): string | null {
   switch (role) {
@@ -121,45 +77,91 @@ function makeHasPermission(role: RoleType | null, permissions: ISystemSettings['
   };
 }
 
+interface ProfileRow {
+  id: string;
+  username: string;
+  display_name: string;
+  role: RoleType;
+  department_scope: string | null;
+  active: boolean;
+  is_locked: boolean;
+}
+
+async function fetchMyProfile(userId: string): Promise<ProfileRow | null> {
+  const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
+  if (error) {
+    console.warn('[Auth] fetch profile', error.message);
+    return null;
+  }
+  return (data as ProfileRow | null) ?? null;
+}
+
+function toSession(p: ProfileRow): SessionUser {
+  return {
+    username: p.username,
+    displayName: p.display_name,
+    role: p.role,
+    departmentScope: p.department_scope ?? getDepartmentScope(p.role),
+  };
+}
+
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [session, setSession] = useState<SessionUser | null>(() => {
-    // Khôi phục phiên trong cùng tab (sessionStorage - đóng tab là hết)
+  const [session, setSession] = useState<SessionUser | null>(null);
+
+  // RBAC từ Supabase app_settings (fallback DEFAULT khi chưa có)
+  const [systemSettings, setSystemSettings] = useState<ISystemSettings>(DEFAULT_SETTINGS);
+
+  const loadSettings = useCallback(async () => {
     try {
-      const raw = sessionStorage.getItem(SESSION_KEY);
-      return raw ? (JSON.parse(raw) as SessionUser) : null;
+      const val = await getSetting<ISystemSettings>('systemSettings');
+      if (val) setSystemSettings(val);
     } catch {
-      return null;
+      // Chưa đăng nhập / chưa có settings → giữ DEFAULT
     }
-  });
-
-  // RBAC từ Dexie settings (hybrid: Dexie > localStorage > DEFAULT)
-  const dbSettingsEntry = useLiveQuery(() => db.settings.get('systemSettings'), []);
-
-  const [systemSettings, setSystemSettings] = useState<ISystemSettings>(() => {
-    const saved = localStorage.getItem('smarthr_settings');
-    if (saved) {
-      try { return JSON.parse(saved) as ISystemSettings; } catch { /* ignore */ }
-    }
-    return DEFAULT_SETTINGS;
-  });
-
-  useEffect(() => {
-    if (dbSettingsEntry?.value) {
-      setSystemSettings(dbSettingsEntry.value as ISystemSettings);
-      localStorage.setItem('smarthr_settings', JSON.stringify(dbSettingsEntry.value));
-    }
-  }, [dbSettingsEntry]);
-
-  // Khởi tạo các tài khoản mặc định (Vinh, Kiều, admin) đúng một lần
-  useEffect(() => {
-    ensureDefaultAccounts().catch(console.error);
   }, []);
 
-  const persistSession = (s: SessionUser | null) => {
-    if (s) sessionStorage.setItem(SESSION_KEY, JSON.stringify(s));
-    else sessionStorage.removeItem(SESSION_KEY);
-    setSession(s);
-  };
+  useEffect(() => {
+    void loadSettings();
+    // Realtime settings: đổi ma trận quyền là mọi máy cập nhật ngay
+    const ch = supabase
+      .channel('app-settings')
+      .on('postgres_changes' as never, { event: '*', schema: 'public', table: 'app_settings' } as never, (() => void loadSettings()) as never)
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(ch);
+    };
+  }, [loadSettings]);
+
+  // Khôi phục phiên Supabase + nạp profile
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const user = data.session?.user;
+      if (user) {
+        const p = await fetchMyProfile(user.id);
+        if (alive && p && p.active && !p.is_locked) setSession(toSession(p));
+        else if (alive && p && (!p.active || p.is_locked)) {
+          await supabase.auth.signOut();
+          setSession(null);
+        }
+      }
+    })();
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, newSession) => {
+      if (event === 'SIGNED_OUT' || !newSession?.user) {
+        if (alive) setSession(null);
+        return;
+      }
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') {
+        const p = await fetchMyProfile(newSession.user.id);
+        if (alive && p && p.active && !p.is_locked) setSession(toSession(p));
+      }
+    });
+    return () => {
+      alive = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
 
   const currentRole = session?.role ?? null;
   const rolePermissions = systemSettings?.rolePermissions || DEFAULT_SETTINGS.rolePermissions;
@@ -175,82 +177,39 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // Hỗ trợ gõ cả Kiều có dấu hoặc kieu không dấu
     if (uname === 'kiều') uname = 'kieu';
 
-    let account = await db.accounts.get(uname);
-    if (!account) {
-      account = await db.accounts.filter(a => a.username.toLowerCase() === uname || a.displayName.toLowerCase() === uname).first();
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: usernameToEmail(uname),
+      password,
+    });
+    if (error || !data.user) {
+      return { ok: false, error: 'Tên đăng nhập hoặc mật khẩu không đúng' };
     }
 
-    if (!account) {
-      return { ok: false, error: 'Tài khoản không tồn tại' };
+    const p = await fetchMyProfile(data.user.id);
+    if (!p) {
+      await supabase.auth.signOut();
+      return { ok: false, error: 'Tài khoản chưa có hồ sơ (profiles) — liên hệ System Admin' };
     }
-
-    // Kiểm tra trạng thái khóa tài khoản do sai pass quá 10 lần hoặc bị admin vô hiệu hóa
-    if (account.isLocked || !account.active || (account.failedLoginAttempts && account.failedLoginAttempts >= 10)) {
+    if (p.is_locked || !p.active) {
+      await supabase.auth.signOut();
       return {
         ok: false,
         error: 'User đã bị khóa! vui lòng Liên hệ phòng nhân sự để được mở khóa user'
       };
     }
 
-    const valid = await verifyPassword(password, account.salt, account.passwordHash);
-    if (!valid) {
-      const attempts = (account.failedLoginAttempts || 0) + 1;
-      if (attempts >= 10) {
-        await db.accounts.update(account.username, {
-          failedLoginAttempts: attempts,
-          isLocked: true,
-          active: false,
-          activeFlag: 0
-        });
-        logUserAction({
-          username: account.username,
-          displayName: account.displayName,
-          role: account.role,
-          actionType: 'AUTH_LOGIN',
-          targetEntity: account.username,
-          details: 'Tài khoản bị khóa tự động do nhập sai mật khẩu 10 lần liên tiếp'
-        }).catch(console.error);
-        return {
-          ok: false,
-          error: 'User đã bị khóa! vui lòng Liên hệ phòng nhân sự để được mở khóa user'
-        };
-      } else {
-        await db.accounts.update(account.username, {
-          failedLoginAttempts: attempts
-        });
-        const remaining = 10 - attempts;
-        return {
-          ok: false,
-          error: `Mật khẩu không đúng. Còn ${remaining} lần thử trước khi tài khoản bị khóa.`
-        };
-      }
-    }
-
-    // Đăng nhập thành công: Reset số lần nhập sai về 0
-    await db.accounts.update(account.username, {
-      lastLoginAt: new Date().toISOString(),
-      failedLoginAttempts: 0,
-      isLocked: false,
-      active: true,
-      activeFlag: 1
-    });
-    const effectiveDeptScope = account.departmentScope ?? getDepartmentScope(account.role);
-    const s: SessionUser = {
-      username: account.username,
-      displayName: account.displayName,
-      role: account.role,
-      departmentScope: effectiveDeptScope
-    };
-    persistSession(s);
+    const s = toSession(p);
+    setSession(s);
+    await supabase.from('profiles').update({ last_login_at: new Date().toISOString() }).eq('id', data.user.id);
 
     // Ghi nhận Transaction Đăng nhập
     logUserAction({
-      username: account.username,
-      displayName: account.displayName,
-      role: account.role,
+      username: p.username,
+      displayName: p.display_name,
+      role: p.role,
       actionType: 'AUTH_LOGIN',
       targetEntity: 'Hệ thống SmartHR',
-      details: `Đăng nhập thành công với vai trò ${account.role} (Phạm vi: ${effectiveDeptScope ?? 'Toàn công ty'})`
+      details: `Đăng nhập thành công với vai trò ${p.role} (Phạm vi: ${s.departmentScope ?? 'Toàn công ty'})`
     }).catch(console.error);
 
     return { ok: true };
@@ -267,24 +226,23 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         details: 'Đăng xuất khỏi hệ thống'
       }).catch(console.error);
     }
-    persistSession(null);
+    void supabase.auth.signOut();
+    setSession(null);
   }, [session]);
 
   const changePassword = useCallback(async (currentPassword: string, newPassword: string): Promise<{ ok: boolean; error?: string }> => {
     if (!session) return { ok: false, error: 'Chưa đăng nhập' };
     if (newPassword.length < 3) return { ok: false, error: 'Mật khẩu mới phải tối thiểu 3 ký tự' };
 
-    const account = await db.accounts.get(session.username);
-    if (!account) return { ok: false, error: 'Không tìm thấy tài khoản' };
-
-    const valid = await verifyPassword(currentPassword, account.salt, account.passwordHash);
-    if (!valid) return { ok: false, error: 'Mật khẩu hiện tại không đúng' };
-
-    const salt = generateSalt();
-    await db.accounts.update(session.username, {
-      salt,
-      passwordHash: await hashPassword(newPassword, salt),
+    // Xác thực lại mật khẩu hiện tại bằng cách sign-in lại
+    const { error: reErr } = await supabase.auth.signInWithPassword({
+      email: usernameToEmail(session.username),
+      password: currentPassword,
     });
+    if (reErr) return { ok: false, error: 'Mật khẩu hiện tại không đúng' };
+
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) return { ok: false, error: error.message };
 
     logUserAction({
       username: session.username,
@@ -299,28 +257,23 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, [session]);
 
   const resetUserPassword = useCallback(async (
-    username: string,
-    newPassword: string = '123'
+    _username: string,
+    _newPassword: string = '123'
   ): Promise<{ ok: boolean; error?: string }> => {
     if (!makeHasPermission(session?.role ?? null, rolePermissions)('MANAGE_USERS') && !makeHasPermission(session?.role ?? null, rolePermissions)('SYSTEM_SETTINGS')) {
       return { ok: false, error: 'Chỉ System Admin mới có quyền đặt lại mật khẩu' };
     }
-    const uname = username.trim().toLowerCase();
-    const account = await db.accounts.get(uname);
-    if (!account) return { ok: false, error: 'Không tìm thấy tài khoản' };
-
-    const pass = newPassword.trim() || '123';
-    const salt = generateSalt();
-    const passwordHash = await hashPassword(pass, salt);
-
-    await db.accounts.update(uname, {
-      salt,
-      passwordHash,
-      failedLoginAttempts: 0,
-      isLocked: false,
-      active: true,
-      activeFlag: 1
-    });
+    // Supabase Auth: anon key không được đổi mật khẩu user khác (cần service_role
+    // phía server). Admin đặt lại trong Dashboard Authentication → Users.
+    // Ở đây chỉ mở khóa cờ lock để user tự đổi pass sau khi đăng nhập.
+    const uname = _username.trim().toLowerCase();
+    const { data: target } = await supabase.from('profiles').select('id').eq('username', uname).maybeSingle();
+    if (!target) return { ok: false, error: 'Không tìm thấy tài khoản' };
+    const { error } = await supabase
+      .from('profiles')
+      .update({ is_locked: false, active: true, failed_login_attempts: 0 })
+      .eq('id', (target as any).id);
+    if (error) return { ok: false, error: error.message };
 
     if (session) {
       logUserAction({
@@ -329,7 +282,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         role: session.role,
         actionType: 'UPDATE_USER_NAME',
         targetEntity: uname,
-        details: `Đặt lại mật khẩu cho "${uname}" và mở khóa tài khoản thành công`
+        details: `Mở khóa tài khoản "${uname}". Đặt lại mật khẩu thực hiện trong Supabase Dashboard → Authentication → Users.`
       }).catch(console.error);
     }
 
@@ -343,15 +296,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return { ok: false, error: 'Chỉ System Admin mới có quyền mở khóa tài khoản' };
     }
     const uname = username.trim().toLowerCase();
-    const account = await db.accounts.get(uname);
-    if (!account) return { ok: false, error: 'Không tìm thấy tài khoản' };
+    const { data: target } = await supabase.from('profiles').select('id').eq('username', uname).maybeSingle();
+    if (!target) return { ok: false, error: 'Không tìm thấy tài khoản' };
 
-    await db.accounts.update(uname, {
-      failedLoginAttempts: 0,
-      isLocked: false,
-      active: true,
-      activeFlag: 1
-    });
+    const { error } = await supabase
+      .from('profiles')
+      .update({ is_locked: false, active: true, failed_login_attempts: 0 })
+      .eq('id', (target as any).id);
+    if (error) return { ok: false, error: error.message };
 
     if (session) {
       logUserAction({
@@ -380,22 +332,27 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const uname = username.trim().toLowerCase();
     if (!uname) return { ok: false, error: 'Tên đăng nhập không được để trống' };
     const pass = password.trim() || '123';
-    const existing = await db.accounts.get(uname);
+    const { data: existing } = await supabase.from('profiles').select('id').eq('username', uname).maybeSingle();
     if (existing) return { ok: false, error: `Tài khoản "${uname}" đã tồn tại` };
 
-    const salt = generateSalt();
-    const account: IAccount = {
+    // signUp tự đăng nhập user mới → xong việc phải signOut để admin đăng nhập lại.
+    // (Tạo user hàng loạt nên làm trong Dashboard Authentication.)
+    const { data, error } = await supabase.auth.signUp({
+      email: usernameToEmail(uname),
+      password: pass,
+    });
+    if (error || !data.user) {
+      return { ok: false, error: error?.message || 'Tạo tài khoản thất bại' };
+    }
+    const scope = departmentScope ?? getDepartmentScope(role);
+    await supabase.from('profiles').update({
       username: uname,
-      displayName: displayName.trim() || uname,
+      display_name: displayName.trim() || uname,
       role,
-      departmentScope: departmentScope ?? getDepartmentScope(role),
-      salt,
-      passwordHash: await hashPassword(pass, salt),
+      department_scope: scope,
       active: true,
-      activeFlag: 1,
-      createdAt: new Date().toISOString(),
-    };
-    await db.accounts.put(account);
+    }).eq('id', data.user.id);
+    await supabase.auth.signOut();
 
     if (session) {
       logUserAction({
@@ -404,7 +361,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         role: session.role,
         actionType: 'CREATE_USER',
         targetEntity: uname,
-        details: `Tạo mới tài khoản "${uname}" (${account.displayName}) với vai trò ${role} (Mật khẩu khởi tạo: 123)`
+        details: `Tạo mới tài khoản "${uname}" với vai trò ${role}. Vui lòng đăng nhập lại tài khoản admin.`
       }).catch(console.error);
     }
 
@@ -419,30 +376,31 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return { ok: false, error: 'Chỉ System Admin mới có quyền chỉnh sửa thông tin tài khoản' };
     }
 
-    const account = await db.accounts.get(username);
+    const { data: account } = await supabase.from('profiles').select('*').eq('username', username).maybeSingle();
     if (!account) return { ok: false, error: 'Không tìm thấy tài khoản để cập nhật' };
+    const acc = account as any;
 
     const patch: any = {};
     const logDetails: string[] = [];
 
-    if (updates.displayName !== undefined && updates.displayName.trim() && updates.displayName !== account.displayName) {
-      patch.displayName = updates.displayName.trim();
-      logDetails.push(`Đổi tên hiển thị từ "${account.displayName}" -> "${updates.displayName.trim()}"`);
+    if (updates.displayName !== undefined && updates.displayName.trim() && updates.displayName !== acc.display_name) {
+      patch.display_name = updates.displayName.trim();
+      logDetails.push(`Đổi tên hiển thị từ "${acc.display_name}" -> "${updates.displayName.trim()}"`);
     }
 
-    if (updates.role !== undefined && updates.role !== account.role) {
+    if (updates.role !== undefined && updates.role !== acc.role) {
       patch.role = updates.role;
-      logDetails.push(`Đổi vai trò từ "${account.role}" -> "${updates.role}"`);
+      logDetails.push(`Đổi vai trò từ "${acc.role}" -> "${updates.role}"`);
     }
 
-    if (updates.departmentScope !== undefined && updates.departmentScope !== account.departmentScope) {
-      patch.departmentScope = updates.departmentScope;
+    if (updates.departmentScope !== undefined && updates.departmentScope !== acc.department_scope) {
+      patch.department_scope = updates.departmentScope;
       logDetails.push(`Đổi phạm vi phòng ban -> "${updates.departmentScope ?? 'Toàn công ty'}"`);
     }
 
-    if (updates.active !== undefined && updates.active !== account.active) {
+    if (updates.active !== undefined && updates.active !== acc.active) {
       patch.active = updates.active;
-      patch.activeFlag = updates.active ? 1 : 0;
+      if (!updates.active) patch.is_locked = true;
       logDetails.push(`${updates.active ? 'Mở khóa' : 'Khóa'} tài khoản`);
     }
 
@@ -450,17 +408,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return { ok: true };
     }
 
-    await db.accounts.update(username, patch);
+    const { error } = await supabase.from('profiles').update(patch).eq('id', acc.id);
+    if (error) return { ok: false, error: error.message };
 
     // Cập nhật session nếu chính là user hiện hành
     if (session && session.username === username) {
       const newSession: SessionUser = {
         ...session,
-        displayName: patch.displayName ?? session.displayName,
+        displayName: patch.display_name ?? session.displayName,
         role: patch.role ?? session.role,
-        departmentScope: patch.departmentScope !== undefined ? patch.departmentScope : session.departmentScope
+        departmentScope: patch.department_scope !== undefined ? patch.department_scope : session.departmentScope
       };
-      persistSession(newSession);
+      setSession(newSession);
     }
 
     if (session && logDetails.length > 0) {
@@ -478,11 +437,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, [session, rolePermissions]);
 
   const refreshPermissions = async () => {
-    const entry = await db.settings.get('systemSettings');
-    if (entry?.value) {
-      setSystemSettings(entry.value as ISystemSettings);
-      localStorage.setItem('smarthr_settings', JSON.stringify(entry.value));
-    }
+    await loadSettings();
   };
 
   const currentDeptScope = session?.departmentScope ?? (currentRole ? getDepartmentScope(currentRole) : null);

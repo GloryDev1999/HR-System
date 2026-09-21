@@ -24,6 +24,6 @@ description: ONNX Runtime Web OCR execution pipeline with PaddleOCR models for i
    - Extract Date regex: `/\b\d{1,2}[\/\-\.]\d{1,2}(?:[\/\-\.]\d{2,4})?\b/`.
    - Extract OT Hours regex: `/\b(\d+(?:\.\d+)?)\s*(?:giờ|h|hours?|hrs?|tiếng)\b/i`.
 5. **State Reconciliation**:
-   - Lookup `employeeId` + `date` in Dexie `overtimeRecords`.
+    - Lookup `employee_id` + `date` in Supabase `overtime_records`.
    - If OT hours match recorded hours within tolerance -> Set status = `MATCHED` (Green `#D1FAE5`).
    - If OT hours differ or employee not found -> Set status = `MISMATCH` (Red `#FEE2E2`).

@@ -4,13 +4,13 @@
  * Tách bạch 2 pha:
  *  - reconcileRows(): THUẦN TÍNH, chỉ tính toán trạng thái khớp/lệch, KHÔNG ghi DB
  *  - commitVerifiedRows(): chỉ chạy khi người dùng bấm xác nhận trên màn hình preview,
- *    ghi trong 1 transaction Dexie duy nhất.
+ *    ghi tuần tự lên Supabase (mỗi op nguyên tử phía server).
  *
  * Không còn bất kỳ bộ dữ liệu mẫu (preset) nào - mọi dòng đều đến từ pipeline OCR thật
  * hoặc do người dùng nhập/sửa trực tiếp trên bảng preview.
  */
-import { db } from '../db';
-import { IOvertimeRecord, IOCREntry, IEmployee } from '../types';
+import { getByKey, listWhere, updateByKey, bulkUpsert } from '../lib/tables';
+import type { IOvertimeRecord, IOCREntry, IEmployee } from '../types';
 import { normalizeEmployeeCode, normalizeDateString } from './ocr-table-engine';
 
 export type MatchStatus = 'MATCHED' | 'MISMATCH' | 'NOT_FOUND';
@@ -112,48 +112,46 @@ export async function commitVerifiedRows(rows: IExtractedFormRow[], meta: Commit
   let updated = 0;
   let scansWritten = 0;
 
-  await db.transaction('rw', db.overtimeRecords, db.ocrScans, async () => {
-    const scanBatch: IOCREntry[] = [];
-    const stamp = Date.now();
+  const scanBatch: IOCREntry[] = [];
+  const stamp = Date.now();
 
-    for (const [i, row] of rows.entries()) {
-      if (!row.otDate || row.otHours === null || row.otHours === undefined) continue;
+  for (const [i, row] of rows.entries()) {
+    if (!row.otDate || row.otHours === null || row.otHours === undefined) continue;
 
-      const otKey = `${row.employeeId}_${row.otDate}`;
-      let existing = await db.overtimeRecords.get(otKey);
-      if (!existing) {
-        const recordsOnDate = await db.overtimeRecords.where('date').equals(row.otDate).toArray();
-        existing = recordsOnDate.find(o => o.employeeId?.toUpperCase() === row.employeeId?.toUpperCase());
-      }
-      if (existing) {
-        await db.overtimeRecords.update(existing.employeeId_date, {
-          verificationStatus: row.matchStatus === 'MATCHED' ? 'MATCHED' : 'MISMATCH',
-          ocrExtractedHours: row.otHours,
-          ocrConfidence: row.confidence,
-          mismatchReason: row.matchStatus === 'MISMATCH' ? row.details : undefined,
-          verifiedBy: meta.verifiedBy,
-          verifiedAt: now
-        });
-        updated++;
-      }
-
-      scanBatch.push({
-        id: `ocr_${stamp}_${i}_${row.employeeId}`,
-        fileName: meta.fileName,
-        scanTimestamp: new Date().toLocaleString('vi-VN'),
-        extractedEmployeeId: row.employeeId,
-        extractedDate: row.otDate,
-        extractedHours: row.otHours,
-        rawText: `[BẢN THỎA THUẬN TĂNG CA]\nSTT: ${row.stt} | Mã: ${row.employeeId} | Tên: ${row.fullName}\nNgày: ${row.otDateRaw} | Giờ: ${row.fromTime}-${row.toTime} (${row.otHours}h)\nLý do: ${row.reason}`,
-        confidence: row.confidence,
-        matchStatus: row.matchStatus ?? 'NOT_FOUND',
-        details: row.details
+    const otKey = `${row.employeeId}_${row.otDate}`;
+    let existing = await getByKey<IOvertimeRecord>('overtimeRecords', otKey);
+    if (!existing) {
+      const recordsOnDate = await listWhere<IOvertimeRecord>('overtimeRecords', 'date', row.otDate);
+      existing = recordsOnDate.find(o => o.employeeId?.toUpperCase() === row.employeeId?.toUpperCase()) ?? null;
+    }
+    if (existing) {
+      await updateByKey('overtimeRecords', existing.employeeId_date, {
+        verificationStatus: row.matchStatus === 'MATCHED' ? 'MATCHED' : 'MISMATCH',
+        ocrExtractedHours: row.otHours,
+        ocrConfidence: row.confidence,
+        mismatchReason: row.matchStatus === 'MISMATCH' ? row.details : undefined,
+        verifiedBy: meta.verifiedBy,
+        verifiedAt: now
       });
-      scansWritten++;
+      updated++;
     }
 
-    await db.ocrScans.bulkPut(scanBatch);
-  });
+    scanBatch.push({
+      id: `ocr_${stamp}_${i}_${row.employeeId}`,
+      fileName: meta.fileName,
+      scanTimestamp: now,
+      extractedEmployeeId: row.employeeId,
+      extractedDate: row.otDate,
+      extractedHours: row.otHours,
+      rawText: `[BẢN THỎA THUẬN TĂNG CA]\nSTT: ${row.stt} | Mã: ${row.employeeId} | Tên: ${row.fullName}\nNgày: ${row.otDateRaw} | Giờ: ${row.fromTime}-${row.toTime} (${row.otHours}h)\nLý do: ${row.reason}`,
+      confidence: row.confidence,
+      matchStatus: row.matchStatus ?? 'NOT_FOUND',
+      details: row.details
+    });
+    scansWritten++;
+  }
+
+  await bulkUpsert('ocrScans', scanBatch);
 
   return { updated, scansWritten };
 }

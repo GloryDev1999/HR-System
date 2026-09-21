@@ -12,9 +12,8 @@ import {
   ArrowRight,
   Filter
 } from 'lucide-react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../db';
-import { ILeaveRequest, LeaveType, AttendanceStatusCode } from '../types';
+import { useLiveTable, getByKey, upsertOne, updateByKey } from '../lib/tables';
+import type { IEmployee, IDailyTimesheetCell, ILeaveRequest, LeaveType, AttendanceStatusCode } from '../types';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 import { useAuth } from '../context/AuthContext';
@@ -29,10 +28,10 @@ export const LeavePendingPage: React.FC = () => {
   const [selectedLeaveType, setSelectedLeaveType] = useState<Record<string, LeaveType>>({});
   const [selectedHours, setSelectedHours] = useState<Record<string, number>>({});
 
-  // Live queries
-  const employees = useLiveQuery(() => db.employees.toArray(), []) || [];
-  const pendingRequests = useLiveQuery(() => db.leaveRequests.toArray(), []) || [];
-  const timesheets = useLiveQuery(() => db.dailyTimesheets.toArray(), []) || [];
+  // Live queries (Supabase realtime)
+  const employees = useLiveTable<IEmployee>('employees');
+  const pendingRequests = useLiveTable<ILeaveRequest>('leaveRequests');
+  const timesheets = useLiveTable<IDailyTimesheetCell>('dailyTimesheets');
 
   // Filter pending requests
   const filteredRequests = pendingRequests.filter(req => {
@@ -102,54 +101,51 @@ export const LeavePendingPage: React.FC = () => {
     const [y, m] = req.date.split('-').map(Number);
 
     try {
-      // Toàn bộ phê duyệt trong MỘT transaction
-      await db.transaction('rw', db.employees, db.dailyTimesheets, db.leaveRequests, async () => {
-        const freshEmp = await db.employees.get(req.employeeId);
-        if (!freshEmp) throw new Error(`Nhân viên ${req.employeeId} vừa bị xoá khỏi hệ thống`);
+      // Phê duyệt: chuỗi ghi Supabase tuần tự (mỗi op nguyên tử phía server)
+      const freshEmp = await getByKey<IEmployee>('employees', req.employeeId);
+      if (!freshEmp) throw new Error(`Nhân viên ${req.employeeId} vừa bị xoá khỏi hệ thống`);
 
-        if (chosenType === 'AL') {
-          const remainingQuota = freshEmp.annualLeaveBalance?.remainingDays ?? 0;
-          if (remainingQuota < effectiveDurationDays) {
-            throw new Error(`Hạn mức phép năm chỉ còn ${remainingQuota} ngày - không đủ ${effectiveDurationDays} ngày`);
-          }
-          await db.employees.update(req.employeeId, {
-            annualLeaveBalance: {
-              ...freshEmp.annualLeaveBalance,
-              usedDays: (freshEmp.annualLeaveBalance?.usedDays ?? 0) + effectiveDurationDays,
-              remainingDays: Math.max(0, remainingQuota - effectiveDurationDays)
-            }
-          });
+      if (chosenType === 'AL') {
+        const remainingQuota = freshEmp.annualLeaveBalance?.remainingDays ?? 0;
+        if (remainingQuota < effectiveDurationDays) {
+          throw new Error(`Hạn mức phép năm chỉ còn ${remainingQuota} ngày - không đủ ${effectiveDurationDays} ngày`);
         }
-
-        const existingCell = await db.dailyTimesheets.get(cellKey);
-
-        await db.dailyTimesheets.put({
-          employeeId_date: cellKey,
-          employeeId: req.employeeId,
-          date: req.date,
-          dayIndex: parseInt(req.date.split('-')[2], 10),
-          statusCode: newStatusCode,
-          calculatedOvertime: existingCell?.calculatedOvertime || 0,
-          checkIn: existingCell?.checkIn,
-          checkOut: existingCell?.checkOut,
-          isViolation: false,
-          isViolationFlag: 0,
-          violationNote: leaveHours < 8
-            ? `Bù phép ${leaveHours} giờ (${chosenType}) + làm việc ${workHours} giờ (W)`
-            : `Đã duyệt bù phép cả ngày (${chosenType})`,
-          month: m,
-          year: y
+        await updateByKey('employees', req.employeeId, {
+          annualLeaveBalance: {
+            ...freshEmp.annualLeaveBalance,
+            usedDays: (freshEmp.annualLeaveBalance?.usedDays ?? 0) + effectiveDurationDays,
+            remainingDays: Math.max(0, remainingQuota - effectiveDurationDays)
+          }
         });
+      }
 
-        await db.leaveRequests.update(req.id, {
-          status: 'APPROVED',
-          leaveType: chosenType,
-          durationDays: effectiveDurationDays,
-          missedHours: leaveHours,
-          workedHours: workHours,
-          processedBy: session?.displayName ?? currentRole ?? 'unknown',
-          processedAt: new Date().toISOString()
-        });
+      const existingCell = await getByKey<IDailyTimesheetCell>('dailyTimesheets', cellKey);
+
+      await upsertOne('dailyTimesheets', {
+        employeeId_date: cellKey,
+        employeeId: req.employeeId,
+        date: req.date,
+        dayIndex: parseInt(req.date.split('-')[2], 10),
+        statusCode: newStatusCode,
+        calculatedOvertime: existingCell?.calculatedOvertime || 0,
+        checkIn: existingCell?.checkIn,
+        checkOut: existingCell?.checkOut,
+        isViolation: false,
+        violationNote: leaveHours < 8
+          ? `Bù phép ${leaveHours} giờ (${chosenType}) + làm việc ${workHours} giờ (W)`
+          : `Đã duyệt bù phép cả ngày (${chosenType})`,
+        month: m,
+        year: y
+      });
+
+      await updateByKey('leaveRequests', req.id, {
+        status: 'APPROVED',
+        leaveType: chosenType,
+        durationDays: effectiveDurationDays,
+        missedHours: leaveHours,
+        workedHours: workHours,
+        processedBy: session?.displayName ?? currentRole ?? 'unknown',
+        processedAt: new Date().toISOString()
       });
     } catch (e: any) {
       error('Phê duyệt thất bại', e?.message || String(e));
@@ -180,27 +176,24 @@ export const LeavePendingPage: React.FC = () => {
       const cellKey = `${req.employeeId}_${req.date}`;
       const [y, m] = req.date.split('-').map(Number);
       try {
-        await db.transaction('rw', db.dailyTimesheets, db.leaveRequests, async () => {
-          const existingCell = await db.dailyTimesheets.get(cellKey);
-          await db.dailyTimesheets.put({
-            employeeId_date: cellKey,
-            employeeId: req.employeeId,
-            date: req.date,
-            dayIndex: parseInt(req.date.split('-')[2], 10),
-            statusCode: 'Off',
-            calculatedOvertime: existingCell?.calculatedOvertime || 0,
-            checkIn: existingCell?.checkIn,
-            checkOut: existingCell?.checkOut,
-            isViolation: true,
-            isViolationFlag: 1,
-            violationNote: 'Từ chối bù phép - ghi nhận không phép (Off)',
-            month: m,
-            year: y
-          });
-          await db.leaveRequests.update(req.id, {
-            status: 'REJECTED',
-            rejectionReason: 'Vắng mặt không phép vi phạm nội quy'
-          });
+        const existingCell = await getByKey<IDailyTimesheetCell>('dailyTimesheets', cellKey);
+        await upsertOne('dailyTimesheets', {
+          employeeId_date: cellKey,
+          employeeId: req.employeeId,
+          date: req.date,
+          dayIndex: parseInt(req.date.split('-')[2], 10),
+          statusCode: 'Off',
+          calculatedOvertime: existingCell?.calculatedOvertime || 0,
+          checkIn: existingCell?.checkIn,
+          checkOut: existingCell?.checkOut,
+          isViolation: true,
+          violationNote: 'Từ chối bù phép - ghi nhận không phép (Off)',
+          month: m,
+          year: y
+        });
+        await updateByKey('leaveRequests', req.id, {
+          status: 'REJECTED',
+          rejectionReason: 'Vắng mặt không phép vi phạm nội quy'
         });
         success('Đã ghi nhận không phép', `Đã cập nhật ngày ${req.date} của ${req.fullName} thành "Off" (nghỉ không phép).`);
       } catch (err: any) {

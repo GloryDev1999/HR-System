@@ -16,9 +16,8 @@ import {
   X,
   Edit3
 } from 'lucide-react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../db';
-import { IEmployee, IOvertimeRecord, OvertimeVerificationStatus } from '../types';
+import { useLiveTable, upsertOne } from '../lib/tables';
+import type { IEmployee, IOvertimeRecord, OvertimeVerificationStatus } from '../types';
 import { generateCalendarDays, CalendarDay } from '../services/calendar-utils';
 import { formatPayPeriodLabel } from '../services/pay-period';
 import { useToast } from '../context/ToastContext';
@@ -70,9 +69,9 @@ export const OvertimePage: React.FC<OvertimePageProps> = ({ onNavigate }) => {
   // Modal chỉnh sửa OT thủ công
   const [activeEditRecord, setActiveEditRecord] = useState<ActiveEditRecordState | null>(null);
 
-  // Live queries
-  const employees = useLiveQuery(() => db.employees.toArray(), []) || [];
-  const overtimes = useLiveQuery(() => db.overtimeRecords.toArray(), []) || [];
+  // Live queries (Supabase realtime)
+  const employees = useLiveTable<IEmployee>('employees');
+  const overtimes = useLiveTable<IOvertimeRecord>('overtimeRecords');
 
   // Filter employees
   const filteredEmployees = useMemo(() => {
@@ -204,7 +203,7 @@ export const OvertimePage: React.FC<OvertimePageProps> = ({ onNavigate }) => {
         return;
       }
 
-      await db.overtimeRecords.put(updated);
+      await upsertOne('overtimeRecords', updated);
       success('Đã lưu tăng ca', `Đã cập nhật ${updated.hours}h tăng ca cho ${activeEditRecord.employee.fullName}`);
       setActiveEditRecord(null);
     } catch (err: any) {

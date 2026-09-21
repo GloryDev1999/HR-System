@@ -20,9 +20,8 @@ import {
   KeyRound,
   Unlock
 } from 'lucide-react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../db';
-import { IAccount, RoleType, AuditActionType, IUserAuditLog } from '../types';
+import { useLiveTable } from '../lib/tables';
+import type { IAccount, RoleType, AuditActionType, IUserAuditLog } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
@@ -34,9 +33,10 @@ export const UserManagementPage: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<'users' | 'audit'>('users');
 
-  // Queries
-  const accounts = useLiveQuery(() => db.accounts.toArray(), []) || [];
-  const auditLogs = useLiveQuery(() => db.userAuditLogs.orderBy('timestamp').reverse().limit(200).toArray(), []) || [];
+  // Queries (Supabase realtime: profiles thay accounts, audit mới nhất trước)
+  // profiles trả về đã map camelCase (displayName, departmentScope, isLocked...)
+  const accounts = useLiveTable<IAccount>('profiles');
+  const auditLogs = useLiveTable<IUserAuditLog>('userAuditLogs', { orderBy: 'createdAt', ascending: false, limit: 200 });
 
   // Edit user state
   const [editingUsername, setEditingUsername] = useState<string | null>(null);
@@ -83,7 +83,7 @@ export const UserManagementPage: React.FC = () => {
     }
     const res = await resetUserPassword(resetModalUser.username, newPasswordInput.trim());
     if (res.ok) {
-      success('Đặt lại mật khẩu thành công', `Đã đổi mật khẩu cho tài khoản "${resetModalUser.username}" thành "${newPasswordInput.trim()}" và mở khóa tài khoản.`);
+      success('Mở khóa tài khoản thành công', `Tài khoản "${resetModalUser.username}" đã được mở khóa. Đặt lại mật khẩu thực hiện trong Supabase Dashboard → Authentication → Users (anon key không được đổi pass user khác).`);
       setResetModalUser(null);
     } else {
       error('Lỗi đặt lại mật khẩu', res.error || 'Thao tác không thành công.');

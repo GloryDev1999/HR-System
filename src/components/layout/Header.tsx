@@ -14,26 +14,41 @@ import {
   AlertTriangle,
   CalendarClock,
   Sparkles,
-  RefreshCw,
   KeyRound,
   X,
-  Lock,
-  Folder,
-  FileJson
+  Lock
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
 import { useModal } from '../../context/ModalContext';
 import { exportTimesheetToExcel } from '../../services/excel-exporter';
-import { exportDatabaseToSnapshot, importDatabaseFromSnapshot } from '../../services/db-sync';
-import { runWithoutLanPush } from '../../services/lan-push-guard';
-import { jsonSyncService, ScanResult } from '../../services/json-sync-service';
-import { db } from '../../db';
 import { parseTimesheetFile } from '../../services/timesheet-parser-service';
-import { useLiveQuery } from 'dexie-react-hooks';
+import { useLiveTable, listAll, bulkUpsert, clearTable, getSetting } from '../../lib/tables';
+import { lanSyncService } from '../../services/lan-sync-service';
 import { daysUntil as calcDaysUntil } from '../../services/pay-period';
 import { PresenceBar } from './PresenceBar';
+
+/** Đốm trạng thái kết nối Supabase realtime (thay đồng bộ JSON tay). */
+const SupabaseStatusPill: React.FC = () => {
+  const [online, setOnline] = React.useState(lanSyncService.getIsServerOnline());
+  const [latency, setLatency] = React.useState(0);
+  React.useEffect(() => lanSyncService.onStatus((o, lat) => {
+    setOnline(o);
+    setLatency(lat);
+  }), []);
+  return (
+    <span
+      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold border shrink-0 ${
+        online ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-rose-50 text-rose-700 border-rose-200'
+      }`}
+      title={online ? `Supabase realtime đã kết nối (${latency}ms)` : 'Chưa kết nối Supabase — kiểm tra mạng và .env'}
+    >
+      <span className={`w-2 h-2 rounded-full ${online ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+      <span>{online ? `Supabase ${latency}ms` : 'Offline'}</span>
+    </span>
+  );
+};
 
 export const Header: React.FC = () => {
   const { session, currentRole, hasPermission, logout, refreshPermissions, departmentScope } = useAuth();
@@ -52,124 +67,8 @@ export const Header: React.FC = () => {
   // Chỉ riêng phòng Nhân sự (HR Manager / HR Admin) mới được xem thông báo hợp đồng
   const isHR = currentRole === 'HR Manager' || currentRole === 'HR Admin';
 
-  // Đồng bộ thuần JSON qua thư mục OneDrive HR_Data (thay Star-Topology RTC)
-  const [syncSupported] = useState(() => jsonSyncService.folder.isSupported());
-  const [hasSyncHandle, setHasSyncHandle] = useState(() => jsonSyncService.folder.hasHandle());
-  const [isSyncGranted, setIsSyncGranted] = useState(() => jsonSyncService.folder.isGranted());
-  const [syncFolderName, setSyncFolderName] = useState(() => jsonSyncService.folder.getFolderName());
-  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
-  const [scanResult, setScanResult] = useState<ScanResult | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
-
-  const pendingCount = (scanResult?.pendingDept.length || 0) + (scanResult?.pendingMaster.length || 0);
-
-  useEffect(() => {
-    return jsonSyncService.folder.onStatus((s) => {
-      setHasSyncHandle(s.hasHandle);
-      setSyncFolderName(s.folderName);
-      setIsSyncGranted(s.granted);
-    });
-  }, []);
-
-  // Tự động quét thư mục HR_Data mỗi 8s khi đã cấp quyền (OneDrive sync nền)
-  useEffect(() => {
-    if (!hasSyncHandle || !isSyncGranted) return;
-    return jsonSyncService.startAutoScan((r) => setScanResult(r), 8000);
-  }, [hasSyncHandle, isSyncGranted]);
-
-  const isMasterUser = session ? jsonSyncService.isMasterUser(session.username) : false;
-  const isDeptUser = session ? !!jsonSyncService.getDeptFilename(session.username) : false;
-
-  const handleConnectSyncFolder = async () => {
-    try {
-      const ok = await jsonSyncService.folder.connect();
-      if (ok) {
-        success('Đã kết nối thư mục', `Đã liên kết "${jsonSyncService.folder.getFolderName()}". Chỉ cần cấp quyền 1 lần, các lần sau bấm 1 nút.`);
-        await handleScanNow();
-      }
-    } catch (err: any) {
-      if (err?.name !== 'AbortError') error('Lỗi thư mục', err?.message || 'Không thể liên kết thư mục.');
-    }
-  };
-
-  const handleScanNow = async () => {
-    setIsScanning(true);
-    try {
-      const r = await jsonSyncService.scanFolder();
-      setScanResult(r);
-      if ((r.pendingDept.length + r.pendingMaster.length) === 0) info('Không có gì mới', 'Thư mục HR_Data đã đồng bộ.');
-    } catch (err: any) {
-      error('Quét thất bại', err?.message || 'Không đọc được thư mục.');
-    } finally {
-      setIsScanning(false);
-    }
-  };
-
-  const handleOpenSyncModal = async () => {
-    setIsSyncModalOpen(true);
-    await handleScanNow();
-  };
-
-  const [ingestingFile, setIngestingFile] = useState<string | null>(null);
-  const syncImportRef = useRef<HTMLInputElement>(null);
-
-  const handleIngest = async (file: string, kind: 'dept' | 'master') => {
-    if (!session) return;
-    setIngestingFile(file);
-    try {
-      const res = kind === 'dept'
-        ? await jsonSyncService.ingestDeptFile(file, { username: session.username, displayName: session.displayName })
-        : await jsonSyncService.ingestMasterFile(file, { username: session.username, displayName: session.displayName });
-      if (res.blocked.length > 0) {
-        warning('Tiếp nhận có chặn', `${res.note}. Áp dụng ${res.applied}, chặn ${res.blocked.length} NV trùng ERP — cần kieu xử lý tay.`);
-      } else if (res.conflicts.length > 0) {
-        warning('Tiếp nhận có conflict', `${res.note}. Áp dụng ${res.applied}, conflict ${res.conflicts.length} (đã auto tie-break kieu>hoa).`);
-      } else {
-        success('Tiếp nhận xong', `${res.note}. Áp dụng ${res.applied}, bỏ qua ${res.skipped}.`);
-      }
-      await handleScanNow();
-    } catch (err: any) {
-      error('Tiếp nhận thất bại', err?.message || 'Không merge được file.');
-    } finally {
-      setIngestingFile(null);
-    }
-  };
-
-  const handleExportSyncDownload = async (kind: 'dept' | 'master') => {
-    if (!session) return;
-    try {
-      if (kind === 'dept') {
-        const { filename, payload } = await jsonSyncService.buildDeptPayloadForDownload(session.username);
-        jsonSyncService.downloadJson(filename, payload);
-        success('Đã xuất file dept', `Gửi file ${filename} cho kieu/hoa qua OneDrive/Zalo.`);
-      } else {
-        const { filename, payload } = await jsonSyncService.buildMasterPayloadForDownload(session.username);
-        jsonSyncService.downloadJson(filename, payload);
-        success('Đã xuất file master', `File ${filename} đã tải xuống. Copy vào HR_Data để máy kia quét.`);
-      }
-    } catch (err: any) {
-      error('Xuất thất bại', err?.message || 'Không tạo được file JSON.');
-    }
-  };
-
-  const handleSyncImportChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (!f || !session) return;
-    try {
-      const text = await f.text();
-      const raw = JSON.parse(text);
-      const res = await jsonSyncService.importFromJsonObject(raw, { username: session.username, displayName: session.displayName });
-      success('Import tay xong', `${res.note}. Áp dụng ${res.applied}.`);
-      await handleScanNow();
-    } catch (err: any) {
-      error('Import thất bại', err?.message || 'File không hợp lệ.');
-    } finally {
-      if (syncImportRef.current) syncImportRef.current.value = '';
-    }
-  };
-
   // Chuông thông báo hợp đồng sắp hết hạn - Chỉ tính toán khi là HR
-  const employees = useLiveQuery(() => db.employees.toArray(), []) || [];
+  const employees = useLiveTable('employees');
   const contractNotifs = isHR ? (() => {
     const now = new Date();
     const list: Array<{ emp: any; days: number; term: string; notifyAt: string }> = [];
@@ -255,8 +154,8 @@ export const Header: React.FC = () => {
           const updatedRostersMap = new Map<string, any>();
 
           try {
-            const employees = await db.employees.toArray();
-            const shiftRosters = await db.shiftRosters.toArray();
+            const employees = await listAll('employees');
+            const shiftRosters = await listAll('shiftRosters');
             const empMap = new Map<string, any>(employees.map((e: any) => [e.employeeId.toUpperCase(), e]));
             const erpMap = new Map<string, any>(employees.filter((e: any) => e.erpId).map((e: any) => [String(e.erpId).trim(), e]));
             const shiftMap = new Map<string, any>(shiftRosters.map((r: any) => [r.employeeId_date, r]));
@@ -799,15 +698,12 @@ export const Header: React.FC = () => {
                           endTime: nextTs.checkOut || nextShift.end,
                           restHours: restHours,
                           isRestViolation: true,
-                          isRestViolationFlag: 1,
                           violationDetails: violationNote,
                           isShiftMismatch: false,
-                          isShiftMismatchFlag: 0
                         });
                       }
 
                       nextTs.isViolation = true;
-                      nextTs.isViolationFlag = 1;
                       nextTs.violationNote = nextTs.violationNote
                         ? `${nextTs.violationNote} | Vi phạm nghỉ < 12h (${restHours}h)`
                         : `Vi phạm nghỉ < 12h giữa 2 ca (${restHours}h)`;
@@ -822,40 +718,32 @@ export const Header: React.FC = () => {
             warning('Lưu ý xử lý hậu kỳ', postErr.message || 'Lỗi khi đối chiếu ca/phép, vẫn tiến hành lưu dữ liệu.');
           }
 
-          for (const ts of postTimesheets) {
-            if (typeof ts.isViolationFlag === 'undefined') ts.isViolationFlag = ts.isViolation ? 1 : 0;
-          }
-
           setImportProgress(90);
-          setImportStatusText('[6/6] Ghi vào cơ sở dữ liệu Dexie.js (IndexedDB)...');
+          setImportStatusText('[6/6] Ghi lên Supabase...');
 
-          // Thực hiện làm sạch và ghi mới trong MỘT Transaction nguyên tử (ACID)
-          // Đảm bảo KHÔNG clear shiftRosters để bảo toàn dữ liệu sắp ca từ các trạm!
-          // LAN push: nạp Excel hàng chục nghìn dòng → KHÔNG đẩy từng bản ghi lên LAN.
-          await runWithoutLanPush(() => db.transaction('rw', [db.dailyTimesheets, db.overtimeRecords, db.rawAttendanceLogs, db.leaveRequests, db.shiftRosters], async () => {
-            await db.dailyTimesheets.clear();
-            await db.overtimeRecords.clear();
-            await db.rawAttendanceLogs.clear();
-            await db.leaveRequests.clear();
-            // KHÔNG clear shiftRosters!
+          // Làm sạch và ghi mới tuần tự lên Supabase (mỗi op nguyên tử phía server).
+          // KHÔNG clear shiftRosters để bảo toàn dữ liệu sắp ca!
+          await clearTable('dailyTimesheets');
+          await clearTable('overtimeRecords');
+          await clearTable('rawAttendanceLogs');
+          await clearTable('leaveRequests');
 
-            if (postTimesheets.length > 0) {
-              await db.dailyTimesheets.bulkPut(postTimesheets);
-            }
-            if (overtimesToCreate.length > 0) {
-              await db.overtimeRecords.bulkPut(overtimesToCreate);
-            }
-            if (postRawLogs.length > 0) {
-              await db.rawAttendanceLogs.bulkAdd(postRawLogs);
-            }
-            if (leaveRequestsToCreate.length > 0) {
-              await db.leaveRequests.bulkPut(leaveRequestsToCreate);
-            }
-            const rostersToSave = Array.from(updatedRostersMap.values());
-            if (rostersToSave.length > 0) {
-              await db.shiftRosters.bulkPut(rostersToSave as any);
-            }
-          }));
+          if (postTimesheets.length > 0) {
+            await bulkUpsert('dailyTimesheets', postTimesheets);
+          }
+          if (overtimesToCreate.length > 0) {
+            await bulkUpsert('overtimeRecords', overtimesToCreate);
+          }
+          if (postRawLogs.length > 0) {
+            await bulkUpsert('rawAttendanceLogs', postRawLogs);
+          }
+          if (leaveRequestsToCreate.length > 0) {
+            await bulkUpsert('leaveRequests', leaveRequestsToCreate);
+          }
+          const rostersToSave = Array.from(updatedRostersMap.values());
+          if (rostersToSave.length > 0) {
+            await bulkUpsert('shiftRosters', rostersToSave as any);
+          }
 
           const allRosters = Array.from(updatedRostersMap.values());
           const restViolationCount = allRosters.filter((r: any) => r.isRestViolation).length;
@@ -878,9 +766,9 @@ export const Header: React.FC = () => {
   const handleExportExcel = async () => {
     try {
       info('Đang chuẩn bị dữ liệu xuất Excel...', 'Hệ thống đang định dạng tiêu đề, chèn logo Leggett & Platt và áp dụng công thức.');
-      const emps = await db.employees.toArray();
-      const timesheets = await db.dailyTimesheets.toArray();
-      const overtimes = await db.overtimeRecords.toArray();
+      const emps = await listAll('employees');
+      const timesheets = await listAll('dailyTimesheets');
+      const overtimes = await listAll('overtimeRecords');
 
       const savedMonth = localStorage.getItem('smarthr_selected_month');
       const savedYear = localStorage.getItem('smarthr_selected_year');
@@ -898,10 +786,8 @@ export const Header: React.FC = () => {
       // Lấy settings hiện tại để truyền vào exporter (công thức custom)
       let settings: any = undefined;
       try {
-        const raw = localStorage.getItem('smarthr_settings');
-        if (raw) settings = JSON.parse(raw);
-        const dex = await db.settings.get('systemSettings');
-        if (dex?.value) settings = dex.value;
+        const val = await getSetting('systemSettings');
+        if (val) settings = val;
       } catch {}
       await exportTimesheetToExcel(exportEmps, timesheets, overtimes, curMonth, curYear, 'ALL', settings);
       success('Xuất file Excel thành công!', `Đã xuất ${exportEmps.length} NV kỳ ${curMonth}/${curYear} (Chính thức 21-20 + Thời vụ 1-31, 2 sheet nếu có đủ nhóm).`);
@@ -921,57 +807,8 @@ export const Header: React.FC = () => {
           loading="eager"
         />
 
-        {/* Nút thư mục đồng bộ JSON HR_Data — cấp quyền 1 lần, dùng lại nhiều lần */}
-        {syncSupported ? (
-          !hasSyncHandle ? (
-            <button
-              onClick={handleConnectSyncFolder}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-sm border border-amber-400 animate-pulse transition shrink-0"
-              title="Chọn 1 lần thư mục HR_Data trên OneDrive để đồng bộ JSON thuần"
-            >
-              <Folder className="w-3.5 h-3.5" />
-              <span>📁 Chọn HR_Data</span>
-            </button>
-          ) : !isSyncGranted ? (
-            <button
-              onClick={handleConnectSyncFolder}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 shadow-sm transition shrink-0"
-              title="Bấm 1 lần để cấp lại quyền đọc/ghi (trình duyệt yêu cầu sau mỗi lần mở)"
-            >
-              <Folder className="w-3.5 h-3.5 text-amber-600 animate-bounce" />
-              <span>Cấp Quyền {syncFolderName || 'HR_Data'}</span>
-            </button>
-          ) : (
-            <button
-              onClick={handleOpenSyncModal}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 shadow-xs transition shrink-0"
-              title="Thư mục JSON đã sẵn sàng. Bấm để quét file dept/master mới."
-            >
-              <Folder className="w-3.5 h-3.5 text-amber-500" />
-              <span className="font-mono text-[11px] max-w-[120px] truncate">{syncFolderName || 'HR_Data'}</span>
-              <span className="w-2 h-2 rounded-full bg-emerald-500" />
-              {pendingCount > 0 && (
-                <span className="min-w-[18px] h-[18px] px-1 bg-rose-600 text-white text-[10px] font-black rounded-full flex items-center justify-center">
-                  {pendingCount}
-                </span>
-              )}
-            </button>
-          )
-        ) : (
-          <span className="text-[11px] text-slate-400 font-semibold shrink-0" title="Dùng tải file / upload file thủ công trong Cài đặt > Đồng bộ JSON">
-            Đồng bộ file tay
-          </span>
-        )}
-
-        {/* Nút quét JSON 1-chạm */}
-        <button
-          onClick={handleOpenSyncModal}
-          className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition shadow-sm border shrink-0 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white border-emerald-500"
-          title={isMasterUser ? 'kieu/hoa: quét 3 file dept + master của nhau' : isDeptUser ? 'Quét và nộp file dept của bạn' : 'Quét thư mục đồng bộ JSON'}
-        >
-          {isScanning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <FileJson className="w-3.5 h-3.5" />}
-          <span>{pendingCount > 0 ? `JSON Sync (${pendingCount} mới)` : '⚡ Quét JSON'}</span>
-        </button>
+        {/* Trạng thái realtime Supabase (thay nút JSON/HR_Data đã bỏ) */}
+        <SupabaseStatusPill />
 
         {/* Chuông thông báo hợp đồng sắp hết hạn - CHỈ HIỂN THỊ VỚI PHÒNG NHÂN SỰ (HR) */}
         {isHR && (
@@ -1173,113 +1010,6 @@ export const Header: React.FC = () => {
                 <div>• Đối chiếu ca làm việc, tính công (W/N/OFF) & vi phạm (LA/ED/MCI/MCO)</div>
                 <div>• Tính giờ tăng ca thực tế & gắn cờ vào sớm (khung 6h-6h30)</div>
                 <div>• Kiểm soát vi phạm xoay ca không nghỉ đủ 12 tiếng</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Đồng bộ JSON thuần HR_Data (thay Star-Topology RTC) */}
-      {isSyncModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full border border-slate-100 overflow-hidden space-y-0 max-h-[90vh] flex flex-col">
-            <div className="p-4 bg-gradient-to-r from-emerald-950 via-teal-900 to-emerald-950 text-white flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-emerald-500/20 rounded-xl border border-emerald-500/30 text-emerald-300">
-                  <FileJson className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold">Đồng Bộ JSON Thuần (HR_Data)</h3>
-                  <p className="text-[11px] text-emerald-200/80">
-                    {isMasterUser ? 'kieu/hoa: quét 3 file dept + master của nhau' : isDeptUser ? 'Nộp file dept của bạn cho kieu/hoa' : 'Quét thư mục OneDrive dùng chung'}
-                  </p>
-                </div>
-              </div>
-              <button onClick={() => setIsSyncModalOpen(false)} className="p-1.5 text-slate-300 hover:text-white rounded-xl hover:bg-white/10 transition">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-5 space-y-4 text-xs overflow-y-auto">
-              <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500 font-semibold">Thư mục:</span>
-                  <span className="font-bold text-slate-800 font-mono bg-white px-2 py-0.5 rounded border border-slate-200">{syncFolderName || 'Chưa chọn'}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500 font-semibold">Quyền (cấp 1 lần):</span>
-                  <span className={`font-bold ${isSyncGranted ? 'text-emerald-600' : 'text-amber-600'}`}>{isSyncGranted ? 'Đã cấp — tự quét 8s/lần' : 'Chưa cấp'}</span>
-                </div>
-                <div className="flex items-center justify-end gap-2 pt-1">
-                  {!isSyncGranted && (
-                    <button type="button" onClick={handleConnectSyncFolder} className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl transition">Kết Nối Thư Mục (1 click)</button>
-                  )}
-                  <button type="button" onClick={handleScanNow} disabled={isScanning} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl transition disabled:opacity-50">
-                    {isScanning ? 'Đang quét...' : 'Quét Ngay'}
-                  </button>
-                </div>
-              </div>
-
-              {scanResult && (
-                <>
-                  {(scanResult.pendingDept.length + scanResult.pendingMaster.length) === 0 && scanResult.conflictCopies.length === 0 ? (
-                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-800 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 inline mr-1" />
-                      Không có file mới. Hệ thống đã đồng bộ.
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {scanResult.pendingDept.map((it) => (
-                        <div key={it.file} className="p-3 bg-white border border-slate-200 rounded-2xl flex items-center justify-between gap-2">
-                          <div>
-                            <div className="font-bold text-slate-900 font-mono text-[11px]">{it.file}</div>
-                            <div className="text-[11px] text-slate-500">{it.note}</div>
-                          </div>
-                          {isMasterUser ? (
-                            <button type="button" disabled={ingestingFile === it.file} onClick={() => handleIngest(it.file, 'dept')} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] rounded-xl transition shrink-0 disabled:opacity-50">
-                              {ingestingFile === it.file ? 'Đang nhận...' : 'Tiếp Nhận'}
-                            </button>
-                          ) : (
-                            <span className="text-[11px] text-slate-400 font-semibold shrink-0">Chờ kieu/hoa nhận</span>
-                          )}
-                        </div>
-                      ))}
-                      {scanResult.pendingMaster.map((it) => (
-                        <div key={it.file} className="p-3 bg-indigo-50/60 border border-indigo-200 rounded-2xl flex items-center justify-between gap-2">
-                          <div>
-                            <div className="font-bold text-indigo-900 font-mono text-[11px]">{it.file}</div>
-                            <div className="text-[11px] text-slate-500">{it.note}</div>
-                          </div>
-                          <button type="button" disabled={ingestingFile === it.file} onClick={() => handleIngest(it.file, 'master')} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] rounded-xl transition shrink-0 disabled:opacity-50">
-                            {ingestingFile === it.file ? 'Đang merge...' : 'Merge Master'}
-                          </button>
-                        </div>
-                      ))}
-                      {scanResult.conflictCopies.map((f) => (
-                        <div key={f} className="p-3 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 text-[11px] font-semibold">
-                          OneDrive conflict copy: <code className="font-mono">{f}</code> — nhờ kieu mở 2 file so tay rồi xóa bản thừa.
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
-
-              <div className="pt-2 border-t border-slate-100 space-y-2">
-                <p className="font-bold text-slate-700">Fallback không cần thư mục (tải file / upload file tay):</p>
-                <input ref={syncImportRef} type="file" accept=".json,application/json" onChange={handleSyncImportChange} className="hidden" />
-                <div className="flex flex-wrap gap-2">
-                  {isDeptUser && (
-                    <button type="button" onClick={() => handleExportSyncDownload('dept')} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] rounded-xl transition">Tải file dept của tôi</button>
-                  )}
-                  {isMasterUser && (
-                    <button type="button" onClick={() => handleExportSyncDownload('master')} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] rounded-xl transition">Tải file master của tôi</button>
-                  )}
-                  <button type="button" onClick={() => syncImportRef.current?.click()} className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-[11px] rounded-xl transition">Upload file JSON...</button>
-                </div>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
-                  5 file chuẩn: master_kieu.json, master_hoa.json, dept_WH_vinh.json, dept_QC_nguyetanh.json, dept_PRD_han.json. Mỗi user chỉ ghi file của mình.
-                </p>
               </div>
             </div>
           </div>

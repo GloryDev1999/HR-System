@@ -1,0 +1,14 @@
+# Cloudflare Pages headers — BẮT BUỘC cho ONNX WASM đa luồng (SharedArrayBuffer).
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+# Model ONNX/WASM cache lâu (đổi tên khi đổi model)
+/PaddleOCR-Models/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# JS/CSS build có hash trong tên file -> cache lâu
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

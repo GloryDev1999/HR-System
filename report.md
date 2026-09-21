@@ -1,5 +1,22 @@
 # REPORT — Tồn đọng cần xử lý (ưu tiên P0 → P2)
 
+## TRẠNG THÁI 2026-09-21 — KỶ NGUYÊN LAN KẾT THÚC
+
+Hệ thống đã chuyển sang Supabase Cloud + Cloudflare Pages. Ghi nhận đối chiếu:
+
+- **Retired (đóng — file đã xóa, không cần làm):** P0-1..P0-4 (LAN data-sync, push-only
+  dept, journal `data/` trong OneDrive, split-brain 2 host), P1-5 (flow `smarthr://`),
+  P1-6 (API LAN không auth), P2-10 (native `confirm()` trong `launcher-ui.js`),
+  P2-12 (file launcher cũ `.bat`/`.vbs`), P2-9 LAN parts — các file
+  `server.js` / `launcher-ui.js` / `lan-sync` / OneDrive JSON / `smarthr` protocol
+  đã xóa khỏi repo.
+- **Carried-over (còn mở — chuyển sang kỷ nguyên mới):**
+  - P1-7 centralize auth → đang migrate sang **Supabase Auth** (`profiles` + RLS).
+  - P1-8 `ShiftRosterPage` dead code → vẫn cần xóa import + nhánh thừa trong `App.tsx`.
+
+---
+> LỊCH SỬ (kỷ nguyên Local-First) — giữ nguyên toàn bộ nội dung cũ phía dưới.
+
 > Đối chiếu mã nguồn thật ngày 2026-09-20. Mỗi mục có bằng chứng + hướng fix.
 > **Cập nhật Phase 34 (M23): P0-1 + P0-2 ĐÃ XONG** (outbox v10, 161/161 tests, QC PASS) —
 > các mục còn lại giữ nguyên.

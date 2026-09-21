@@ -17,8 +17,9 @@ import {
 } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { useAuth } from '../../context/AuthContext';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../../db';
+import { useMemo } from 'react';
+import { useLiveTable } from '../../lib/tables';
+import type { ILeaveRequest, IShiftRosterEntry, IOvertimeRecord, IDailyTimesheetCell } from '../../types';
 
 export type NavPageId = 
   | 'dashboard' 
@@ -26,8 +27,7 @@ export type NavPageId =
   | 'timesheet' 
   | 'productivityQuality'
   | 'overtime' 
-  | 'leavePending' 
-  | 'shiftRoster' 
+  | 'leavePending'
   | 'shiftAssignment'
   | 'attendanceViolation'
   | 'ocrVerification' 
@@ -45,17 +45,18 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
   const isMasterUser = currentRole === 'AD System' || currentRole === 'HR Manager' || currentRole === 'HR Admin';
   const isHostOrHR = session?.username?.toLowerCase() === 'kieu' || session?.username?.toLowerCase() === 'hoa' || currentRole === 'HR Manager';
 
-  // v6: dùng Flag 0|1 thay boolean để index hợp lệ (IndexedDB chỉ cho Number/String/Date)
-  const badgeCounts = useLiveQuery(async () => {
-    const [pendingLeave, violations, pendingOT, attendanceViolations, shiftMismatches] = await Promise.all([
-      db.leaveRequests.where('status').equals('PENDING').count(),
-      db.shiftRosters.where('isRestViolationFlag').equals(1).count(),
-      db.overtimeRecords.where('verificationStatus').equals('PENDING').count(),
-      db.dailyTimesheets.where('statusCode').anyOf(['LA','ED','MCO','MCI']).count(),
-      db.shiftRosters.where('isShiftMismatchFlag').equals(1).count().catch(() => 0),
-    ]);
-    return { pendingLeave, violations, pendingOT, attendanceViolations, shiftMismatches };
-  }, []);
+  // Badge realtime từ Supabase (postgres_changes tự refresh qua useLiveTable)
+  const leaveRequests = useLiveTable<ILeaveRequest>('leaveRequests');
+  const shiftRosters = useLiveTable<IShiftRosterEntry>('shiftRosters');
+  const overtimeRecords = useLiveTable<IOvertimeRecord>('overtimeRecords');
+  const dailyTimesheets = useLiveTable<IDailyTimesheetCell>('dailyTimesheets');
+  const badgeCounts = useMemo(() => ({
+    pendingLeave: leaveRequests.filter(r => r.status === 'PENDING').length,
+    violations: shiftRosters.filter(r => r.isRestViolation).length,
+    pendingOT: overtimeRecords.filter(r => r.verificationStatus === 'PENDING').length,
+    attendanceViolations: dailyTimesheets.filter(r => ['LA', 'ED', 'MCO', 'MCI'].includes(r.statusCode)).length,
+    shiftMismatches: shiftRosters.filter(r => r.isShiftMismatch).length,
+  }), [leaveRequests, shiftRosters, overtimeRecords, dailyTimesheets]);
   const pendingLeaveCount = badgeCounts?.pendingLeave ?? 0;
   const shiftViolationCount = (badgeCounts?.violations ?? 0) + (badgeCounts?.shiftMismatches ?? 0);
   const pendingOTCount = badgeCounts?.pendingOT ?? 0;

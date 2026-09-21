@@ -28,8 +28,8 @@ import {
   LogIn,
   LogOut
 } from 'lucide-react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../db';
+import { useLiveTable } from '../lib/tables';
+import type { IEmployee, IDailyTimesheetCell, IShiftRosterEntry, IOvertimeRecord, ILeaveRequest } from '../types';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { NavPageId } from '../components/layout/Sidebar';
@@ -43,12 +43,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   const { t, language } = useLanguage();
   const { session } = useAuth();
 
-  // Query live data from Dexie.js
-  const employees = useLiveQuery(() => db.employees.toArray(), []) || [];
-  const timesheets = useLiveQuery(() => db.dailyTimesheets.toArray(), []) || [];
-  const shiftRosters = useLiveQuery(() => db.shiftRosters.toArray(), []) || [];
-  const overtimes = useLiveQuery(() => db.overtimeRecords.toArray(), []) || [];
-  const leaveRequests = useLiveQuery(() => db.leaveRequests.toArray(), []) || [];
+  // Query live data từ Supabase (realtime qua postgres_changes)
+  const employees = useLiveTable<IEmployee>('employees');
+  const timesheets = useLiveTable<IDailyTimesheetCell>('dailyTimesheets');
+  const shiftRosters = useLiveTable<IShiftRosterEntry>('shiftRosters');
+  const overtimes = useLiveTable<IOvertimeRecord>('overtimeRecords');
+  const leaveRequests = useLiveTable<ILeaveRequest>('leaveRequests');
 
   const [targetMonth, setTargetMonth] = useState<number>(() => {
     const saved = localStorage.getItem('smarthr_selected_month');
@@ -337,7 +337,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
             <span>{language === 'vi' ? 'Xuất báo cáo' : 'Export Report'}</span>
           </button>
           <button
-            onClick={() => onNavigate('shiftRoster')}
+            onClick={() => onNavigate('shiftAssignment')}
             className="flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-[#0F172A] hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition shadow-md shadow-slate-900/20"
           >
             <Plus className="w-4 h-4 text-orange-400" />

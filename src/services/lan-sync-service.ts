@@ -1,12 +1,16 @@
 /**
- * SmartHR Enterprise - LAN Realtime Sync & Presence Service
- * Tự động đồng bộ dữ liệu hai chiều & cập nhật trạng thái online giữa các máy trong mạng LAN
- * Hoàn toàn tương thích Falcon EDR (Sử dụng SSE và REST tiêu chuẩn)
+ * SmartHR — Supabase Realtime Sync & Presence Service
+ * Thay thế LAN SSE server.js (đã xóa): presence + mutation broadcast
+ * chạy trên Supabase Realtime channels, không còn /api/*, không EventSource.
+ *
+ * GIỮ NGUYÊN public interface cũ (LanOnlineUser, LanServerHealth, LanMutation,
+ * onPresence/onStatus, setSession, updateTab, broadcastMutation, pullCatchUp,
+ * checkServerHealth, getCachedOnlineUsers, getIsServerOnline) để mọi call site
+ * (presence-service, SettingsPage) không phải sửa.
  */
 
-import { db } from '../db';
-import { SessionUser } from '../types';
-import { setLanPushHandler, runAsRemoteApply } from './lan-push-guard';
+import { supabase } from '../lib/supabaseClient';
+import type { SessionUser } from '../types';
 
 export interface LanOnlineUser {
   username: string;
@@ -41,166 +45,145 @@ export interface LanMutation {
 
 type PresenceListener = (users: LanOnlineUser[]) => void;
 type StatusListener = (isOnline: boolean, latencyMs: number) => void;
+type MutationListener = (mutation: LanMutation) => void;
+
+const PRESENCE_CHANNEL = 'smarthr-presence';
+const DATA_CHANNEL = 'smarthr-data';
 
 class LanSyncService {
-  private eventSource: EventSource | null = null;
+  private presenceChannel: any = null;
+  private dataChannel: any = null;
   private currentSession: SessionUser | null = null;
   private currentTabName: string = 'Bảng điều khiển';
-  private heartbeatInterval: any = null;
   private healthCheckInterval: any = null;
-  private lastSyncTimestamp: number = 0;
   private isServerOnline: boolean = false;
   private lastLatencyMs: number = 0;
 
   private presenceListeners: Set<PresenceListener> = new Set();
   private statusListeners: Set<StatusListener> = new Set();
+  private mutationListeners: Set<MutationListener> = new Set();
   private cachedOnlineUsers: LanOnlineUser[] = [];
 
   constructor() {
     if (typeof window !== 'undefined') {
-      // Tự động kết nối nếu đang mở qua http:// (không phải file://)
-      if (window.location.protocol.startsWith('http')) {
-        this.initSseConnection();
-      }
-
-      // Kiểm tra sức khỏe máy chủ định kỳ mỗi 15s
+      // Kiểm tra sức khỏe Supabase định kỳ mỗi 15s (thay poll /api/health)
       this.healthCheckInterval = setInterval(() => {
-        this.checkServerHealth();
+        void this.checkServerHealth();
       }, 15000);
     }
   }
 
-  // Khởi tạo kết nối Server-Sent Events (SSE)
-  public initSseConnection() {
-    if (typeof window === 'undefined' || !window.location.protocol.startsWith('http') || typeof EventSource === 'undefined') return;
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
+  private supabaseConfigured(): boolean {
+    const url = (import.meta as any)?.env?.VITE_SUPABASE_URL as string | undefined;
+    const anon = (import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY as string | undefined;
+    return Boolean(url && anon);
+  }
+
+  private ensureChannels() {
+    if (typeof window === 'undefined' || !this.supabaseConfigured()) return;
+    if (!this.presenceChannel) {
+      this.presenceChannel = supabase.channel(PRESENCE_CHANNEL, {
+        config: { presence: { key: this.currentSession?.username ?? 'anon' } },
+      });
+      this.presenceChannel
+        .on('presence', { event: 'sync' }, () => this.handlePresenceSync())
+        .on('presence', { event: 'join' }, () => this.handlePresenceSync())
+        .on('presence', { event: 'leave' }, () => this.handlePresenceSync())
+        .subscribe((status: string) => {
+          if (status === 'SUBSCRIBED') {
+            this.isServerOnline = true;
+            this.notifyStatus(true, this.lastLatencyMs);
+            void this.trackSelf();
+          } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+            this.isServerOnline = false;
+            this.notifyStatus(false, 0);
+          }
+        });
     }
+    if (!this.dataChannel) {
+      this.dataChannel = supabase.channel(DATA_CHANNEL);
+      this.dataChannel
+        .on('broadcast', { event: 'mutation' }, (msg: any) => {
+          const mutation = (msg?.payload ?? msg) as LanMutation;
+          if (mutation && mutation.table) this.notifyMutation(mutation);
+        })
+        .subscribe();
+    }
+  }
 
+  private async trackSelf() {
+    if (!this.presenceChannel || !this.currentSession) return;
     try {
-      const sseUrl = `${window.location.origin}/api/realtime`;
-      this.eventSource = new EventSource(sseUrl);
-
-      this.eventSource.onopen = () => {
-        this.isServerOnline = true;
-        this.notifyStatus(true, this.lastLatencyMs);
-        // Kéo bù dữ liệu nếu có
-        if (this.lastSyncTimestamp > 0) {
-          this.pullCatchUp();
-        }
-      };
-
-      // Nhận danh sách user online từ server
-      this.eventSource.addEventListener('presence', (e: MessageEvent) => {
-        try {
-          const users: LanOnlineUser[] = JSON.parse(e.data);
-          this.cachedOnlineUsers = users;
-          this.notifyPresence(users);
-        } catch (err) {
-          console.warn('[LAN SYNC] Lỗi parse presence SSE', err);
-        }
+      await this.presenceChannel.track({
+        username: this.currentSession.username,
+        displayName: this.currentSession.displayName,
+        role: this.currentSession.role,
+        currentTab: this.currentTabName,
+        lastActive: Date.now(),
       });
+    } catch {
+      // Realtime chưa sẵn sàng — bỏ qua, lần track sau sẽ cập nhật
+    }
+  }
 
-      // Nhận delta mutation từ máy khác trong mạng LAN
-      this.eventSource.addEventListener('mutation', async (e: MessageEvent) => {
-        try {
-          const mutation: LanMutation = JSON.parse(e.data);
-          await this.applyRemoteMutation(mutation);
-        } catch (err) {
-          console.warn('[LAN SYNC] Lỗi apply mutation SSE', err);
+  private handlePresenceSync() {
+    try {
+      const state = this.presenceChannel?.presenceState?.() ?? {};
+      const byUser = new Map<string, LanOnlineUser>();
+      for (const metas of Object.values(state) as any[]) {
+        for (const m of metas as any[]) {
+          if (!m?.username) continue;
+          const key = String(m.username).toLowerCase();
+          const prev = byUser.get(key);
+          const lastActive = Number(m.lastActive) || Date.now();
+          if (!prev || lastActive >= prev.lastActive) {
+            byUser.set(key, {
+              username: m.username,
+              displayName: m.displayName || m.username,
+              role: m.role || 'User',
+              currentTab: m.currentTab || 'Bảng điều khiển',
+              ip: '',
+              deviceLabel: 'Supabase Realtime',
+              lastActive,
+              color: m.color || '',
+            });
+          }
         }
-      });
-
-      this.eventSource.onerror = () => {
-        this.isServerOnline = false;
-        this.notifyStatus(false, 0);
-      };
+      }
+      this.cachedOnlineUsers = Array.from(byUser.values());
+      this.notifyPresence(this.cachedOnlineUsers);
     } catch (err) {
-      console.warn('[LAN SYNC] Không thể mở kết nối SSE', err);
+      console.warn('[SUPABASE SYNC] Lỗi parse presence', err);
     }
   }
 
   // Đăng ký Session người dùng hiện tại
   public setSession(session: SessionUser | null, tabName?: string) {
     if (tabName) this.currentTabName = tabName;
+    const changed = this.currentSession?.username !== session?.username;
     this.currentSession = session;
 
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
-    }
-
     if (session) {
-      this.sendHeartbeat();
-      // Gửi heartbeat đều đặn mỗi 10 giây
-      this.heartbeatInterval = setInterval(() => {
-        this.sendHeartbeat();
-      }, 10000);
+      this.ensureChannels();
+      if (changed) void this.trackSelf();
+      else void this.trackSelf();
+    } else {
+      void this.presenceChannel?.untrack?.().catch(() => undefined);
     }
   }
 
   // Cập nhật tab làm việc hiện tại
   public updateTab(tabName: string) {
     this.currentTabName = tabName;
-    if (this.currentSession) {
-      this.sendHeartbeat();
-    }
+    if (this.currentSession) void this.trackSelf();
   }
 
-  // Gửi Heartbeat lên server
-  private async sendHeartbeat() {
-    if (!this.currentSession || typeof window === 'undefined') return;
-    if (!window.location.protocol.startsWith('http')) return;
-
-    try {
-      await fetch(`${window.location.origin}/api/presence/heartbeat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: this.currentSession.username,
-          displayName: this.currentSession.displayName,
-          role: this.currentSession.role,
-          currentTab: this.currentTabName
-        })
-      });
-    } catch {
-      // Server offline hoặc mạng đứt -> Bỏ qua
-    }
-  }
-
-  // Áp dụng thay đổi từ máy khác vào Dexie IndexedDB cục bộ
-  private async applyRemoteMutation(mutation: LanMutation) {
-    // Nếu chính mình vừa gửi thì bỏ qua (tránh lặp)
-    if (this.currentSession && mutation.by === this.currentSession.username) {
-      return;
-    }
-
-    const { table, action, record, key } = mutation;
-    this.lastSyncTimestamp = Math.max(this.lastSyncTimestamp, mutation.timestamp || Date.now());
-
-    try {
-      const dexieTable = (db as any)[table];
-      if (!dexieTable) return;
-
-      // Bọc remote-apply: ghi Dexie nhưng KHÔNG đẩy ngược lên server (chống loop).
-      await runAsRemoteApply(async () => {
-        if (action === 'put' && record) {
-          await dexieTable.put(record);
-        } else if (action === 'bulkPut' && Array.isArray(record)) {
-          await dexieTable.bulkPut(record);
-        } else if (action === 'delete' && key !== undefined) {
-          await dexieTable.delete(key);
-        }
-      });
-    } catch (err) {
-      console.warn(`[LAN SYNC] Lỗi nạp mutation vào Dexie [${table}]`, err);
-    }
-  }
-
-  // Phát sóng một thay đổi dữ liệu lên server để đồng bộ sang các máy khác
+  // Phát sóng một thay đổi dữ liệu cho các máy khác (Supabase broadcast).
+  // Data layer mới đọc trực tiếp Postgres + postgres_changes; broadcast này
+  // chỉ là tín hiệu phụ để UI refresh lạc quan.
   public async broadcastMutation(table: string, action: 'put' | 'delete' | 'bulkPut', recordOrKey: any) {
-    if (typeof window === 'undefined' || !window.location.protocol.startsWith('http')) return;
+    if (typeof window === 'undefined' || !this.supabaseConfigured()) return;
+    this.ensureChannels();
 
     const myUsername = this.currentSession?.username || 'unknown';
     const payload: LanMutation = {
@@ -209,64 +192,61 @@ class LanSyncService {
       record: action === 'delete' ? undefined : recordOrKey,
       key: action === 'delete' ? recordOrKey : undefined,
       by: myUsername,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
 
     try {
-      await fetch(`${window.location.origin}/api/sync/mutate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      await this.dataChannel?.send({ type: 'broadcast', event: 'mutation', payload });
     } catch (err) {
-      console.warn('[LAN SYNC] Không thể gửi mutation lên server', err);
+      console.warn('[SUPABASE SYNC] Không thể gửi mutation broadcast', err);
     }
   }
 
-  // Kéo bù dữ liệu khi vừa kết nối lại (Catch-up sync)
+  // Supabase là source-of-truth tập trung → không cần kéo bù journal.
+  // Giữ method để tương thích SettingsPage cũ.
   public async pullCatchUp() {
-    if (typeof window === 'undefined' || !window.location.protocol.startsWith('http')) return;
-    try {
-      const res = await fetch(`${window.location.origin}/api/sync/pull?since=${this.lastSyncTimestamp}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      if (Array.isArray(data.mutations)) {
-        for (const mutation of data.mutations) {
-          await this.applyRemoteMutation(mutation);
-        }
-      }
-    } catch (err) {
-      console.warn('[LAN SYNC] Lỗi pull catch-up', err);
-    }
+    return;
   }
 
-  // Kiểm tra độ trễ và trạng thái máy chủ
+  // Kiểm tra độ trễ Supabase (thay /api/health của server.js đã xóa)
   public async checkServerHealth(): Promise<LanServerHealth | null> {
-    if (typeof window === 'undefined' || !window.location.protocol.startsWith('http')) {
-      return null;
+    if (typeof window === 'undefined') return null;
+
+    const url = (import.meta as any)?.env?.VITE_SUPABASE_URL as string | undefined;
+    const anon = (import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY as string | undefined;
+    if (!url || !anon) {
+      this.isServerOnline = false;
+      this.notifyStatus(false, 0);
+      return {
+        status: 'offline',
+        latencyMs: 0,
+        port: 443,
+        lanAddresses: [],
+        onlineUsers: this.cachedOnlineUsers,
+        totalMutations: 0,
+        uptime: 0,
+      };
     }
 
     const t0 = performance.now();
     try {
-      const res = await fetch(`${window.location.origin}/api/health`, { cache: 'no-store' });
+      const res = await fetch(`${String(url).replace(/\/$/, '')}/rest/v1/`, {
+        headers: { apikey: anon },
+        cache: 'no-store',
+      });
       const latencyMs = Math.round(performance.now() - t0);
       this.lastLatencyMs = latencyMs;
-
-      if (res.ok) {
-        const json = await res.json();
-        this.isServerOnline = true;
-        this.notifyStatus(true, latencyMs);
-
-        return {
-          status: 'online',
-          latencyMs,
-          port: json.port,
-          lanAddresses: json.lanAddresses || [],
-          onlineUsers: json.onlineUsers || [],
-          totalMutations: json.totalMutations || 0,
-          uptime: json.uptime || 0
-        };
-      }
+      this.isServerOnline = res.ok;
+      this.notifyStatus(res.ok, latencyMs);
+      return {
+        status: res.ok ? 'online' : 'offline',
+        latencyMs,
+        port: 443,
+        lanAddresses: [],
+        onlineUsers: this.cachedOnlineUsers,
+        totalMutations: 0,
+        uptime: 0,
+      };
     } catch {
       this.isServerOnline = false;
       this.notifyStatus(false, 0);
@@ -275,11 +255,11 @@ class LanSyncService {
     return {
       status: 'offline',
       latencyMs: 0,
-      port: 4173,
+      port: 443,
       lanAddresses: [],
-      onlineUsers: [],
+      onlineUsers: this.cachedOnlineUsers,
       totalMutations: 0,
-      uptime: 0
+      uptime: 0,
     };
   }
 
@@ -294,6 +274,7 @@ class LanSyncService {
   // Subscriptions
   public onPresence(listener: PresenceListener): () => void {
     this.presenceListeners.add(listener);
+    this.ensureChannels();
     if (this.cachedOnlineUsers.length > 0) {
       listener(this.cachedOnlineUsers);
     }
@@ -306,24 +287,26 @@ class LanSyncService {
     return () => this.statusListeners.delete(listener);
   }
 
+  /** Mới: lắng nghe mutation broadcast từ máy khác (data layer Supabase dùng). */
+  public onMutation(listener: MutationListener): () => void {
+    this.mutationListeners.add(listener);
+    this.ensureChannels();
+    return () => this.mutationListeners.delete(listener);
+  }
+
   private notifyPresence(users: LanOnlineUser[]) {
-    this.presenceListeners.forEach(fn => fn(users));
+    this.presenceListeners.forEach((fn) => fn(users));
   }
 
   private notifyStatus(online: boolean, latency: number) {
-    this.statusListeners.forEach(fn => fn(online, latency));
+    this.statusListeners.forEach((fn) => fn(online, latency));
+  }
+
+  private notifyMutation(mutation: LanMutation) {
+    // Bỏ qua echo chính mình (tránh lặp) — cùng luật với SSE cũ
+    if (this.currentSession && mutation.by === this.currentSession.username) return;
+    this.mutationListeners.forEach((fn) => fn(mutation));
   }
 }
 
 export const lanSyncService = new LanSyncService();
-
-// Đấu dây GỬI (P0-1 revive): Dexie hooks (db/index.ts) → journal server.
-// Mọi role như nhau (quyết user 2026-09-20: realtime 2 chiều, nhận hết + UI chặn).
-// broadcastMutation tự bỏ qua khi chưa login qua http; guard chặn bulk/remote-apply.
-setLanPushHandler((e) => {
-  void lanSyncService.broadcastMutation(
-    e.table,
-    e.action,
-    e.action === 'delete' ? e.key : e.record
-  );
-});

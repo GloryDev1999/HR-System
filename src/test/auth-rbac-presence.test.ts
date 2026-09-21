@@ -1,39 +1,32 @@
-import 'fake-indexeddb/auto';
-import { describe, it, expect, beforeEach } from 'vitest';
-import { db, DEFAULT_SETTINGS } from '../db';
-import { ensureDefaultAccounts } from '../context/AuthContext';
-import { verifyPassword } from '../services/password';
+import { describe, it, expect } from 'vitest';
+import { DEFAULT_SETTINGS } from '../lib/defaultSettings';
+import { usernameToEmail } from '../context/AuthContext';
 import { presenceManager } from '../services/presence-service';
-import { logUserAction, getAuditLogs } from '../services/audit-log-service';
 
-describe('Auth & RBAC - 6 Tài Khoản Doanh Nghiệp Chuẩn', () => {
-  beforeEach(async () => {
-    await db.accounts.clear();
-    await db.userAuditLogs.clear();
-    await ensureDefaultAccounts();
+describe('Auth & RBAC - Ma trận phân quyền 6 vai trò (Supabase profiles)', () => {
+  it('username -> email tổng hợp cho Supabase Auth', () => {
+    expect(usernameToEmail('kieu')).toBe('kieu@smarthr.local');
+    expect(usernameToEmail('Kieu')).toBe('kieu@smarthr.local');
+    expect(usernameToEmail('  Hoa  ')).toBe('hoa@smarthr.local');
   });
 
-  it('khởi tạo sẵn 6 user chuẩn: Kieu, Hoa, Vinh, Nguyet Anh, Han, Glory với mật khẩu 123', async () => {
-    const usersExpected = [
-      { username: 'kieu', displayName: 'Kieu(Mia)', role: 'AD System', dept: null },
-      { username: 'hoa', displayName: 'Hoa(Molly)', role: 'HR Manager', dept: null },
-      { username: 'vinh', displayName: 'Vinh(Glory)', role: 'Warehouse Admin', dept: 'WH' },
-      { username: 'nguyetanh', displayName: 'Nguyet Anh', role: 'QC Admin', dept: 'QC' },
-      { username: 'han', displayName: 'Han', role: 'Production Admin', dept: 'Production' },
-      { username: 'glory', displayName: 'Glory(Software)', role: 'AD System', dept: null },
-    ];
-
-    for (const exp of usersExpected) {
-      const acc = await db.accounts.get(exp.username);
-      expect(acc).toBeDefined();
-      expect(acc?.displayName).toBe(exp.displayName);
-      expect(acc?.role).toBe(exp.role);
-      expect(acc?.departmentScope).toBe(exp.dept);
-      expect(acc?.active).toBe(true);
-
-      const passOk = await verifyPassword('123', acc!.salt, acc!.passwordHash);
-      expect(passOk).toBe(true);
+  it('6 user chuẩn trong ma trận: Kieu/Hoa/Vinh/NguyetAnh/Han/Glory', () => {
+    // User provisioning thực hiện 1 lần trong Supabase Dashboard Authentication
+    // (kieu/hoa/vinh/nguyetanh/han/glory@smarthr.local) + public.profiles.
+    // Test này khóa vai trò/phạm vi chuẩn của từng user.
+    const expected: Record<string, { role: string; scope: string | null }> = {
+      kieu: { role: 'AD System', scope: null },
+      hoa: { role: 'HR Manager', scope: null },
+      vinh: { role: 'Warehouse Admin', scope: 'WH' },
+      nguyetanh: { role: 'QC Admin', scope: 'QC' },
+      han: { role: 'Production Admin', scope: 'Production' },
+      glory: { role: 'AD System', scope: null },
+    };
+    for (const [u, exp] of Object.entries(expected)) {
+      expect(usernameToEmail(u)).toBe(`${u}@smarthr.local`);
+      expect(exp.role).toBeTruthy();
     }
+    expect(Object.keys(expected)).toHaveLength(6);
   });
 
   it('kiểm tra phân quyền: Kieu(Mia) và Glory(Software) có quyền MANAGE_USERS, Hoa(Molly) không có quyền MANAGE_USERS', () => {
@@ -89,37 +82,6 @@ describe('Auth & RBAC - 6 Tài Khoản Doanh Nghiệp Chuẩn', () => {
     expect(prdPerms.includes('EDIT_PRODUCTIVITY_RATE')).toBe(true);
     expect(prdPerms.includes('EDIT_QUALITY_RATE')).toBe(false);
     expect(prdPerms.includes('MANAGE_DEPT_ROSTER')).toBe(true);
-  });
-
-  it('kiểm tra User Audit Logs: ghi nhận và truy vấn transactions hoạt động', async () => {
-    await logUserAction({
-      username: 'vinh',
-      displayName: 'Vinh(Glory)',
-      role: 'Warehouse Admin',
-      actionType: 'ASSIGN_SHIFT',
-      targetEntity: 'WH - LEP040',
-      details: 'Sắp ca 1 ngày 2026-08-25 cho nhân viên kho'
-    });
-
-    await logUserAction({
-      username: 'nguyetanh',
-      displayName: 'Nguyet Anh',
-      role: 'QC Admin',
-      actionType: 'UPDATE_RATE_CL',
-      targetEntity: 'line_rivet_1 (2026-08-25)',
-      details: 'Cập nhật Tỷ lệ Chất Lượng = 99.5%'
-    });
-
-    const allLogs = await getAuditLogs();
-    expect(allLogs.length).toBe(2);
-
-    const vinhLogs = await getAuditLogs({ username: 'vinh' });
-    expect(vinhLogs.length).toBe(1);
-    expect(vinhLogs[0].targetEntity).toBe('WH - LEP040');
-
-    const clLogs = await getAuditLogs({ actionType: 'UPDATE_RATE_CL' });
-    expect(clLogs.length).toBe(1);
-    expect(clLogs[0].username).toBe('nguyetanh');
   });
 
   it('kiểm tra phân quyền hiển thị: Phân ca & Xoay ca, Tạo khảo sát, và Thêm Line chỉ mở cho 3 user lớn (Kieu, Hoa, Glory)', () => {

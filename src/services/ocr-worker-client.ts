@@ -6,13 +6,10 @@
  *  - Mỗi lần chạy có requestId riêng -> progress/kết quả không bị trộn giữa các lần gọi
  *  - Các lần gọi được xếp hàng tuần tự (worker chỉ xử lý 1 ảnh tại một thời điểm)
  *  - terminateOcrWorker() huỷ worker và từ chối mọi tác vụ đang chờ
- *  - Worker được bundle INLINE (`?worker&inline`, update-model.md §2) nên chạy được
- *    cả file:// (double-click dist/index.html trong OneDrive) lẫn http://localhost.
- *    Model/wasm lấy từ bản nhúng base64 trong worker, không fetch file rời.
- *    Chỉ khi worker inline cũng lỗi mới rơi về ocr-engine-direct.ts
- *    (đọc model từ kho IndexedDB offline).
- *  - Chỉ worker này chứa bản nhúng 35MB. Main thread KHÔNG import
- *    EMBEDDED_MODELS để tránh nhân đôi bundle.
+ *  - Worker được bundle INLINE (`?worker&inline`) trong file JS build.
+ *    Model/wasm lấy qua fetch từ hosting (`VITE_MODEL_BASE_URL`, mặc định
+ *    `/PaddleOCR-Models` cùng host Cloudflare Pages) + Cache Storage.
+ *    Chỉ khi worker cũng lỗi mới rơi về ocr-engine-direct.ts.
  */
 import OcrWorker from '../workers/onnx-ocr.worker.ts?worker&inline';
 import type {

@@ -2,9 +2,15 @@
 
 Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát triển, nguyên nhân gốc rễ, phương án khắc phục và bài học kinh nghiệm để Coder (Agy CLI) tra cứu và xử lý nhanh chóng nếu gặp lại.
 
+> **THÔNG BÁO KIẾN TRÚC 2026-09-21:** Hệ thống đã chuyển từ Local-First (Dexie/IndexedDB + server.js LAN + OneDrive JSON + single-file offline) sang **Supabase Cloud (Postgres + Auth + Realtime + RLS) + Cloudflare Pages**. Các KB dưới đây gắn tag:
+> - `[RETIRED]` KB-002, KB-003, KB-006, KB-009, KB-010 (premature-clear Dexie part), KB-015, KB-016, KB-017 (đã thay bằng cloud fetch), KB-018, KB-019 — chỉ còn giá trị lịch sử, KHÔNG áp dụng cho code mới.
+> - `[GIỮ]` KB-001, KB-004, KB-005, KB-007, KB-008, KB-011, KB-012, KB-013 — logic UI/công thức/OCR độc lập backend, vẫn hiệu lực.
+
 ---
 
 ## Mục lục lỗi & bài học
+
+- [KB-021: Migrate Dexie → Supabase (mapping, TIME, Flag, RLS, cloud build)](#kb-021-migrate-dexie--supabase)
 
 - [KB-001: Lỗi tràn chữ / rớt dòng badge trên màn hình laptop (13-15.6 inch)](#kb-001-lỗi-tràn-chữ--rớt-dòng-badge-trên-màn-hình-laptop-13-156-inch)
 - [KB-002: Lỗi IndexedDB không cho phép Boolean làm Index Key](#kb-002-lỗi-indexeddb-không-cho-phép-boolean-làm-index-key)
@@ -333,3 +339,26 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
 - **Bài học kinh nghiệm (Key Takeaway)**:
   - Mọi giá trị đường dẫn đưa vào lệnh `reg add /d "...\"...\""` BẮT BUỘC qua Delayed Expansion (`!VAR!`), không bao giờ dùng `%VAR%` trực tiếp — vì `\"` không bảo vệ được `& | < > ^` khỏi parser cmd. Môi trường OneDrive doanh nghiệp (`Leggett & Platt`) gần như chắc chắn chứa `&`.
 
+
+---
+
+### KB-021: Migrate Dexie → Supabase (mapping, TIME, Flag, RLS, cloud build)
+- **Ngày ghi nhận**: 2026-09-21
+- **Vị trí**: `src/lib/tables.ts`, toàn bộ `src/pages/*`, `src/services/lan-sync-service.ts`, `src/workers/onnx-ocr.worker.ts`, `vite.config.ts`, `public/_headers`
+- **Triệu chứng (Symptom)**:
+  - Code cũ dùng field camelCase (`employeeId`, `checkIn`), Postgres dùng snake_case (`employee_id`, `check_in`) + kiểu TIME trả về `'HH:mm:ss'`.
+  - Field shadow Flag `isViolationFlag` (Dexie v6) không tồn tại trong Postgres → PostgREST báo `column does not exist` khi upsert.
+  - Metadata `_sync`/`_syncNS`/`_syncCL` của luồng JSON-merge cũ cũng không phải cột Postgres.
+  - Worker import `../generated/embedded-models` (chỉ sinh ở prebuild) làm `tsc` fail khi bỏ prebuild.
+- **Nguyên nhân gốc rễ (Root Cause)**:
+  - Không có lớp mapping tập trung; mỗi page tự gọi Dexie API.
+  - Single-file build + nhúng base64 là yêu cầu của kỷ nguyên offline `file://`, không còn cần khi có mạng + hosting.
+- **Giải pháp xử lý (Resolution)**:
+  1. `src/lib/tables.ts` tập trung: `convertRowToCamel` (TIME `HH:mm:ss`→`HH:mm`, alias `created_at`→`timestamp` cho audit), `convertToSnakeShallow` (shallow, object JSONB giữ nguyên, `undefined`→`null`, strip `*_flag`/`fts`/`_*`), `upsertOne/bulkUpsert(500/chunk)/updateByKey/removeByKey/bulkRemove/clearTable/listWhere/deleteWhere/getSetting/putSetting`, `useLiveTable` (select + `postgres_changes` debounce 300ms, channel dùng chung).
+  2. Auth: `username@smarthr.local` tổng hợp cho Supabase Auth; lock/attempt custom bỏ (server-side rate-limit + cờ `is_locked`/`active`); admin đổi pass user khác qua Dashboard.
+  3. Worker: bỏ embedded, `MODEL_BASE` từ `VITE_MODEL_BASE_URL` (mặc định `/PaddleOCR-Models`), `wasmPaths` theo origin + Cache Storage; COOP/COEP qua `public/_headers` (Cloudflare Pages) để giữ WASM đa luồng.
+  4. Xóa: `src/db`, `db-seeder`, `db-sync`, `json-sync-service`, `lan-push-guard`, `password`, `server.js`, BAT/VBS, `embed-models.mjs`, `viteSingleFile`, `prebuild`; giữ `dexie` cho `ocr-assets-store` (ONNX cache).
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Mọi khác biệt đặt tên/kiểu giữa client và Postgres PHẢI nằm trong 1 module mapper (`tables.ts`), không rải rác từng page.
+  - Trước khi upsert, strip mọi field không có trong schema SQL (Flag legacy, `_sync*`) — PostgREST không bỏ qua cột lạ.
+  - Verify cuối: `tsc --noEmit` 0 lỗi + `vitest run` 116/116 + `vite build` multi-file.

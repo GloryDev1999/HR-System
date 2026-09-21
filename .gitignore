@@ -5,5 +5,7 @@ extracted_figma/
 .DS_Store
 *.tmpPaddleOCR-Models/paddle_inference/
 shortcuts/
+# Supabase credentials + local env — KHÔNG commit (chỉ có .env.example)
+.env
 # Model nhúng base64 sinh ở prebuild (~35MB) — không commit, không sync OneDrive qua git
 src/generated/embedded-models.ts

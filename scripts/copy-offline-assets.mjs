@@ -1,9 +1,10 @@
 /**
- * Copy tài nguyên OFFLINE cần thiết cạnh dist/index.html sau khi vite build:
+ * Copy tài nguyên PaddleOCR-Models cạnh dist/index.html sau khi vite build
+ * để Cloudflare Pages serve cùng host (worker fetch + Cache Storage):
  *  - PaddleOCR-Models/onnx        : model detection + recognition (~14MB)
  *  - PaddleOCR-Models/dictionaries: latin_dict.txt (CTC decode tiếng Việt)
  *  - PaddleOCR-Models/ort         : ONNX Runtime Web WASM runtime (~13MB)
- * (public/* đã được vite tự copy: fonts, image.png, Leggett.jpg)
+ * (public/* đã được vite tự copy: fonts, image.png, Leggett.jpg, _headers)
  */
 import { cpSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
@@ -31,4 +32,4 @@ for (const t of targets) {
   console.log(`[offline-assets] Đã copy PaddleOCR-Models/${t} -> dist/`);
 }
 
-console.log('[offline-assets] Hoàn tất - bản build chạy offline đầy đủ.');
+console.log('[offline-assets] Hoàn tất - model sẵn sàng serve cùng dist.');

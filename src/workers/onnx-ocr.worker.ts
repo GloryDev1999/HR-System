@@ -21,51 +21,15 @@ import type {
 } from '../types/ocr-worker-protocol';
 
 import * as ort from 'onnxruntime-web/wasm';
-import { EMBEDDED_MODELS } from '../generated/embedded-models';
 
 // ---------------------------------------------------------------------------
-// Model nhúng base64 tại build-time (update-model.md §3 — chạy được file://,
-// không fetch file rời). Thứ tự ưu tiên: embedded -> fetch tương đối (http dev).
-// Chỉ worker này import EMBEDDED_MODELS để tránh bundle 35MB bị nhân đôi vào
-// main thread (ocr-engine-direct.ts giữ nguyên luồng IndexedDB + fetch).
+// Cloud-only: model lấy qua fetch từ hosting (Cloudflare Pages / dist) hoặc
+// VITE_MODEL_BASE_URL (vd Supabase Storage public bucket), cache bằng
+// Cache Storage API. KHÔNG còn nhúng base64 (~35MB) trong bundle.
 // ---------------------------------------------------------------------------
 
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes.buffer;
-}
-
-const embeddedBufferCache = new Map<string, ArrayBuffer>();
-
-function getEmbeddedBuffer(relPath: string): ArrayBuffer | null {
-  if (embeddedBufferCache.has(relPath)) {
-    return embeddedBufferCache.get(relPath)!.slice(0);
-  }
-  const b64 = EMBEDDED_MODELS[relPath];
-  if (!b64) return null;
-  try {
-    const buf = base64ToArrayBuffer(b64);
-    if (buf.byteLength > 0) {
-      embeddedBufferCache.set(relPath, buf);
-      return buf.slice(0);
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function getEmbeddedText(relPath: string): string | null {
-  const buf = getEmbeddedBuffer(relPath);
-  if (!buf) return null;
-  try {
-    return new TextDecoder('utf-8').decode(buf);
-  } catch {
-    return null;
-  }
-}
+const MODEL_BASE: string =
+  ((import.meta as any)?.env?.VITE_MODEL_BASE_URL as string | undefined) || '/PaddleOCR-Models';
 
 /**
  * Vá tạm global fetch trong lúc tạo session để ORT phục vụ file .wasm/.mjs
@@ -73,41 +37,27 @@ function getEmbeddedText(relPath: string): string | null {
  * Pattern đã được chứng minh ở ocr-engine-direct.ts (withIdbWasmFetch).
  * Không giả định shape object của `ort.env.wasm.wasmPaths` theo version ORT.
  */
-async function withEmbeddedWasmFetch<T>(fn: () => Promise<T>): Promise<T> {
-  const wasmB64 = EMBEDDED_MODELS['PaddleOCR-Models/ort/ort-wasm-simd-threaded.wasm'];
-  const mjsB64 = EMBEDDED_MODELS['PaddleOCR-Models/ort/ort-wasm-simd-threaded.mjs'];
-  if (!wasmB64 && !mjsB64) return fn();
-  const origFetch = (globalThis as any).fetch.bind(globalThis);
-  const patched = async (input: any, init?: any): Promise<Response> => {
-    try {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url || String(input);
-      if (wasmB64 && url.endsWith('ort-wasm-simd-threaded.wasm')) {
-        const buf = getEmbeddedBuffer('PaddleOCR-Models/ort/ort-wasm-simd-threaded.wasm');
-        if (buf) return new Response(buf, { headers: { 'Content-Type': 'application/wasm' } });
-      }
-      if (mjsB64 && url.endsWith('ort-wasm-simd-threaded.mjs')) {
-        const buf = getEmbeddedBuffer('PaddleOCR-Models/ort/ort-wasm-simd-threaded.mjs');
-        if (buf) return new Response(buf, { headers: { 'Content-Type': 'text/javascript' } });
-      }
-    } catch { /* rơi về fetch gốc */ }
-    return origFetch(input, init);
-  };
-  (globalThis as any).fetch = patched;
-  try {
-    return await fn();
-  } finally {
-    (globalThis as any).fetch = origFetch;
-  }
+async function withRemoteWasmFetch<T>(fn: () => Promise<T>): Promise<T> {
+  // Cloud: ORT tự fetch .wasm/.mjs runtime qua wasmPaths (cùng host, đúng MIME).
+  return fn();
 }
 
 // ---------------------------------------------------------------------------
 // Cấu hình
 // ---------------------------------------------------------------------------
 
-// Tự động tìm và tạo danh sách đường dẫn dự phòng (relative, absolute, origin, base)
+// Tự động tìm và tạo danh sách đường dẫn dự phòng (MODEL_BASE, origin, relative)
 function getCandidateUrls(relPath: string): string[] {
   const list: string[] = [];
   const clean = relPath.replace(/^\.?\//, '');
+  // Ưu tiên MODEL_BASE (VITE_MODEL_BASE_URL: cùng host Pages hoặc Storage bucket)
+  const sub = clean.replace(/^PaddleOCR-Models\//, '');
+  if (/^https?:\/\//.test(MODEL_BASE)) {
+    list.push(`${MODEL_BASE.replace(/\/$/, '')}/${sub}`);
+  } else {
+    const base = MODEL_BASE.startsWith('/') ? MODEL_BASE : `/${MODEL_BASE}`;
+    list.push(`${base.replace(/\/$/, '')}/${sub}`);
+  }
   try {
     if (typeof self !== 'undefined' && self.location && self.location.href) {
       const loc = self.location.href;
@@ -133,42 +83,26 @@ const DET_UNCLIP_RATIO = 1.6;    // hệ số nới rộng hộp (xấp xỉ Cli
 const REC_TARGET_H = 48;         // chiều cao chuẩn đầu vào recognition
 const MAX_BOXES = 400;           // trần số vùng chữ xử lý mỗi ảnh
 
-// Tự động cấu hình đường dẫn WASM thích ứng cả localhost (đa luồng SIMD) và offline file://
-const isFileProtocolWorker =
-  typeof self !== 'undefined' && self.location && (!self.location.origin || self.location.origin === 'null');
+// Cloud-only: SharedArrayBuffer phụ thuộc header COOP/COEP của host.
 const hasSharedArrayBuffer = typeof SharedArrayBuffer !== 'undefined';
 const hwConcurrency = (typeof self !== 'undefined' && (self as any).navigator?.hardwareConcurrency) || 4;
 
-function configureWasmForEnvironment(isOfflineFile?: boolean) {
-  const offline = isOfflineFile ?? isFileProtocolWorker;
-  if (offline || !hasSharedArrayBuffer) {
-    // Chế độ file:// hoặc môi trường không hỗ trợ SharedArrayBuffer:
-    // Dùng wasmBinary nhúng trong RAM, 1 luồng an toàn tuyệt đối
-    const wasmBuf = getEmbeddedBuffer('PaddleOCR-Models/ort/ort-wasm-simd-threaded.wasm');
-    if (wasmBuf) {
-      ort.env.wasm.wasmBinary = wasmBuf;
-      delete (ort.env.wasm as any).wasmPaths;
+function configureWasmForEnvironment() {
+  // Cloud (Cloudflare Pages + COOP/COEP): SharedArrayBuffer khả dụng ->
+  // đa luồng (tối đa 4) + SIMD. Thiếu SAB -> 1 luồng, model vẫn fetch như thường.
+  delete (ort.env.wasm as any).wasmBinary;
+  try {
+    if (self.location?.origin && self.location.origin !== 'null') {
+      ort.env.wasm.wasmPaths = `${self.location.origin}${MODEL_BASE}/ort/`;
+    } else {
+      ort.env.wasm.wasmPaths = `${MODEL_BASE}/ort/`;
     }
-    (ort.env.wasm as any).numThreads = 1;
-    (ort.env.wasm as any).simd = true;
-    (ort.env.wasm as any).proxy = false;
-  } else {
-    // Chế độ localhost / HTTP có SharedArrayBuffer:
-    // Dùng đa luồng song song (tối đa 4 threads) + SIMD để quét siêu tốc trong vài giây
-    delete (ort.env.wasm as any).wasmBinary;
-    try {
-      if (self.location?.origin && self.location.origin !== 'null') {
-        ort.env.wasm.wasmPaths = `${self.location.origin}/PaddleOCR-Models/ort/`;
-      } else {
-        ort.env.wasm.wasmPaths = './PaddleOCR-Models/ort/';
-      }
-    } catch {
-      ort.env.wasm.wasmPaths = '/PaddleOCR-Models/ort/';
-    }
-    (ort.env.wasm as any).numThreads = Math.min(hwConcurrency, 4);
-    (ort.env.wasm as any).simd = true;
-    (ort.env.wasm as any).proxy = false;
+  } catch {
+    ort.env.wasm.wasmPaths = `${MODEL_BASE}/ort/`;
   }
+  (ort.env.wasm as any).numThreads = hasSharedArrayBuffer ? Math.min(hwConcurrency, 4) : 1;
+  (ort.env.wasm as any).simd = true;
+  (ort.env.wasm as any).proxy = false;
 }
 
 // Khởi tạo ban đầu
@@ -197,9 +131,6 @@ async function fetchWithCache(url: string): Promise<ArrayBuffer> {
 }
 
 async function fetchFirstAvailableBuffer(relPath: string): Promise<ArrayBuffer> {
-  // Ưu tiên bản nhúng (file:// không fetch được file rời)
-  const embedded = getEmbeddedBuffer(relPath);
-  if (embedded) return embedded.slice(0);
   const candidates = getCandidateUrls(relPath);
   let lastError: any = null;
   for (const url of candidates) {
@@ -214,9 +145,6 @@ async function fetchFirstAvailableBuffer(relPath: string): Promise<ArrayBuffer> 
 }
 
 async function fetchFirstAvailableText(relPath: string): Promise<string> {
-  // Ưu tiên bản nhúng (file:// không fetch được file rời)
-  const embedded = getEmbeddedText(relPath);
-  if (embedded !== null && embedded.length > 0) return embedded;
   const candidates = getCandidateUrls(relPath);
   let lastError: any = null;
   for (const url of candidates) {
@@ -330,11 +258,11 @@ async function ensureBundle(requestId: string): Promise<SessionBundle> {
 
   progress(requestId, 12, 'LOAD_DET', `Đang tự động nhận diện và tải mô hình phát hiện vùng chữ...`);
   const detBuf = await fetchFirstAvailableBuffer('PaddleOCR-Models/onnx/ch_PP-OCRv4_det_infer.onnx');
-  const det = await withEmbeddedWasmFetch(() => ort.InferenceSession.create(detBuf, { executionProviders: ['wasm'] }));
+  const det = await withRemoteWasmFetch(() => ort.InferenceSession.create(detBuf, { executionProviders: ['wasm'] }));
 
   progress(requestId, 20, 'LOAD_REC', `Đang tự động nhận diện và tải mô hình nhận dạng ký tự...`);
   const recBuf = await fetchFirstAvailableBuffer('PaddleOCR-Models/onnx/latin_PP-OCRv3_rec.onnx');
-  const rec = await withEmbeddedWasmFetch(() => ort.InferenceSession.create(recBuf, { executionProviders: ['wasm'] }));
+  const rec = await withRemoteWasmFetch(() => ort.InferenceSession.create(recBuf, { executionProviders: ['wasm'] }));
 
   bundle = { det, rec, charset: charsetInfo.charset, dictSize: charsetInfo.dictSize, charsetNote: '', dictSource: charsetInfo.source, viDictInfo: charsetInfo.viInfo };
   return bundle;
@@ -671,7 +599,7 @@ self.onmessage = async (e: MessageEvent<OCRWorkerRequest>) => {
     const { requestId, payload } = req;
     if (!payload?.imageBytes) throw new Error('Không nhận được dữ liệu ảnh');
 
-    configureWasmForEnvironment(payload.isFileProtocol);
+    configureWasmForEnvironment();
     const b = await ensureBundle(requestId);
 
     progress(requestId, 26, 'DECODE', 'Giải mã ảnh...');

@@ -16,7 +16,6 @@
  */
 
 import { getOcrAsset, getStoredOcrAssetKeys, isFileProtocol } from './ocr-assets-store';
-import { EMBEDDED_AVAILABLE, EMBEDDED_MANIFEST } from '../generated/embedded-manifest';
 
 export interface IONNXModelHealthReport {
   status: 'READY' | 'WARNING' | 'ERROR';
@@ -52,8 +51,8 @@ export interface IONNXModelHealthReport {
   timestamp: string;
   /** Giao thức trang đang chạy: file = mở trực tiếp offline, http = qua localhost/server */
   protocol?: 'file' | 'http';
-  /** Nguồn model thực tế: embedded (nhúng trong bundle, chạy được file://) | server (fetch) | idb (đã nạp offline) | mixed | missing */
-  assetSource?: 'embedded' | 'server' | 'idb' | 'mixed' | 'missing';
+  /** Nguồn model thực tế: server (fetch từ hosting/Storage) | idb (kho offline) | mixed | missing */
+  assetSource?: 'server' | 'idb' | 'mixed' | 'missing';
   /** true khi đang file:// mà kho offline còn thiếu -> UI hiện nút "Nạp model offline" */
   needsOfflineAssets?: boolean;
 }
@@ -183,26 +182,16 @@ export async function testONNXModelRuntime(): Promise<IONNXModelHealthReport> {
   const [detIdb, recIdb, ortIdb] = await Promise.all([
     idbSizeOf('det'), idbSizeOf('rec'), idbSizeOf('ort-wasm'),
   ]);
-  // Bản nhúng build-time (update-model.md §3): worker inline đọc trực tiếp,
-  // chạy được cả file:// mà không cần fetch hay kho IndexedDB.
-  const embeddedBytesOf = (relPath: string): number | undefined => {
-    if (!EMBEDDED_AVAILABLE) return undefined;
-    const key = relPath.replace(/^\.\//, '');
-    const n = (EMBEDDED_MANIFEST.fileBytes as Record<string, number>)[key];
-    return typeof n === 'number' && n > 0 ? n : undefined;
-  };
-  const detEmbedded = embeddedBytesOf(MODEL_SPECS[0].path);
-  const recEmbedded = embeddedBytesOf(MODEL_SPECS[1].path);
-  const ortEmbedded = embeddedBytesOf(ORT_WASM_PATH);
-  const detOk = detEmbedded !== undefined || detProbe.exists || detIdb !== undefined;
-  const recOk = recEmbedded !== undefined || recProbe.exists || recIdb !== undefined;
-  const ortOk = ortEmbedded !== undefined || ortProbe.exists || ortIdb !== undefined;
-  const detSize = detEmbedded ?? detProbe.size ?? detIdb;
-  const recSize = recEmbedded ?? recProbe.size ?? recIdb;
+  // Cloud-only: model từ hosting/Storage (fetch) + bù kho IndexedDB. Không còn bản nhúng base64.
+  const detOk = detProbe.exists || detIdb !== undefined;
+  const recOk = recProbe.exists || recIdb !== undefined;
+  const ortOk = ortProbe.exists || ortIdb !== undefined;
+  const detSize = detProbe.size ?? detIdb;
+  const recSize = recProbe.size ?? recIdb;
 
   const modelResults = [
-    { spec: MODEL_SPECS[0], ok: detOk, size: detSize, viaIdb: detEmbedded === undefined && !detProbe.exists && detIdb !== undefined, viaEmbedded: detEmbedded !== undefined },
-    { spec: MODEL_SPECS[1], ok: recOk, size: recSize, viaIdb: recEmbedded === undefined && !recProbe.exists && recIdb !== undefined, viaEmbedded: recEmbedded !== undefined },
+    { spec: MODEL_SPECS[0], ok: detOk, size: detSize, viaIdb: !detProbe.exists && detIdb !== undefined },
+    { spec: MODEL_SPECS[1], ok: recOk, size: recSize, viaIdb: !recProbe.exists && recIdb !== undefined },
   ];
 
   // 2) Từ điển latin: fetch tương đối, thiếu thì bù IndexedDB
@@ -228,17 +217,6 @@ export async function testONNXModelRuntime(): Promise<IONNXModelHealthReport> {
       dictCharCount = lines.length;
       const charset = new Set(lines.join('').split(''));
       hasVietnamese = ['ệ', 'ơ', 'ư', 'đ', 'ậ'].every(c => charset.has(c));
-    }
-  }
-  // Bản nhúng build-time: worker inline dùng trực tiếp, không cần fetch/IDB.
-  let dictViaEmbedded = false;
-  if (!dictExists && EMBEDDED_AVAILABLE) {
-    const info = (EMBEDDED_MANIFEST.dictInfo as Record<string, { lines: number; hasVietnamese: boolean }>)['PaddleOCR-Models/dictionaries/latin_dict.txt'];
-    if (info && info.lines > 0) {
-      dictExists = true;
-      dictViaEmbedded = true;
-      dictCharCount = info.lines;
-      hasVietnamese = info.hasVietnamese;
     }
   }
 
@@ -273,19 +251,6 @@ export async function testONNXModelRuntime(): Promise<IONNXModelHealthReport> {
     if (viIdb && viIdb.bytes.byteLength > 0) {
       analyseVi(new TextDecoder('utf-8').decode(viIdb.bytes));
       viStatusNote += ' (từ kho offline)';
-    } else if (EMBEDDED_AVAILABLE) {
-      const info = (EMBEDDED_MANIFEST.dictInfo as Record<string, { lines: number; hasVietnamese8: boolean }>)['PaddleOCR-Models/dictionaries/vi_dict.txt'];
-      if (info && info.lines > 0) {
-        viExists = true;
-        viDictCount = info.lines;
-        viHasVietnamese = info.hasVietnamese8;
-        viIsComprehensive = viDictCount === 235;
-        viStatusNote = viIsComprehensive
-          ? 'Comprehensive HR Vietnamese (nhúng trong app) - dùng cho HR RAG post-process'
-          : `Kích thước ${viDictCount} (nhúng trong app), kiểm tra lại mapping với model`;
-      } else {
-        viStatusNote = 'không tìm thấy (không bắt buộc)';
-      }
     } else {
       viStatusNote = 'không tìm thấy (không bắt buộc)';
     }
@@ -301,14 +266,12 @@ export async function testONNXModelRuntime(): Promise<IONNXModelHealthReport> {
         : 'WARNING';
 
   const viaIdbCount = modelResults.filter(m => m.viaIdb).length + (dictViaIdb ? 1 : 0);
-  const viaServerCount = modelResults.filter(m => !m.viaIdb && !m.viaEmbedded && m.ok).length + (!dictViaIdb && !dictViaEmbedded && dictExists ? 1 : 0);
-  const allEmbedded = detEmbedded !== undefined && recEmbedded !== undefined && ortEmbedded !== undefined && dictViaEmbedded;
+  const viaServerCount = modelResults.filter(m => !m.viaIdb && m.ok).length + (!dictViaIdb && dictExists ? 1 : 0);
   const assetSource: IONNXModelHealthReport['assetSource'] =
-    allEmbedded ? 'embedded'
-      : viaIdbCount > 0 && viaServerCount > 0 ? 'mixed'
-        : viaIdbCount > 0 ? 'idb'
-          : viaServerCount > 0 ? 'server'
-            : 'missing';
+    viaIdbCount > 0 && viaServerCount > 0 ? 'mixed'
+      : viaIdbCount > 0 ? 'idb'
+        : viaServerCount > 0 ? 'server'
+          : 'missing';
 
   const missing: string[] = [];
   if (!detOk) missing.push('det model');
@@ -325,12 +288,12 @@ export async function testONNXModelRuntime(): Promise<IONNXModelHealthReport> {
       threads,
       webgpuSupported,
     },
-    models: modelResults.map(({ spec, ok, size, viaIdb, viaEmbedded }) => ({
+    models: modelResults.map(({ spec, ok, size, viaIdb }) => ({
       name: spec.name,
       path: spec.path,
       loaded: ok,
       sizeFormatted: formatSize(size),
-      description: `${spec.desc} — ${ok ? `File sẵn sàng${viaEmbedded ? ' (nhúng trong app)' : viaIdb ? ' (kho offline)' : ''}` : 'KHÔNG tìm thấy'}${!coreReady && missing.length ? '' : ''}`,
+      description: `${spec.desc} — ${ok ? `File sẵn sàng${viaIdb ? ' (kho offline)' : ' (hosting/Storage)'}` : 'KHÔNG tìm thấy'}`,
     })),
     dictionary: {
       path: DICT_PATH,
