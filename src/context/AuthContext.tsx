@@ -34,7 +34,11 @@ export const DEFAULT_ADMIN_USERNAME = 'kieu';
  * kieu@hr.os, hoa@hr.os, vinh@hr.os,
  * nguyetanh@hr.os, han@hr.os, glory@hr.os
  */
-export const usernameToEmail = (username: string) => `${username.trim().toLowerCase()}@hr.os`;
+export const usernameToEmail = (username: string) => {
+  const u = username.trim().toLowerCase();
+  // Cho phép nhập cả username (kieu) lẫn full email (kieu@hr.os)
+  return u.includes('@') ? u : `${u}@hr.os`;
+};
 
 function getDepartmentScope(role: RoleType): string | null {
   switch (role) {
@@ -232,7 +236,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const changePassword = useCallback(async (currentPassword: string, newPassword: string): Promise<{ ok: boolean; error?: string }> => {
     if (!session) return { ok: false, error: 'Chưa đăng nhập' };
-    if (newPassword.length < 3) return { ok: false, error: 'Mật khẩu mới phải tối thiểu 3 ký tự' };
+    if (newPassword.length < 6) return { ok: false, error: 'Mật khẩu mới phải tối thiểu 6 ký tự (chính sách Supabase Auth)' };
 
     // Xác thực lại mật khẩu hiện tại bằng cách sign-in lại
     const { error: reErr } = await supabase.auth.signInWithPassword({

@@ -147,7 +147,7 @@ export const LoginScreen: React.FC = () => {
         </div>
 
         <p className="text-center text-[10px] text-slate-400 mt-4">
-          Xác thực cục bộ trên máy này (IndexedDB + SHA-256). Dữ liệu nhân sự không rời khỏi thiết bị.
+          Xác thực qua Supabase Auth. Nhập username (vd: kieu) hoặc full email (kieu@hr.os).
         </p>
       </div>
     </div>

@@ -11,6 +11,10 @@
 -- thêm dòng: create extension if not exists "pgcrypto" with schema "extensions";)
 -- ============================================================================
 
+-- Yêu cầu extension pgcrypto (gen_random_uuid/gen_salt/crypt). Supabase cài sẵn
+-- trong schema extensions; dòng này đảm bảo có nếu project chưa bật.
+CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA "extensions";
+
 -- ----------------------------------------------------------------------------
 -- BƯỚC 0: dọn profiles mồ côi (id không còn trong auth.users) để tránh trùng
 -- username khi tạo lại. An toàn khi chạy lại nhiều lần.
