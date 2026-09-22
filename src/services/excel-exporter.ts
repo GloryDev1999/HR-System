@@ -1,8 +1,9 @@
-import { IEmployee, IDailyTimesheetCell, IOvertimeRecord, ISystemSettings, IProductivityQualityRate } from '../types';
+import { IEmployee, IDailyTimesheetCell, IOvertimeRecord, ILeaveRequest, ISystemSettings, IProductivityQualityRate } from '../types';
 import { computeEmployeeTimesheetSummary } from './formula-engine';
 import { FORMULA_DEFS, PRODUCTIVITY_FORMULA, DILIGENCE_FORMULA } from './formula-defs';
 import { generateCalendarDays, CalendarDay } from './calendar-utils';
 import { formatPayPeriodLabel } from './pay-period';
+import { getDayParts } from './day-hours';
 import { DEFAULT_SETTINGS } from '../lib/defaultSettings';
 import { listAll } from '../lib/tables';
 
@@ -11,11 +12,12 @@ type CycleMode = 'SEASONAL' | 'OFFICIAL' | 'ALL';
 export async function exportTimesheetToExcel(
   employees: IEmployee[],
   timesheets: IDailyTimesheetCell[],
-  _overtimes: IOvertimeRecord[],
+  overtimes: IOvertimeRecord[],
   month: number = 8,
   year: number = 2026,
   cycle: CycleMode = 'SEASONAL',
-  systemSettings?: ISystemSettings
+  systemSettings?: ISystemSettings,
+  leaveRequests: ILeaveRequest[] = []
 ) {
   const settings = systemSettings || (() => { try { const raw = localStorage.getItem('smarthr_settings'); return raw ? JSON.parse(raw) as ISystemSettings : DEFAULT_SETTINGS; } catch { return DEFAULT_SETTINGS; } })();
   // đảm bảo backward compat khi settings thiếu 2 field mới
@@ -62,8 +64,8 @@ export async function exportTimesheetToExcel(
       }
     } catch {}
 
-    // Title Row 2 — hòa chuẩn file gốc F2:AM2
-    ws.mergeCells('F2:AM2');
+    // Title Row 2 — hòa chuẩn file gốc, mở rộng theo layout 3 cột/ngày (tới cột DT=124)
+    ws.mergeCells('F2:DT2');
     const titleCell = ws.getCell('F2');
     const monthStr = String(month).padStart(2, '0');
     titleCell.value = `BẢNG CHẤM CÔNG THÁNG ${monthStr}/${year} — ${cycleLabel.toUpperCase()} — TIMESHEET`;
@@ -72,7 +74,7 @@ export async function exportTimesheetToExcel(
     ws.getRow(2).height = 22;
 
     // Row 3 — mô tả kỳ công thông minh + metadata
-    ws.mergeCells('A3:BF3');
+    ws.mergeCells('A3:DT3');
     const metaCell = ws.getCell('A3');
     metaCell.value = `Kỳ công: Chính thức 21-20 = ${officialLabel}  |  Thời vụ 1-31 = ${seasonalLabel}  |  Đang xuất: ${cycleLabel}  |  Tổng ${sheetEmployees.length} NV • Xuất lúc ${new Date().toLocaleString('vi-VN')} • Lọc: ${monthStr}/${year}`;
     metaCell.font = { name: 'Arial', size: 8, italic: true, color: { argb: 'FF475569' } };
@@ -113,34 +115,50 @@ export async function exportTimesheetToExcel(
       ws.getColumn(idx + 1).width = col.width;
     });
 
-    // Calendar 31 days — chuẩn gốc I:AM
+    // Calendar 31 days × 3 cột (Giờ làm / Phép / Tăng ca) — base 6 + dayIndex*3
+    // (dayIndex 1..31 → ngày 1 ở cột 9-11, ngày 31 ở cột 99-101)
     calendarDays.forEach((day) => {
-      const colIdx = 8 + day.dayIndex;
-      const cell5 = ws.getCell(5, colIdx);
+      const base = 6 + day.dayIndex * 3;
+      const borderThin = { top: { style: 'thin', color: { argb: 'FFCBD5E1' } }, left: { style: 'thin', color: { argb: 'FFCBD5E1' } }, right: { style: 'thin', color: { argb: 'FFCBD5E1' } }, bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } } } as any;
+
+      ws.mergeCells(5, base, 5, base + 2);
+      const cell5 = ws.getCell(5, base);
       cell5.value = `${day.dayNum}/${String(day.monthNum).padStart(2, '0')}`;
       cell5.font = { name: 'Arial', size: 9, bold: true };
       cell5.alignment = { horizontal: 'center', vertical: 'middle' };
       cell5.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
-      cell5.border = { top: { style: 'thin', color: { argb: 'FFCBD5E1' } }, left: { style: 'thin', color: { argb: 'FFCBD5E1' } }, right: { style: 'thin', color: { argb: 'FFCBD5E1' } }, bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } } };
+      cell5.border = borderThin;
 
-      const cell6 = ws.getCell(6, colIdx);
+      ws.mergeCells(6, base, 6, base + 2);
+      const cell6 = ws.getCell(6, base);
       cell6.value = day.dayEn;
       cell6.font = { name: 'Arial', size: 8 };
       cell6.alignment = { horizontal: 'center', vertical: 'middle' };
       cell6.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
 
-      const cell7 = ws.getCell(7, colIdx);
-      cell7.value = day.dayVi;
-      cell7.font = { name: 'Arial', size: 8, bold: true };
-      cell7.alignment = { horizontal: 'center', vertical: 'middle' };
+      const subs = ['Giờ', 'Phép', 'TC'];
+      subs.forEach((s, i) => {
+        const c = ws.getCell(7, base + i);
+        c.value = s;
+        c.font = { name: 'Arial', size: 8, bold: true };
+        c.alignment = { horizontal: 'center', vertical: 'middle' };
+        c.border = borderThin;
+      });
 
       if (day.isSunday) {
         cell5.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFED7AA' } };
         cell6.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFED7AA' } };
-        cell7.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFED7AA' } };
+        subs.forEach((_, i) => {
+          ws.getCell(7, base + i).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFED7AA' } };
+        });
       }
-      ws.getColumn(colIdx).width = 5.5;
+      ws.getColumn(base).width = 6;
+      ws.getColumn(base + 1).width = 7;
+      ws.getColumn(base + 2).width = 6;
     });
+
+    // Summary bắt đầu sau 31×3 cột ngày: 6+31*3+1 = 102
+    const SUMMARY_BASE = 102;
 
     // Summary headers (col 40-62) — đã bỏ các ký hiệu AN, AO, AW=..., AX, AY, AZ, BA, BB
     const summaryHeaders = [
@@ -170,7 +188,7 @@ export async function exportTimesheetToExcel(
     ];
 
     summaryHeaders.forEach((hdr, idx) => {
-      const colIdx = 40 + idx;
+      const colIdx = SUMMARY_BASE + idx;
       ws.mergeCells(5, colIdx, 7, colIdx);
       const cell = ws.getCell(5, colIdx);
       cell.value = hdr;
@@ -183,12 +201,16 @@ export async function exportTimesheetToExcel(
       ws.getColumn(colIdx).width = idx === 22 ? 18 : (idx >= 12 && idx <= 18 ? 13 : 11);
     });
 
-    // Ẩn cột BaseRate ẩn (62)
-    ws.getColumn(62).hidden = true;
+    // Ẩn cột BaseRate ẩn (SUMMARY_BASE+22 = 124)
+    ws.getColumn(SUMMARY_BASE + 22).hidden = true;
 
     // Dữ liệu NV
     const timesheetCellMap = new Map<string, IDailyTimesheetCell>();
     timesheets.forEach(c => timesheetCellMap.set(c.employeeId_date, c));
+    const overtimeCellMap = new Map<string, IOvertimeRecord>();
+    overtimes.forEach(o => overtimeCellMap.set(o.employeeId_date, o));
+    const leaveCellMap = new Map<string, ILeaveRequest>();
+    leaveRequests.forEach(r => leaveCellMap.set(`${r.employeeId}_${r.date}`, r));
 
     // Tính tỷ lệ trung bình % NS và % CL của từng chuyền sản xuất trong kỳ của sheet
     const lineAverageRatesMap = (() => {
@@ -254,68 +276,124 @@ export async function exportTimesheetToExcel(
       ws.getCell(r, 8).value = `${emp.employeeId}_${month}`;
 
       for (const day of calendarDays) {
-        const colIdx = 8 + day.dayIndex;
+        const base = 6 + day.dayIndex * 3;
         const key = `${emp.employeeId}_${day.dateStr}`;
         const cellData = timesheetCellMap.get(key);
-        const val = cellData?.statusCode || '';
-        const cell = ws.getCell(r, colIdx);
-        cell.value = val;
-        cell.alignment = { horizontal: 'center', vertical: 'middle' };
-        cell.font = { name: 'Arial', size: 9 };
-        if (val === 'W') { cell.font = { color: { argb: 'FF065F46' }, bold: true } as any; }
-        else if (val === 'N') { cell.font = { color: { argb: 'FF3730A3' }, bold: true } as any; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E7FF' } }; }
-        else if (val === 'Off' || val === 'OFF') { cell.font = { color: { argb: 'FF991B1B' }, bold: true } as any; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }; }
-        else if (val === 'AL') { cell.font = { color: { argb: 'FF1E40AF' }, bold: true } as any; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDBEAFE' } }; }
-        else if (val === 'UL') { cell.font = { color: { argb: 'FF475569' } } as any; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } }; }
-        else if (val === 'SL') { cell.font = { color: { argb: 'FF9D174D' }, bold: true } as any; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE7F3' } }; }
-        else if (val === 'PL') { cell.font = { color: { argb: 'FF0F766E' }, bold: true } as any; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFCCFBF1' } }; }
-        else if (val === 'PH') { cell.font = { color: { argb: 'FF92400E' }, bold: true } as any; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } }; }
-        else if (val === 'ML' || val === 'MATERNITY LEAVE') { cell.font = { color: { argb: 'FF6B21A8' }, bold: true } as any; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3E8FF' } }; }
-        else if (val === 'BT') { cell.font = { color: { argb: 'FF0284C7' }, bold: true } as any; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0F2FE' } }; }
-        else if (val === 'LA' || val === 'ED') { cell.font = { color: { argb: 'FF9A3412' }, bold: true } as any; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEDD5' } }; }
-        else if (val === 'MCO' || val === 'MCI') { cell.font = { color: { argb: 'FF991B1B' }, bold: true } as any; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }; }
-        if (cellData?.violationNote) cell.note = cellData.violationNote;
+        const otData = overtimeCellMap.get(key);
+        const leaveData = leaveCellMap.get(key);
+        const parts = getDayParts(emp, cellData, otData ?? null, leaveData, day.isSunday);
+
+        // Sub 0 — Giờ làm
+        const cWork = ws.getCell(r, base);
+        cWork.alignment = { horizontal: 'center', vertical: 'middle' };
+        cWork.font = { name: 'Arial', size: 9 };
+        if (parts.worked !== null) {
+          cWork.value = parts.worked;
+          cWork.numFmt = '0.0';
+          if (parts.isFullLegalLeave) {
+            cWork.font = { name: 'Arial', size: 9, color: { argb: 'FF64748B' } } as any;
+          } else if (parts.worked >= 8) {
+            cWork.font = { name: 'Arial', size: 9, color: { argb: 'FF065F46' }, bold: true } as any;
+            cWork.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFECFDF5' } };
+          } else if (parts.worked >= 6) {
+            cWork.font = { name: 'Arial', size: 9, color: { argb: 'FF9A3412' }, bold: true } as any;
+            cWork.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEDD5' } };
+          } else {
+            cWork.font = { name: 'Arial', size: 9, color: { argb: 'FF991B1B' }, bold: true } as any;
+            cWork.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+          }
+        }
+
+        // Sub 1 — Phép
+        const cLeave = ws.getCell(r, base + 1);
+        cLeave.alignment = { horizontal: 'center', vertical: 'middle' };
+        cLeave.font = { name: 'Arial', size: 8 };
+        if (parts.leave) {
+          cLeave.value = parts.leave.text;
+          const lt = parts.leave.leaveType;
+          const argb =
+            lt === 'AL' ? 'FF1E40AF' :
+            lt === 'UL' ? 'FF475569' :
+            lt === 'SL' ? 'FF9D174D' :
+            lt === 'PL' ? 'FF0F766E' :
+            lt === 'PH' ? 'FF92400E' :
+            lt === 'BT' ? 'FF0284C7' :
+            lt === 'ML' ? 'FF6B21A8' :
+            parts.leave.tone === 'rejected' ? 'FF991B1B' : 'FF92400E';
+          cLeave.font = { name: 'Arial', size: 8, color: { argb }, bold: true } as any;
+          if (parts.leave.tone === 'pending') {
+            cLeave.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } };
+          }
+        }
+
+        // Sub 2 — Tăng ca (logic Overtime Table)
+        const cOt = ws.getCell(r, base + 2);
+        cOt.alignment = { horizontal: 'center', vertical: 'middle' };
+        cOt.font = { name: 'Arial', size: 9 };
+        const otH = parts.ot?.hours || 0;
+        if (otH > 0) {
+          cOt.value = otH;
+          cOt.numFmt = '0.00';
+          if (parts.ot?.verificationStatus === 'MATCHED') {
+            cOt.font = { name: 'Arial', size: 9, color: { argb: 'FF065F46' }, bold: true } as any;
+            cOt.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
+          } else if (parts.ot?.verificationStatus === 'MISMATCH') {
+            cOt.font = { name: 'Arial', size: 9, color: { argb: 'FF991B1B' }, bold: true } as any;
+            cOt.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+          } else {
+            cOt.font = { name: 'Arial', size: 9, color: { argb: 'FF92400E' }, bold: true } as any;
+            cOt.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } };
+          }
+          const bits = [
+            `Tăng ca ${otH}h (${parts.ot?.rawMinutes || Math.round(otH * 60)} phút)`,
+            parts.ot?.verificationStatus,
+            parts.ot?.note ? `Ghi chú: ${parts.ot.note}` : '',
+          ].filter(Boolean).join(' | ');
+          cOt.note = bits;
+        }
+        if (cellData?.violationNote) cWork.note = cellData.violationNote;
       }
 
-      // Summary columns (40..62)
-      ws.getCell(r, 40).value = summary.standardWD;
-      ws.getCell(r, 40).numFmt = '0';
-      ws.getCell(r, 41).value = summary.actualWD;
-      ws.getCell(r, 42).value = summary.annualLeaveAL;
-      ws.getCell(r, 43).value = summary.unexcusedAbsenceOff;
-      ws.getCell(r, 44).value = summary.unpaidLeaveUL;
-      ws.getCell(r, 45).value = summary.maternityLeaveML;
-      ws.getCell(r, 46).value = summary.businessTripBT;
-      ws.getCell(r, 47).value = summary.publicHolidayPH;
-      ws.getCell(r, 48).value = summary.sickLeaveSL;
-      ws.getCell(r, 49).value = summary.specialPaidLeavePL;
-      ws.getCell(r, 50).value = summary.nightShiftsCount;
-      ws.getCell(r, 51).value = summary.lateEarlyMinutes > 0 ? summary.lateEarlyMinutes : '';
-      ws.getCell(r, 52).value = summary.productivityBonus || '';
-      ws.getCell(r, 52).numFmt = '#,##0';
-      ws.getCell(r, 53).value = summary.diligenceBonus || '';
-      ws.getCell(r, 53).numFmt = '#,##0';
-      ws.getCell(r, 54).value = summary.extraBonus || '';
-      ws.getCell(r, 54).numFmt = '#,##0';
-      ws.getCell(r, 55).value = summary.hazardousAllowance || '';
-      ws.getCell(r, 55).numFmt = '#,##0';
-      ws.getCell(r, 56).value = summary.pcccAllowance || '';
-      ws.getCell(r, 56).numFmt = '#,##0';
-      ws.getCell(r, 57).value = summary.otherFees || '';
-      ws.getCell(r, 57).numFmt = '#,##0';
-      ws.getCell(r, 58).value = summary.tradeUnionFee || '';
-      ws.getCell(r, 58).numFmt = '#,##0';
-      ws.getCell(r, 59).value = month;
-      ws.getCell(r, 60).value = year;
-      ws.getCell(r, 61).value = emp.notes || '';
-      ws.getCell(r, 62).value = prodBase;
-      ws.getCell(r, 62).numFmt = '#,##0';
+      // Summary columns (SUMMARY_BASE..SUMMARY_BASE+22)
+      const S = SUMMARY_BASE;
+      ws.getCell(r, S).value = summary.standardWD;
+      ws.getCell(r, S).numFmt = '0';
+      ws.getCell(r, S + 1).value = summary.actualWD;
+      ws.getCell(r, S + 2).value = summary.annualLeaveAL;
+      ws.getCell(r, S + 3).value = summary.unexcusedAbsenceOff;
+      ws.getCell(r, S + 4).value = summary.unpaidLeaveUL;
+      ws.getCell(r, S + 5).value = summary.maternityLeaveML;
+      ws.getCell(r, S + 6).value = summary.businessTripBT;
+      ws.getCell(r, S + 7).value = summary.publicHolidayPH;
+      ws.getCell(r, S + 8).value = summary.sickLeaveSL;
+      ws.getCell(r, S + 9).value = summary.specialPaidLeavePL;
+      ws.getCell(r, S + 10).value = summary.nightShiftsCount;
+      ws.getCell(r, S + 11).value = summary.lateEarlyMinutes > 0 ? summary.lateEarlyMinutes : '';
+      ws.getCell(r, S + 12).value = summary.productivityBonus || '';
+      ws.getCell(r, S + 12).numFmt = '#,##0';
+      ws.getCell(r, S + 13).value = summary.diligenceBonus || '';
+      ws.getCell(r, S + 13).numFmt = '#,##0';
+      ws.getCell(r, S + 14).value = summary.extraBonus || '';
+      ws.getCell(r, S + 14).numFmt = '#,##0';
+      ws.getCell(r, S + 15).value = summary.hazardousAllowance || '';
+      ws.getCell(r, S + 15).numFmt = '#,##0';
+      ws.getCell(r, S + 16).value = summary.pcccAllowance || '';
+      ws.getCell(r, S + 16).numFmt = '#,##0';
+      ws.getCell(r, S + 17).value = summary.otherFees || '';
+      ws.getCell(r, S + 17).numFmt = '#,##0';
+      ws.getCell(r, S + 18).value = summary.tradeUnionFee || '';
+      ws.getCell(r, S + 18).numFmt = '#,##0';
+      ws.getCell(r, S + 19).value = month;
+      ws.getCell(r, S + 20).value = year;
+      ws.getCell(r, S + 21).value = emp.notes || '';
+      ws.getCell(r, S + 22).value = prodBase;
+      ws.getCell(r, S + 22).numFmt = '#,##0';
 
       // Borders + number formats
-      for (let c = 1; c <= 62; c++) {
+      for (let c = 1; c <= SUMMARY_BASE + 22; c++) {
         const cell = ws.getCell(r, c);
         cell.border = { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } };
-        if (c >= 40 && c <= 51) cell.numFmt = '0.0';
+        if (c >= SUMMARY_BASE && c <= SUMMARY_BASE + 11) cell.numFmt = '0.0';
       }
       // Tô màu dòng theo contract
       if (emp.contractType === 'SEASONAL') {
@@ -327,7 +405,7 @@ export async function exportTimesheetToExcel(
     const footerRow = 8 + sheetEmployees.length + 1;
     ws.mergeCells(footerRow, 1, footerRow, 8);
     const foot = ws.getCell(footerRow, 1);
-    foot.value = `Tổng ${sheetEmployees.length} nhân viên • Kỳ ${cycleLabel} • BaseRate năng suất ẩn (cột 62) • Chuyên cần xét trừ cộng dồn Off & UL`;
+    foot.value = `Tổng ${sheetEmployees.length} nhân viên • Kỳ ${cycleLabel} • BaseRate năng suất ẩn (cột 124) • Chuyên cần xét trừ cộng dồn Off & UL`;
     foot.font = { name: 'Arial', size: 7, italic: true, color: { argb: 'FF64748B' } };
     foot.alignment = { horizontal: 'left', vertical: 'middle' };
 

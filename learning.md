@@ -11,6 +11,14 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
 ## Mục lục lỗi & bài học
 
 - [KB-021: Migrate Dexie → Supabase (mapping, TIME, Flag, RLS, cloud build)](#kb-021-migrate-dexie--supabase)
+- [KB-022: useLiveTable mất realtime ở component mount sau (channel giữ 1 callback + debounce toàn cục)](#kb-022-uselivetable-mất-realtime-ở-component-mount-sau)
+- [KB-023: Bảng chấm công 3 cột/ngày (Giờ/Phép/TC) gộp Overtime Table](#kb-023-bảng-chấm-công-3-cộtngày)
+- [KB-024: Promote hoa lên AD System + dọn Header](#kb-024-promote-hoa-lên-ad-system--dọn-header)
+- [KB-025: Hardening 0đ — credential công khai, brute-force, IP LAN nhầm thành IP public](#kb-025-hardening-0đ)
+- [KB-026: Nạp chấm công dò header theo tên — bỏ index cứng](#kb-026-nạp-chấm-công-dò-header-theo-tên)
+- [KB-027: File nguồn XuatLuoi — header chẻ 2 dòng, ngày M/D, cột phép, punch dồn 1 cột](#kb-027-file-nguồn-xuatluoi)
+- [KB-028: Nhập nhanh nhân viên từ Excel mẫu 21 cột](#kb-028-nhập-nhanh-nhân-viên-từ-excel)
+- [KB-029: Bảng công 3 cụm + kỳ lương tự nhận + import incremental duyệt diff](#kb-029-bảng-công-3-cụm)
 
 - [KB-001: Lỗi tràn chữ / rớt dòng badge trên màn hình laptop (13-15.6 inch)](#kb-001-lỗi-tràn-chữ--rớt-dòng-badge-trên-màn-hình-laptop-13-156-inch)
 - [KB-002: Lỗi IndexedDB không cho phép Boolean làm Index Key](#kb-002-lỗi-indexeddb-không-cho-phép-boolean-làm-index-key)
@@ -362,3 +370,127 @@ Sổ tay ghi nhận toàn bộ các lỗi phát sinh trong quá trình phát tri
   - Mọi khác biệt đặt tên/kiểu giữa client và Postgres PHẢI nằm trong 1 module mapper (`tables.ts`), không rải rác từng page.
   - Trước khi upsert, strip mọi field không có trong schema SQL (Flag legacy, `_sync*`) — PostgREST không bỏ qua cột lạ.
   - Verify cuối: `tsc --noEmit` 0 lỗi + `vitest run` 116/116 + `vite build` multi-file.
+
+---
+
+### KB-022: useLiveTable mất realtime ở component mount sau (channel giữ 1 callback + debounce toàn cục)
+- **Ngày ghi nhận**: 2026-09-22
+- **Vị trí**: `src/lib/tables.ts` (`ensureTableChannel`, `useLiveTable`)
+- **Triệu chứng (Symptom)**:
+  - Thêm/xóa nhân viên (hoặc bất kỳ bảng nào) không tự cập nhật UI, phải F5 mới thấy.
+- **Nguyên nhân gốc rễ (Root Cause)**:
+  - `ensureTableChannel` dùng chung 1 channel/bảng nhưng chỉ đăng ký callback `onChange` của component mount ĐẦU TIÊN (Header/Sidebar mount trước, các Page mount sau không bao giờ nhận event).
+  - Biến `debounceTimer` là 1 timer toàn cục dùng chung cho mọi bảng → event bảng này triệt tiêu reload bảng kia.
+- **Giải pháp xử lý (Resolution)**:
+  - Mỗi bảng giữ `Set<listener>` (`tableListeners`): hook nào cũng `add`/`delete` listener riêng, `postgres_changes` fan-out tới toàn bộ listener sau debounce 300ms.
+  - Debounce riêng từng bảng (`tableDebounce` Map).
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Channel dùng chung thì callback cũng phải multiplex — không bao giờ "ai đến trước hưởng". Timer debounce phải theo key (bảng), không global.
+
+---
+
+### KB-023: Bảng chấm công 3 cột/ngày (Giờ làm / Phép / Tăng ca) gộp Overtime Table
+- **Ngày ghi nhận**: 2026-09-22
+- **Vị trí**: `src/services/day-hours.ts` (mới), `src/pages/TimesheetCalendarPage.tsx`, `src/components/overtime/OvertimeEditModal.tsx` (mới), `src/services/excel-exporter.ts`
+- **Triệu chứng (Symptom)**: Yêu cầu gộp Overtime Table vào bảng công, mỗi ngày 3 cột, không đổi logic OT/OCR.
+- **Nguyên nhân gốc rễ (Root Cause)**: Ô công cũ hiển thị mã chữ (`W`/`LA`/`OFF`), không thể hiện số giờ làm / giờ phép / giờ OT trên cùng 1 dòng ngày.
+- **Giải pháp xử lý (Resolution)**:
+  1. `day-hours.ts` thuần túy (có test `day-hours.test.ts` 20 cases): giờ làm suy từ quẹt vào/ra, HC (`OFFICE_M_S`/`M_F`) trừ 30' (07:30→16:00 = 8h; 07:30→12:00 = 4h), Ca 1/2 không trừ, trần 8h; ngưỡng màu 8 xanh · 6–7.9 cam · <6 đỏ nhấp nháy; cột phép suy từ `leaveRequests` (PENDING→`nOff`, APPROVED→`n`+mã phép, REJECTED→`nOff`) hoặc mã ô công (`AL`→`8AL`, `W4/AL4`→`4AL`); Chủ nhật chỉ còn cột TC.
+  2. Tách `OvertimeEditModal` dùng chung cho OvertimePage + Timesheet (logic/modal/OCR giữ nguyên 100%); ẩn menu OT khỏi Sidebar nhưng giữ route `overtime`.
+  3. Excel: mỗi ngày 3 cột (`base = 6 + dayIndex*3`, dayIndex 1..31), summary dời sang cột 102–124, title merge tới `DT`.
+  4. Tổng hợp lương (`computeEmployeeTimesheetSummary`) KHÔNG đổi — chỉ đổi lớp hiển thị.
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Gộp bảng hiển thị thì tách lớp tính toán thuần (`day-hours.ts`) khỏi UI để test được; modal nghiệp vụ tách thành component dùng chung thay vì copy; đổi layout Excel thì kiểm tra lại `dayIndex` 1-based trước khi tính offset cột.
+
+---
+
+### KB-024: Promote hoa lên AD System + dọn Header
+- **Ngày ghi nhận**: 2026-09-22
+- **Vị trí**: `supabase/promote-hoa-to-ad-system.sql`, `src/components/layout/Header.tsx`, `src/App.tsx`, `pipeline.md`, `DEPLOY.md`
+- **Triệu chứng (Symptom)**: Chỉ kieu/glory (AD System) thấy mục Cài đặt; yêu cầu hoa = kieu = glory full quyền; Header thừa pill latency + nút export trùng.
+- **Nguyên nhân gốc rễ (Root Cause)**: `hoa` mang role HR Manager bị chặn cứng `SYSTEM_SETTINGS`/`MANAGE_USERS` trong `makeHasPermission` (đúng cho acc tương lai, sai cho co-owner hiện tại).
+- **Giải pháp xử lý (Resolution)**:
+  - Đổi role trong DB (không sửa code phân quyền): `UPDATE auth.users SET raw_app_meta_data = ... "role": "AD System" ... WHERE email='hoa@leggett.com'`; acc hoa đăng xuất/đăng nhập lại để JWT mới. 3 dept còn lại không đổi.
+  - Header: xóa `SupabaseStatusPill` + nút/hàm `handleExportExcel` (trang chấm công đã có nút export riêng); xóa import chết (`Download`, `Cloud`, `FileSpreadsheet`, `exportTimesheetToExcel`, `getSetting`, `lanSyncService`).
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Nâng quyền co-owner bằng dữ liệu role (DB), không bằng ngoại lệ username trong code — giữ RBAC thuần role. Xóa UI thì kiểm tra nút thay thế còn tồn tại ở trang chuyên trách.
+
+---
+
+### KB-025: Hardening 0đ — credential công khai, brute-force, IP LAN nhầm thành IP public
+- **Ngày ghi nhận**: 2026-09-22
+- **Vị trí**: `src/components/auth/LoginScreen.tsx`, `src/services/login-guard.ts` (mới), `src/context/AuthContext.tsx`, `src/App.tsx`, `public/_headers`, `DEPLOY.md` (mục 9)
+- **Triệu chứng (Symptom)**:
+  - Màn hình login public in sẵn username + mật khẩu mặc định (`vinh/kieu@leggett.com` + `123456`) — ai mở URL cũng thấy.
+  - User hỏi chặn IP bằng `10.233.98.164` (IP LAN) + rate limit chống hacker, ưu tiên 0đ.
+- **Nguyên nhân gốc rễ (Root Cause)**:
+  - Nút "đăng nhập nhanh" để lại từ thời test phân quyền, kèm chú thích password — lộ credential ngay cửa ngõ.
+  - `10.233.98.0/24` là dải RFC1918 nội bộ; Internet chỉ thấy IP public trên cổng WAN router → allowlist bằng IP LAN vô tác dụng ở Cloudflare/Supabase.
+- **Giải pháp xử lý (Resolution)**:
+  1. Xóa toàn bộ credential mẫu khỏi LoginScreen (thay bằng ghi chú khóa tạm thời); đổi pass mặc định cả 6 acc.
+  2. `login-guard.ts`: throttle theo tài khoản (5 sai/60s, 8 sai/300s, ≥12 sai/900s, cửa sổ 5 phút) + 8 tests; gắn vào `AuthContext.login`; đăng nhập đúng xóa vết.
+  3. Auto-logout 30 phút không thao tác (`App.tsx`); `_headers` thêm `X-Frame-Options: DENY` + `Permissions-Policy`.
+  4. Checklist 0đ trong `DEPLOY.md` mục 9: tắt public signup, MFA 3 admin, JWT 1800s; Cloudflare: rule block non-VN + challenge IP lạ + 1 rate-limit rule (IP, 100 req/10s, challenge 10s) + Bot Fight Mode; ngưỡng rộng vì cả xưởng NAT chung 1 IP public.
+  5. Lấy IP public thật: mở `https://ifconfig.me` từ máy xưởng; reboot router đối chiếu để biết tĩnh/động.
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Không bao giờ in credential lên UI public, kể cả "tạm thời để test". IP allowlist phải dùng IP public WAN, không phải IP LAN; và allowlist chỉ là 1 lớp — brute-force vào Supabase Auth API đi thẳng không qua Cloudflare nên bắt buộc có throttle + tắt signup + MFA + pass mạnh. Rate limit đặt theo thực tế NAT (cả xưởng 1 IP) để khỏi tự chặn mình.
+
+---
+
+### KB-026: Nạp chấm công dò header theo tên — bỏ index cứng
+- **Ngày ghi nhận**: 2026-09-22
+- **Vị trí**: `src/services/timesheet-parser-core.ts` (`detectHeaderRow`, `normalizeHeaderText`, `FIELD_ALIASES`), `src/test/timesheet-header-detect.test.ts`
+- **Triệu chứng (Symptom)**: File nguồn đổi số lượng/thứ tự/tiêu đề cột là nạp sai hoặc khó tìm dữ liệu (fallback index cứng đoán mò âm thầm).
+- **Nguyên nhân gốc rễ (Root Cause)**:
+  - Dò header cũ liệt kê vài biến thể có dấu, `includes()` thô nên dính bẫy chữ ("Kiểm tra" chứa "ra" → thành Giờ ra; token "ca" trong "Tăng ca" tranh với Ca làm việc), quét chỉ 10 dòng, thiếu Mã NV/Ngày thì rơi về index cứng `slice(3)`.
+- **Giải pháp xử lý (Resolution)**:
+  - Chuẩn hóa NFD bỏ dấu + thường hóa + gọn khoảng trắng; bộ alias không dấu theo field; chấm điểm (nguyên văn 100 / biên từ 50 / chứa chuỗi 10-20); gán greedy theo điểm (mỗi cột 1 field) nên "Tăng ca" (100) thắng token "ca" (50).
+  - BẮT BUỘC có Mã NV + Ngày — thiếu thì ném lỗi liệt kê tiêu đề tìm thấy + ví dụ tên cột hợp lệ, không đoán mò.
+  - Quét 15 dòng đầu (chịu được dòng tiêu đề công ty phía trên); tiến trình hiện mapping ("Mã NV→B, Ngày→A") + cột bỏ qua.
+  - 15 tests: đảo cột, alias MSNV/`Giờ check-in`/`Time In`, bẫy chữ, ngày serial + giờ thập phân, lỗi thiếu cột.
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - File `.xlsx` đã là dữ liệu có cấu trúc (SheetJS cho sẵn ô) — bài toán là "nhận diện tên cột", giải bằng từ điển + scoring tất định, KHÔNG cần AI/ONNX. Parser thất bại phải ồn ào (lỗi rõ) chứ không câm lặng (đoán sai).
+
+---
+
+### KB-027: File nguồn XuatLuoi — header chẻ 2 dòng, ngày M/D, cột phép, punch dồn 1 cột
+- **Ngày ghi nhận**: 2026-09-22
+- **Vị trí**: `src/services/timesheet-parser-core.ts` (`detectHeaderRow` merge, `detectDateOrder`, hợp nhất phép), `src/services/day-hours.ts` (`reclassifySinglePunch`), `src/components/layout/Header.tsx`, `src/test/timesheet-source-leave.test.ts`
+- **Triệu chứng (Symptom)**: File máy chấm công thật (ảnh mẫu): tiêu đề chẻ 2 dòng (`Mã`/`Nhân Viên`), ngày kiểu Mỹ `8/21/2026`, cột `NGÀY NGHỈ PHÉP` + `PHÉP` (AL/PH) bị bỏ qua, 1 giờ chấm dồn vào cột Giờ vào.
+- **Nguyên nhân gốc rễ (Root Cause)**:
+  - Dò header 1 dòng nên `Nhân Viên` lẻ không khớp alias Mã NV → rớt required.
+  - `parseExcelDate` ép D/M cứng → `8/21/2026` thành tháng 21 rác.
+  - Không có field `leaveDate`/`leaveCode` → mất dữ liệu phép nguồn.
+  - Punch đơn giữ nguyên cột file → 07:25 một mình cũng thành MCI (đúng ra thiếu ra = MCO).
+- **Giải pháp xử lý (Resolution)**:
+  1. Merge dòng r-1 + r khi dòng trên có chữ (`Mã`+`Nhân Viên`→`ma nhan vien` khớp tuyệt đối); alias mới `hanh chinh`→totalHours, `leaveDate`/`leaveCode`.
+  2. `detectDateOrder`: bằng chứng số >12 ở vị trí ngày trên toàn cột Ngày (có `8/21` mà không có phản bác → `mdy`); mặc định vẫn D/M của VN.
+  3. Hợp nhất phép: có quẹt thì hiện diện thắng; không quẹt + có mã → chốt mã vào ô công (PH/BT/ML chỉ mã; AL/UL/SL/PL thêm `LEAVE_*` PENDING quota-safe); ô phép gắn cờ `_sourceLeave` (tables.ts strip khi upsert) để Header giữ nguyên, không tính lại OFF; hợp nhất vào `leaveRequestsToCreate` có dedupe theo id (tránh lỗi trùng PK trong 1 batch upsert).
+  4. `reclassifySinglePunch(single, start, end)`: gần đầu ca = VÀO (MCO), gần cuối ca = RA (MCI) — Header áp dụng với `shiftInfo` đã ưu tiên sắp ca; 16:00 của HC → MCI đúng như nghiệp vụ.
+  5. Đi sai ca vẫn đủ công + cảnh báo: logic 2.5 Header giữ nguyên (không đụng).
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Gốc rễ LEP → ca cố định (ưu tiên sắp ca) → ngày → giờ vào/ra: thứ tự này quyết định mọi suy luận punch; cột file chỉ là gợi ý vị trí, không phải sự thật. Dữ liệu phép nguồn là sự thật đã chốt (giữ mã) nhưng quota phải qua luồng duyệt (PENDING). Cờ nội bộ truyền giữa parser↔Header phải prefix `_` để mapper strip trước upsert.
+
+---
+
+### KB-028: Nhập nhanh nhân viên từ Excel mẫu 21 cột
+- **Ngày ghi nhận**: 2026-09-22
+- **Vị trí**: `src/services/employee-excel.ts` (mới), `src/pages/EmployeeListPage.tsx`, `src/test/employee-excel.test.ts`
+- **Giải pháp xử lý (Resolution)**:
+  - Nút `Tải mẫu Excel` (sheet NhanVien 21 cột đúng modal + sheet HuongDan giá trị hợp lệ) và `Nhập Excel` cạnh nút Thêm NV (gate `MANAGE_EMPLOYEES`).
+  - Parse: nhận diện cột theo tên (chịu đảo cột), map nhãn Việt → mã (`Chính thức`→OFFICIAL, `T2-T7`→OFFICE_M_S...), ngày DD/MM/YYYY + serial, số nghìn VN (`500.000`), Line resolve tên→id, mặc định đúng modal (Production/Operator/T2-T7/ACTIVE/phép 12/chuyên cần 500k/đoàn phí -40k).
+  - Validate từng dòng (bắt buộc Mã NV + Họ tên, enum, ngày, số, Line, trùng trong file); mã trùng DB → cập nhật đè (bulkUpsert); modal báo thêm mới/cập nhật/bỏ qua + liệt kê lỗi theo dòng.
+- **Bài học kinh nghiệm (Key Takeaway)**: Tái dùng `normalizeHeaderText`/`parseExcelDate` của parser chấm công thay vì viết lại; bulkUpsert đã là upsert nên "trùng → cập nhật" không cần code riêng.
+
+---
+
+### KB-029: Bảng công 3 cụm + kỳ lương tự nhận + import incremental duyệt diff
+- **Ngày ghi nhận**: 2026-09-22
+- **Vị trí**: `src/pages/TimesheetCalendarPage.tsx` (`clusterOf`, `CLUSTER_META`), `src/services/import-diff.ts` (mới), `src/components/layout/Header.tsx`
+- **Giải pháp xử lý (Resolution)**:
+  1. 3 tab cụm (mặc định HC23, chỉ render cụm mở): HC23 = OFFICE_M_F; HC_CA = chính thức còn lại (OFFICE_M_S/SHIFT_1/SHIFT_2); SEASONAL = mọi thời vụ (kể cả ca lệch). Bỏ toggle chu kỳ + select tháng/năm; điều hướng kỳ lương ‹ › (`21/9–20/10` hiển thị `Lương tháng 10/2026`); nạp file tự set kỳ qua event `timesheet:period_changed`.
+  2. Import incremental (bỏ clear toàn bảng): diff theo PK — ô công so vào/ra/mã/trễ/sớm, OT so giờ/trạng thái (MATCHED/MISMATCH được bảo tồn), quẹt thô append-only theo khóa tự nhiên, phép dedupe theo khóa tự nhiên. Khác → modal liệt kê cũ→mới (200 dòng đầu) với 3 nút Ghi đè/Chỉ thêm mới/Hủy; khớp 100% → toast và dừng.
+  3. Fix lén: `leave_requests.id` là UUID nhưng code cũ ghi id `LEAVE_*` (import có vắng mặt là lỗi DB) → `sanitizeLeaveForDb` bỏ id lạ để DB tự sinh.
+  4. Thời vụ giữ timeline 1-31 riêng nhờ khóa theo ngày, không ép khung 21-20; nút Làm sạch bảng công giữ lại để reset toàn phần khi cần.
+- **Bài học kinh nghiệm (Key Takeaway)**:
+  - Bỏ `clearTable` trong import thì mọi bảng phụ thuộc phải có chiến lược dedupe theo khóa (PK hoặc khóa tự nhiên) — nếu không sẽ nhân bản hoặc lỗi trùng PK trong cùng batch upsert. Dữ liệu đã có xác nhận (OT đối soát) không bao giờ bị tính lại đè.

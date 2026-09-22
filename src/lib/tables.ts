@@ -88,12 +88,14 @@ export function convertRowToCamel(row: any): any {
 }
 
 /** Shallow: chỉ đổi keys tầng 1, object JSONB bên trong giữ nguyên. */
-function convertToSnakeShallow(record: any, store: StoreKey): any {
+export function convertToSnakeShallow(record: any, store: StoreKey): any {
   const stripped = new Set(GENERATED_COLS[store] ?? []);
   const out: any = {};
   for (const [k, v] of Object.entries(record ?? {})) {
     // Bỏ metadata nội bộ _sync/_syncNS/_syncCL của luồng JSON-merge cũ
     if (k.startsWith('_')) continue;
+    // `timestamp` chỉ là alias đọc từ created_at (convertRowToCamel) — không tồn tại cột trong DB
+    if (k === 'timestamp') continue;
     const sk = camelToSnake(k);
     if (stripped.has(sk) || stripped.has(k)) continue;
     if (LEGACY_STRIP.has(sk)) continue;
@@ -224,20 +226,40 @@ export async function putSetting(key: string, value: any): Promise<void> {
 // ---------------------------------------------------------------------------
 
 const tableChannels = new Map<string, any>();
+/** Mọi hook useLiveTable cùng bảng đều đăng ký listener riêng — fan-out khi có postgres_changes. */
+const tableListeners = new Map<string, Set<() => void>>();
+/** Debounce riêng từng bảng (không dùng chung timer toàn cục). */
+const tableDebounce = new Map<string, any>();
 
-function ensureTableChannel(pgTable: string, onChange: () => void) {
+function ensureTableChannel(pgTable: string) {
   let ch = tableChannels.get(pgTable);
   if (!ch) {
     ch = supabase
       .channel(`tbl:${pgTable}`)
-      .on('postgres_changes' as never, { event: '*', schema: 'public', table: pgTable } as never, onChange as never)
+      .on('postgres_changes' as never, { event: '*', schema: 'public', table: pgTable } as never, (() => {
+        const listeners = tableListeners.get(pgTable);
+        if (!listeners || listeners.size === 0) return;
+        const pending = tableDebounce.get(pgTable);
+        if (pending) clearTimeout(pending);
+        tableDebounce.set(
+          pgTable,
+          setTimeout(() => {
+            tableDebounce.delete(pgTable);
+            listeners.forEach((fn) => {
+              try {
+                fn();
+              } catch (e) {
+                console.warn(`[useLiveTable:${pgTable}] listener`, e);
+              }
+            });
+          }, 300)
+        );
+      }) as never)
       .subscribe();
     tableChannels.set(pgTable, ch);
   }
   return ch;
 }
-
-let debounceTimer: any = null;
 
 export function useLiveTable<T = any>(store: StoreKey, opts?: LiveOpts): T[] {
   const [rows, setRows] = useState<T[]>([]);
@@ -255,10 +277,19 @@ export function useLiveTable<T = any>(store: StoreKey, opts?: LiveOpts): T[] {
     };
     void load();
     const onChange = () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => void load(), 300);
+      void load();
     };
-    ensureTableChannel(PG_TABLE[store], onChange);
+    const pgTable = PG_TABLE[store];
+    let set = tableListeners.get(pgTable);
+    if (!set) {
+      set = new Set();
+      tableListeners.set(pgTable, set);
+    }
+    set.add(onChange);
+    ensureTableChannel(pgTable);
+    return () => {
+      set!.delete(onChange);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, orderKey]);
 

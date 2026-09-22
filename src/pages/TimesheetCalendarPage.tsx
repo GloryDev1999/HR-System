@@ -10,41 +10,78 @@ import {
   Trash2
 } from 'lucide-react';
 import { useLiveTable, upsertOne, clearTable } from '../lib/tables';
-import type { IEmployee, IDailyTimesheetCell, IOvertimeRecord, IProductivityQualityRate, AttendanceStatusCode } from '../types';
+import type { IEmployee, IDailyTimesheetCell, IOvertimeRecord, ILeaveRequest, IProductivityQualityRate, AttendanceStatusCode } from '../types';
 import { computeEmployeeTimesheetSummary } from '../services/formula-engine';
 import { generateCalendarDays, CalendarDay } from '../services/calendar-utils';
 import { formatPayPeriodLabel } from '../services/pay-period';
+import { getDayParts, formatHours } from '../services/day-hours';
+import { OvertimeEditModal } from '../components/overtime/OvertimeEditModal';
+import type { NavPageId } from '../components/layout/Sidebar';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 import { useAuth } from '../context/AuthContext';
 import { exportTimesheetToExcel } from '../services/excel-exporter';
 
-export const TimesheetCalendarPage: React.FC = () => {
+interface TimesheetCalendarPageProps {
+  onNavigate?: (page: NavPageId) => void;
+}
+
+/** 3 cụm hiển thị (user chốt): HC23 = OFFICE_M_F · HC_CA = chính thức còn lại · SEASONAL = mọi thời vụ */
+export type TimesheetCluster = 'HC23' | 'HC_CA' | 'SEASONAL';
+
+export function clusterOf(emp: IEmployee): TimesheetCluster {
+  if (emp.contractType === 'SEASONAL') return 'SEASONAL';
+  if (emp.shiftClassId === 'OFFICE_M_F') return 'HC23';
+  return 'HC_CA';
+}
+
+export const CLUSTER_META: Record<TimesheetCluster, { label: string; cycle: 'OFFICIAL' | 'SEASONAL' }> = {
+  HC23: { label: 'Hành chính 23 công (T2-T6)', cycle: 'OFFICIAL' },
+  HC_CA: { label: 'HC + Ca 1 + Ca 2', cycle: 'OFFICIAL' },
+  SEASONAL: { label: 'Thời vụ 1-31', cycle: 'SEASONAL' },
+};
+
+export const TimesheetCalendarPage: React.FC<TimesheetCalendarPageProps> = ({ onNavigate }) => {
   const { success, warning } = useToast();
   const { confirm } = useModal();
   const { departmentScope, hasPermission, systemSettings } = useAuth();
-  const [cycleMode, setCycleMode] = useState<'SEASONAL' | 'OFFICIAL'>('OFFICIAL');
+  // Mặc định vào là cụm hành chính 23 công; tab khác chỉ render khi chuyển sang
+  const [cluster, setCluster] = useState<TimesheetCluster>('HC23');
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedDept, setSelectedDept] = useState<string>('ALL');
-  const [selectedMonth, setSelectedMonth] = useState<number>(() => {
+  // Kỳ lương đang xem (VD 21/9-20/10 = lương tháng 10/2026); tự set khi nạp file mới
+  const [payMonth, setPayMonth] = useState<number>(() => {
     const saved = localStorage.getItem('smarthr_selected_month');
     return saved ? parseInt(saved, 10) : 8;
   });
-  const [selectedYear, setSelectedYear] = useState<number>(() => {
+  const [payYear, setPayYear] = useState<number>(() => {
     const saved = localStorage.getItem('smarthr_selected_year');
     return saved ? parseInt(saved, 10) : 2026;
   });
 
-  // Tự động đồng bộ tháng/năm khi nạp file chấm công mới
+  // Tự động đồng bộ kỳ lương khi nạp file chấm công mới
   useEffect(() => {
     const handler = (e: any) => {
-      if (e.detail?.month) setSelectedMonth(e.detail.month);
-      if (e.detail?.year) setSelectedYear(e.detail.year);
+      if (e.detail?.month) setPayMonth(e.detail.month);
+      if (e.detail?.year) setPayYear(e.detail.year);
     };
     window.addEventListener('timesheet:period_changed', handler);
     return () => window.removeEventListener('timesheet:period_changed', handler);
   }, []);
+
+  const shiftPayPeriod = (delta: number) => {
+    let m = payMonth + delta;
+    let y = payYear;
+    while (m < 1) { m += 12; y--; }
+    while (m > 12) { m -= 12; y++; }
+    setPayMonth(m);
+    setPayYear(y);
+    try {
+      localStorage.setItem('smarthr_selected_month', String(m));
+      localStorage.setItem('smarthr_selected_year', String(y));
+    } catch {}
+  };
 
   const [activeEditCell, setActiveEditCell] = useState<{
     employee: IEmployee;
@@ -55,7 +92,17 @@ export const TimesheetCalendarPage: React.FC = () => {
   const employees = useLiveTable<IEmployee>('employees');
   const timesheets = useLiveTable<IDailyTimesheetCell>('dailyTimesheets');
   const overtimes = useLiveTable<IOvertimeRecord>('overtimeRecords');
+  const leaveRequests = useLiveTable<ILeaveRequest>('leaveRequests');
   const rates = useLiveTable<IProductivityQualityRate>('productivityQualityRates');
+
+  const canManageOt = hasPermission('MANAGE_OT') || hasPermission('PROPOSE_DEPT_OT');
+
+  // Modal tăng ca dùng chung với OvertimePage (mở từ cột OT của bảng công)
+  const [activeOtRecord, setActiveOtRecord] = useState<{
+    employee: IEmployee;
+    day: CalendarDay;
+    otRecord: IOvertimeRecord;
+  } | null>(null);
 
   const handleClearTimesheetData = async () => {
     if (!hasPermission('MANAGE_TIMESHEET')) {
@@ -79,12 +126,21 @@ export const TimesheetCalendarPage: React.FC = () => {
     }
   };
 
+  const clusterCounts = useMemo(() => {
+    const counts: Record<TimesheetCluster, number> = { HC23: 0, HC_CA: 0, SEASONAL: 0 };
+    employees.forEach(emp => {
+      if (departmentScope && emp.department !== departmentScope) return;
+      counts[clusterOf(emp)]++;
+    });
+    return counts;
+  }, [employees, departmentScope]);
+
+  // Chỉ render cụm đang mở (tab khác không tính/lọc)
   const filteredEmployees = useMemo(() => {
     return employees.filter(emp => {
+      if (clusterOf(emp) !== cluster) return false;
       if (departmentScope && emp.department !== departmentScope) return false;
       if (selectedDept !== 'ALL' && emp.department !== selectedDept) return false;
-      if (cycleMode === 'OFFICIAL' && emp.contractType !== 'OFFICIAL') return false;
-      if (cycleMode === 'SEASONAL' && emp.contractType !== 'SEASONAL') return false;
       if (searchTerm) {
         const q = searchTerm.toLowerCase();
         const m1 = emp.employeeId.toLowerCase().includes(q);
@@ -93,7 +149,7 @@ export const TimesheetCalendarPage: React.FC = () => {
       }
       return true;
     });
-  }, [employees, departmentScope, selectedDept, cycleMode, searchTerm]);
+  }, [employees, departmentScope, selectedDept, cluster, searchTerm]);
 
   const departments = Array.from(new Set(employees.map(e => e.department))).filter(Boolean);
 
@@ -103,18 +159,27 @@ export const TimesheetCalendarPage: React.FC = () => {
     return map;
   }, [timesheets]);
 
-  const officialPayLabel = formatPayPeriodLabel(selectedMonth, selectedYear, 'OFFICIAL');
-  const seasonalPayLabel = formatPayPeriodLabel(selectedMonth, selectedYear, 'SEASONAL');
+  const overtimeMap = useMemo(() => {
+    const map = new Map<string, IOvertimeRecord>();
+    overtimes.forEach(ot => map.set(ot.employeeId_date, ot));
+    return map;
+  }, [overtimes]);
 
-  const officialDays = useMemo(() => generateCalendarDays(selectedMonth, selectedYear, 'OFFICIAL'), [selectedMonth, selectedYear]);
-  const seasonalDays = useMemo(() => generateCalendarDays(selectedMonth, selectedYear, 'SEASONAL'), [selectedMonth, selectedYear]);
+  const leaveMap = useMemo(() => {
+    const map = new Map<string, ILeaveRequest>();
+    leaveRequests.forEach(r => map.set(`${r.employeeId}_${r.date}`, r));
+    return map;
+  }, [leaveRequests]);
 
-  const calendarDaysSingle = cycleMode === 'OFFICIAL' ? officialDays : seasonalDays;
+  const activeCycle = CLUSTER_META[cluster].cycle;
+  const payLabel = formatPayPeriodLabel(payMonth, payYear, activeCycle);
+
+  const calendarDays = useMemo(() => generateCalendarDays(payMonth, payYear, activeCycle), [payMonth, payYear, activeCycle]);
 
   // Tính tỷ lệ trung bình % NS và % CL của từng chuyền sản xuất trong kỳ đang xem
   const lineAverageRatesMap = useMemo(() => {
     const stats = new Map<string, { sumNS: number; countNS: number; sumCL: number; countCL: number }>();
-    const activeDates = new Set(calendarDaysSingle.map(d => d.dateStr));
+    const activeDates = new Set(calendarDays.map(d => d.dateStr));
 
     rates.forEach(r => {
       if (activeDates.has(r.date)) {
@@ -136,7 +201,7 @@ export const TimesheetCalendarPage: React.FC = () => {
       });
     });
     return result;
-  }, [rates, calendarDaysSingle]);
+  }, [rates, calendarDays]);
 
   const handleCellClick = (emp: IEmployee, day: CalendarDay) => {
     if (!hasPermission('MANAGE_TIMESHEET')) {
@@ -180,9 +245,39 @@ export const TimesheetCalendarPage: React.FC = () => {
   };
 
   const handleExport = async () => {
-    await exportTimesheetToExcel(filteredEmployees, timesheets, overtimes, selectedMonth, selectedYear, cycleMode, systemSettings);
-    const label = cycleMode === 'OFFICIAL' ? `Chính thức ${officialPayLabel}` : `Thời vụ ${seasonalPayLabel}`;
+    await exportTimesheetToExcel(filteredEmployees, timesheets, overtimes, payMonth, payYear, activeCycle, systemSettings, leaveRequests);
+    const label = activeCycle === 'OFFICIAL' ? `Chính thức ${payLabel}` : `Thời vụ ${payLabel}`;
     success(`Xuất file chốt công thành công!`, `Đã xuất ${filteredEmployees.length} nhân viên — ${label}`);
+  };
+
+  // Mở modal tăng ca (dùng chung OvertimeEditModal) từ cột OT của bảng công
+  const handleOpenOtCell = (emp: IEmployee, day: CalendarDay) => {
+    if (!canManageOt) {
+      warning?.('Không đủ quyền', 'Bạn không có quyền quản lý tăng ca (MANAGE_OT hoặc PROPOSE_DEPT_OT).');
+      return;
+    }
+    const key = `${emp.employeeId}_${day.dateStr}`;
+    const existing = overtimeMap.get(key);
+    if (existing) {
+      setActiveOtRecord({ employee: emp, day, otRecord: existing });
+    } else {
+      setActiveOtRecord({
+        employee: emp,
+        day,
+        otRecord: {
+          employeeId_date: key,
+          employeeId: emp.employeeId,
+          date: day.dateStr,
+          dayOfWeek: day.dayVi,
+          dayType: day.isSunday ? 'SUNDAY' : 'WEEKDAY',
+          hours: 0,
+          month: day.monthNum,
+          year: day.yearNum,
+          rawMinutes: 0,
+          verificationStatus: 'PENDING'
+        },
+      });
+    }
   };
 
   const renderTable = (emps: IEmployee[], days: CalendarDay[], title?: string) => {
@@ -194,34 +289,45 @@ export const TimesheetCalendarPage: React.FC = () => {
         <table className="w-full text-left text-xs border-collapse">
           <thead className="bg-slate-900 text-white font-bold sticky top-0 z-30 shadow-md">
             <tr>
-              <th className="py-2.5 px-2 bg-slate-900 sticky left-0 z-40 w-10 text-center border-r border-slate-800">#</th>
-              <th className="py-2.5 px-2 bg-slate-900 sticky left-10 z-40 w-20 border-r border-slate-800">Mã NV</th>
-              <th className="py-2.5 px-3 bg-slate-900 sticky left-[112px] z-40 min-w-[158px] max-w-[170px] border-r border-slate-800">Họ và Tên <span className="font-normal opacity-60 text-[10px]">(+Bộ phận)</span></th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-slate-900 sticky left-0 z-40 w-10 text-center border-r border-slate-800 align-middle">#</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-slate-900 sticky left-10 z-40 w-20 border-r border-slate-800 align-middle">Mã NV</th>
+              <th rowSpan={2} className="py-2.5 px-3 bg-slate-900 sticky left-[112px] z-40 min-w-[158px] max-w-[170px] border-r border-slate-800 align-middle">Họ và Tên <span className="font-normal opacity-60 text-[10px]">(+Bộ phận)</span></th>
               {days.map((day) => (
-                <th key={day.dayIndex} className={`py-1.5 px-1 text-center min-w-[36px] border-r border-slate-800 select-none ${day.isSunday ? 'bg-amber-950/80 text-amber-200' : (day.isSaturday ? 'bg-slate-800 text-slate-300' : 'bg-slate-900')}`}>
+                <th key={day.dayIndex} colSpan={3} className={`py-1.5 px-1 text-center border-r border-slate-800 select-none ${day.isSunday ? 'bg-amber-950/80 text-amber-200' : (day.isSaturday ? 'bg-slate-800 text-slate-300' : 'bg-slate-900')}`}>
                   <div className="text-[10px] opacity-75">{day.dayVi}</div>
                   <div className="text-xs font-bold">{day.dayNum}</div>
                 </th>
               ))}
-              <th className="py-2.5 px-2 bg-indigo-950 text-indigo-200 text-center min-w-[72px] border-r border-indigo-900 whitespace-nowrap">Công Chuẩn</th>
-              <th className="py-2.5 px-2 bg-emerald-950 text-emerald-200 text-center min-w-[76px] border-r border-emerald-900 whitespace-nowrap">Công Thực Tế</th>
-              <th className="py-2.5 px-2 bg-blue-950 text-blue-200 text-center min-w-[55px] border-r border-blue-900 whitespace-nowrap" title="Phép năm">AL</th>
-              <th className="py-2.5 px-2 bg-rose-950 text-rose-200 text-center min-w-[55px] border-r border-rose-900 whitespace-nowrap" title="Nghỉ không phép / HR từ chối">Off</th>
-              <th className="py-2.5 px-2 bg-slate-800 text-slate-200 text-center min-w-[55px] border-r border-slate-700 whitespace-nowrap" title="Nghỉ có phép không lương">UL</th>
-              <th className="py-2.5 px-2 bg-purple-950 text-purple-200 text-center min-w-[55px] border-r border-purple-900 whitespace-nowrap" title="Nghỉ thai sản">ML</th>
-              <th className="py-2.5 px-2 bg-sky-950 text-sky-200 text-center min-w-[55px] border-r border-sky-900 whitespace-nowrap" title="Đi công tác">BT</th>
-              <th className="py-2.5 px-2 bg-pink-950 text-pink-200 text-center min-w-[55px] border-r border-pink-900 whitespace-nowrap" title="Nghỉ ốm">SL</th>
-              <th className="py-2.5 px-2 bg-amber-950 text-amber-200 text-center min-w-[55px] border-r border-amber-900 whitespace-nowrap" title="Nghỉ lễ">PH</th>
-              <th className="py-2.5 px-2 bg-teal-950 text-teal-200 text-center min-w-[55px] border-r border-teal-900 whitespace-nowrap" title="Phép chế độ">PL</th>
-              <th className="py-2.5 px-2 bg-indigo-950 text-indigo-200 text-center min-w-[68px] border-r border-indigo-900 whitespace-nowrap">Ca Đêm N</th>
-              <th className="py-2.5 px-2 bg-slate-900 text-slate-200 text-center min-w-[72px] border-r border-slate-800 whitespace-nowrap">Trễ/Sớm</th>
-              <th className="py-2.5 px-2 bg-emerald-950 text-emerald-200 text-center min-w-[96px] border-r border-emerald-900 whitespace-nowrap">Năng suất</th>
-              <th className="py-2.5 px-2 bg-orange-950 text-orange-200 text-center min-w-[92px] border-r border-orange-900 whitespace-nowrap">Chuyên cần</th>
-              <th className="py-2.5 px-2 bg-emerald-900 text-emerald-100 text-center min-w-[85px] border-r border-emerald-800 whitespace-nowrap">Thưởng thêm</th>
-              <th className="py-2.5 px-2 bg-red-950 text-red-200 text-center min-w-[78px] border-r border-red-900 whitespace-nowrap">Độc hại</th>
-              <th className="py-2.5 px-2 bg-amber-950 text-amber-200 text-center min-w-[78px] border-r border-amber-900 whitespace-nowrap">PCCC</th>
-              <th className="py-2.5 px-2 bg-slate-800 text-slate-200 text-center min-w-[84px] border-r border-slate-700 whitespace-nowrap">Chi phí khác</th>
-              <th className="py-2.5 px-2 bg-slate-900 text-slate-200 text-center min-w-[78px] whitespace-nowrap">Đoàn phí</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-indigo-950 text-indigo-200 text-center min-w-[72px] border-r border-indigo-900 whitespace-nowrap align-middle">Công Chuẩn</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-emerald-950 text-emerald-200 text-center min-w-[76px] border-r border-emerald-900 whitespace-nowrap align-middle">Công Thực Tế</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-blue-950 text-blue-200 text-center min-w-[55px] border-r border-blue-900 whitespace-nowrap align-middle" title="Phép năm">AL</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-rose-950 text-rose-200 text-center min-w-[55px] border-r border-rose-900 whitespace-nowrap align-middle" title="Nghỉ không phép / HR từ chối">Off</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-slate-800 text-slate-200 text-center min-w-[55px] border-r border-slate-700 whitespace-nowrap align-middle" title="Nghỉ có phép không lương">UL</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-purple-950 text-purple-200 text-center min-w-[55px] border-r border-purple-900 whitespace-nowrap align-middle" title="Nghỉ thai sản">ML</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-sky-950 text-sky-200 text-center min-w-[55px] border-r border-sky-900 whitespace-nowrap align-middle" title="Đi công tác">BT</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-pink-950 text-pink-200 text-center min-w-[55px] border-r border-pink-900 whitespace-nowrap align-middle" title="Nghỉ ốm">SL</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-amber-950 text-amber-200 text-center min-w-[55px] border-r border-amber-900 whitespace-nowrap align-middle" title="Nghỉ lễ">PH</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-teal-950 text-teal-200 text-center min-w-[55px] border-r border-teal-900 whitespace-nowrap align-middle" title="Phép chế độ">PL</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-indigo-950 text-indigo-200 text-center min-w-[68px] border-r border-indigo-900 whitespace-nowrap align-middle">Ca Đêm N</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-slate-900 text-slate-200 text-center min-w-[72px] border-r border-slate-800 whitespace-nowrap align-middle">Trễ/Sớm</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-emerald-950 text-emerald-200 text-center min-w-[96px] border-r border-emerald-900 whitespace-nowrap align-middle">Năng suất</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-orange-950 text-orange-200 text-center min-w-[92px] border-r border-orange-900 whitespace-nowrap align-middle">Chuyên cần</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-emerald-900 text-emerald-100 text-center min-w-[85px] border-r border-emerald-800 whitespace-nowrap align-middle">Thưởng thêm</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-red-950 text-red-200 text-center min-w-[78px] border-r border-red-900 whitespace-nowrap align-middle">Độc hại</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-amber-950 text-amber-200 text-center min-w-[78px] border-r border-amber-900 whitespace-nowrap align-middle">PCCC</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-slate-800 text-slate-200 text-center min-w-[84px] border-r border-slate-700 whitespace-nowrap align-middle">Chi phí khác</th>
+              <th rowSpan={2} className="py-2.5 px-2 bg-slate-900 text-slate-200 text-center min-w-[78px] whitespace-nowrap align-middle">Đoàn phí</th>
+            </tr>
+            <tr>
+              {days.flatMap((day) => (['Giờ', 'Phép', 'TC'] as const).map((sub, i) => (
+                <th
+                  key={`${day.dayIndex}-${sub}`}
+                  title={i === 0 ? 'Giờ làm thực tế (đủ 8 xanh, 6-7.9 cam, <6 đỏ nhấp nháy)' : i === 1 ? 'Giờ phép còn thiếu (Off chờ duyệt, AL/UL/... đã duyệt)' : 'Giờ tăng ca (logic Overtime Table, bấm để xem/sửa)'}
+                  className={`py-1 px-0.5 text-center text-[9px] font-bold min-w-[34px] ${i < 2 ? 'border-r border-slate-700/60' : 'border-r border-slate-800'} ${day.isSunday ? 'bg-amber-950/80 text-amber-200' : (day.isSaturday ? 'bg-slate-800 text-slate-300' : 'bg-slate-900 text-slate-300')}`}
+                >
+                  {sub}
+                </th>
+              )))}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 bg-white">
@@ -262,27 +368,116 @@ export const TimesheetCalendarPage: React.FC = () => {
                   {effectiveDays.map((day) => {
                     const key = `${emp.employeeId}_${day.dateStr}`;
                     const cell = timesheetMap.get(key);
-                    const code = cell?.statusCode?.trim() || '';
-                    let cellBadge = <span className="text-slate-300 text-[11px]">-</span>;
-                    if (code === 'W') cellBadge = <span className="w-6 h-6 rounded-md bg-emerald-100 text-emerald-800 font-bold flex items-center justify-center text-[11px] shadow-sm" title="Đi làm đủ">W</span>;
-                    else if (code === 'N') cellBadge = <span className="w-6 h-6 rounded-md bg-indigo-100 text-indigo-800 font-bold flex items-center justify-center text-[11px] shadow-sm" title="Ca đêm">N</span>;
-                    else if (code === 'Off' || code === 'OFF') cellBadge = <span className="w-6 h-6 rounded-md bg-rose-100 text-rose-800 font-bold flex items-center justify-center text-[10px] shadow-sm animate-pulse" title="Chờ bù phép">Off</span>;
-                    else if (code === 'ML') cellBadge = <span className="w-6 h-6 rounded-md bg-purple-100 text-purple-800 font-bold flex items-center justify-center text-[10px] border border-purple-300" title="Nghỉ thai sản">ML</span>;
-                    else if (code === 'AL') cellBadge = <span className="w-6 h-6 rounded-md bg-blue-100 text-blue-800 font-bold flex items-center justify-center text-[11px]" title="Phép năm">AL</span>;
-                    else if (code === 'UL') cellBadge = <span className="w-6 h-6 rounded-md bg-slate-200 text-slate-700 font-bold flex items-center justify-center text-[11px]" title="Không lương">UL</span>;
-                    else if (code === 'SL') cellBadge = <span className="w-6 h-6 rounded-md bg-pink-100 text-pink-800 font-bold flex items-center justify-center text-[11px]" title="Nghỉ ốm">SL</span>;
-                    else if (code === 'PL') cellBadge = <span className="w-6 h-6 rounded-md bg-teal-100 text-teal-800 font-bold flex items-center justify-center text-[11px] border border-teal-200" title="Phép tang/kết hôn">PL</span>;
-                    else if (code === 'PH') cellBadge = <span className="w-6 h-6 rounded-md bg-amber-100 text-amber-800 font-bold flex items-center justify-center text-[11px] border border-amber-200" title="Nghỉ lễ">PH</span>;
-                    else if (code === 'BT') cellBadge = <span className="w-6 h-6 rounded-md bg-sky-100 text-sky-800 font-bold flex items-center justify-center text-[11px]">BT</span>;
-                    else if (code === 'LA') cellBadge = <span className="w-6 h-6 rounded-md bg-orange-100 text-orange-800 font-bold flex items-center justify-center text-[11px] border border-orange-300" title={cell?.violationNote || 'Đi trễ'}>LA</span>;
-                    else if (code === 'ED') cellBadge = <span className="w-6 h-6 rounded-md bg-orange-100 text-orange-800 font-bold flex items-center justify-center text-[11px] border border-orange-300" title={cell?.violationNote || 'Về sớm'}>ED</span>;
-                    else if (code === 'MCO') cellBadge = <span className="w-6 h-6 rounded-md bg-rose-100 text-rose-700 font-bold flex items-center justify-center text-[9px] border border-rose-300" title={cell?.violationNote || 'Không ra'}>MCO</span>;
-                    else if (code.includes('/') || code.length > 2) cellBadge = <span className="px-1 py-0.5 rounded-md bg-indigo-50 text-indigo-700 font-bold text-[9px] border border-indigo-200 whitespace-nowrap" title={cell?.violationNote || code}>{code}</span>;
-                    else if (code) cellBadge = <span className="w-6 h-6 rounded-md bg-slate-100 text-slate-700 font-bold flex items-center justify-center text-[10px] border border-slate-200" title={cell?.violationNote || code}>{code}</span>;
+                    const otRec = overtimeMap.get(key) ?? null;
+                    const leaveReq = leaveMap.get(key);
+                    const parts = getDayParts(emp, cell, otRec, leaveReq, day.isSunday);
+                    const punchTitle = cell?.checkIn || cell?.checkOut
+                      ? `Quẹt: ${cell?.checkIn || '--:--'} → ${cell?.checkOut || '--:--'}${cell?.violationNote ? ` | ${cell.violationNote}` : ''}`
+                      : (cell?.violationNote || `${emp.employeeId} • ${day.dateStr}`);
+
+                    // --- Cột 1: giờ làm (đủ 8 xanh · 6-7.9 cam · <6 đỏ nhấp nháy) ---
+                    let workBadge = <span className="text-slate-300 text-[11px]">-</span>;
+                    if (parts.worked !== null) {
+                      const label = formatHours(parts.worked);
+                      if (parts.isFullLegalLeave) {
+                        workBadge = <span className="w-6 h-6 rounded-md bg-slate-100 text-slate-500 font-bold flex items-center justify-center text-[11px] border border-slate-200" title={`Nghỉ cả ngày (${parts.leave?.text})`}>0</span>;
+                      } else if (parts.workedTone === 'full') {
+                        workBadge = <span className="w-6 h-6 rounded-md bg-emerald-100 text-emerald-800 font-bold flex items-center justify-center text-[11px] shadow-sm" title={`${label}h — đủ công. ${punchTitle}`}>{label}</span>;
+                      } else if (parts.workedTone === 'warn') {
+                        workBadge = <span className="w-6 h-6 rounded-md bg-orange-100 text-orange-800 font-bold flex items-center justify-center text-[11px] border border-orange-300 shadow-sm" title={`${label}h — thiếu giờ. ${punchTitle}`}>{label}</span>;
+                      } else {
+                        workBadge = <span className="w-6 h-6 rounded-md bg-rose-100 text-rose-800 font-bold flex items-center justify-center text-[11px] border border-rose-300 shadow-sm animate-pulse" title={`${label}h — cảnh báo thiếu giờ! ${punchTitle}`}>{label}</span>;
+                      }
+                    }
+
+                    // --- Cột 2: giờ phép (Off chờ duyệt · AL/UL/... đã duyệt) ---
+                    let leaveBadge = <span className="text-slate-300 text-[11px]">-</span>;
+                    if (parts.leave) {
+                      const { text, tone, leaveType } = parts.leave;
+                      const colorByType =
+                        leaveType === 'AL' ? 'bg-blue-100 text-blue-800 border-blue-200' :
+                        leaveType === 'UL' ? 'bg-slate-200 text-slate-700 border-slate-300' :
+                        leaveType === 'SL' ? 'bg-pink-100 text-pink-800 border-pink-200' :
+                        leaveType === 'PL' ? 'bg-teal-100 text-teal-800 border-teal-200' :
+                        leaveType === 'PH' ? 'bg-amber-100 text-amber-800 border-amber-200' :
+                        leaveType === 'BT' ? 'bg-sky-100 text-sky-800 border-sky-200' :
+                        leaveType === 'ML' ? 'bg-purple-100 text-purple-800 border-purple-300' :
+                        tone === 'rejected' ? 'bg-rose-100 text-rose-800 border-rose-300' :
+                        'bg-amber-100 text-amber-800 border-amber-300';
+                      const pulse = tone === 'pending' ? ' animate-pulse' : '';
+                      const statusLabel = tone === 'pending' ? 'Chờ duyệt bù phép' : tone === 'approved' ? 'Đã duyệt' : tone === 'rejected' ? 'Không phép / bị từ chối' : 'Mã phép tay';
+                      leaveBadge = (
+                        <span
+                          className={`px-1 py-0.5 rounded-md font-bold text-[10px] border whitespace-nowrap${pulse} ${colorByType}`}
+                          title={`${text} — ${statusLabel}. Bấm để sang menu bù phép.`}
+                        >
+                          {text}
+                        </span>
+                      );
+                    }
+
+                    // --- Cột 3: tăng ca (logic Overtime Table giữ nguyên) ---
+                    const otHours = parts.ot?.hours || 0;
+                    let otBadge: React.ReactNode = (
+                      <span
+                        onClick={() => handleOpenOtCell(emp, day)}
+                        className="text-slate-300 hover:text-orange-500 cursor-pointer p-1 rounded transition text-[11px]"
+                        title="Bấm để xem hoặc thêm tăng ca thủ công"
+                      >
+                        -
+                      </span>
+                    );
+                    if (otHours > 0) {
+                      let bgClass = 'bg-amber-100 text-amber-900 border-amber-300';
+                      if (parts.ot?.verificationStatus === 'MATCHED') {
+                        bgClass = 'bg-emerald-100 text-emerald-900 border-emerald-300 font-extrabold';
+                      } else if (parts.ot?.verificationStatus === 'MISMATCH') {
+                        bgClass = 'bg-rose-100 text-rose-900 border-rose-300 font-extrabold animate-pulse';
+                      }
+                      const tooltipLines = [
+                        `Tăng ca: ${otHours}h (${parts.ot?.rawMinutes || Math.round(otHours * 60)} phút)`,
+                        parts.ot?.startTime && parts.ot?.endTime ? `Khung: ${parts.ot.startTime} - ${parts.ot.endTime}` : '',
+                        parts.ot?.isEarlyIn ? '⭐ Có tăng ca vào sớm (06:00 - 06:30)' : '',
+                        `Trạng thái: ${parts.ot?.verificationStatus}`,
+                        parts.ot?.note ? `Ghi chú: ${parts.ot.note}` : '',
+                        'Bấm để chỉnh sửa / làm tròn thủ công'
+                      ].filter(Boolean).join('\n');
+                      otBadge = (
+                        <div className="relative inline-flex items-center justify-center">
+                          <span
+                            onClick={() => handleOpenOtCell(emp, day)}
+                            className={`min-w-[28px] h-6 px-1 rounded-lg font-bold flex items-center justify-center text-[11px] border cursor-pointer hover:scale-110 transition shadow-sm relative ${bgClass}`}
+                            title={tooltipLines}
+                          >
+                            {otHours % 1 === 0 ? otHours : otHours.toFixed(1)}
+                            {parts.ot?.isEarlyIn && (
+                              <span
+                                className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-sky-500 rounded-full border-2 border-white shadow-sm"
+                                title="Tăng ca vào sớm (06:00-06:30)"
+                              />
+                            )}
+                          </span>
+                        </div>
+                      );
+                    }
+
+                    const sundayBg = day.isSunday ? 'bg-amber-50/40' : (day.isSaturday ? 'bg-slate-50/40' : '');
                     return (
-                      <td key={day.dayIndex} onClick={() => handleCellClick(emp, day)} className={`p-1 text-center border-r border-slate-100 cursor-pointer hover:bg-orange-100/50 transition ${day.isSunday ? 'bg-amber-50/40' : (day.isSaturday ? 'bg-slate-50/40' : '')}`} title={cell?.violationNote || `Quẹt: ${cell?.checkIn || '--:--'} - ${cell?.checkOut || '--:--'}`}>
-                        <div className="flex items-center justify-center">{cellBadge}</div>
-                      </td>
+                      <React.Fragment key={day.dayIndex}>
+                        <td onClick={() => handleCellClick(emp, day)} className={`p-1 text-center border-r border-slate-100 cursor-pointer hover:bg-orange-100/50 transition ${sundayBg}`} title={punchTitle}>
+                          <div className="flex items-center justify-center">{workBadge}</div>
+                        </td>
+                        <td
+                          onClick={() => onNavigate?.('leavePending')}
+                          className={`p-1 text-center border-r border-slate-100 ${onNavigate ? 'cursor-pointer hover:bg-blue-50/60' : ''} transition ${sundayBg}`}
+                          title={parts.leave ? `${parts.leave.text} — bấm để sang menu bù phép` : 'Không có giờ phép'}
+                        >
+                          <div className="flex items-center justify-center">{leaveBadge}</div>
+                        </td>
+                        <td className={`p-1 text-center border-r border-slate-100 ${sundayBg}`}>
+                          <div className="flex items-center justify-center">{otBadge}</div>
+                        </td>
+                      </React.Fragment>
                     );
                   })}
                   <td className="py-2 px-2 text-center font-bold text-slate-700 border-r border-slate-200 bg-slate-50/50">{summary.standardWD}</td>
@@ -321,18 +516,25 @@ export const TimesheetCalendarPage: React.FC = () => {
             <h2 className="text-[17px] font-extrabold text-slate-900 flex items-center gap-2">
               <CalendarDays className="w-5 h-5 text-orange-500" />
               <span>Bảng chấm công</span>
-              <span className="ml-2 px-2.5 py-1 bg-slate-900 text-white rounded-lg text-xs font-black">Tháng {String(selectedMonth).padStart(2,'0')}/{selectedYear}</span>
+              <span className="ml-2 px-2.5 py-1 bg-slate-900 text-white rounded-lg text-xs font-black">
+                {activeCycle === 'OFFICIAL' ? `Lương tháng ${String(payMonth).padStart(2, '0')}/${payYear}` : `Thời vụ ${String(payMonth).padStart(2, '0')}/${payYear}`}
+              </span>
             </h2>
             <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
-              <span className={`px-3 py-1.5 rounded-xl border font-bold flex items-center gap-1.5 ${cycleMode === 'OFFICIAL' ? 'bg-slate-900 text-white border-slate-900 shadow' : 'bg-white border-slate-200 text-slate-700'}`}>
-                <CalendarRange className="w-3.5 h-3.5" /> Chính thức (21-20): <b>{officialPayLabel}</b> {cycleMode==='OFFICIAL' && <span className="ml-1 px-1.5 py-0.5 bg-white/20 rounded text-[10px]">đang xem</span>}
-              </span>
-              <span className={`px-3 py-1.5 rounded-xl border font-bold flex items-center gap-1.5 ${cycleMode === 'SEASONAL' ? 'bg-emerald-600 text-white border-emerald-600 shadow' : 'bg-white border-slate-200 text-slate-700'}`}>
-                <Clock3 className="w-3.5 h-3.5" /> Thời vụ (1-31): <b>{seasonalPayLabel}</b> {cycleMode==='SEASONAL' && <span className="ml-1 px-1.5 py-0.5 bg-white/20 rounded text-[10px]">đang xem</span>}
-              </span>
+              {(Object.keys(CLUSTER_META) as TimesheetCluster[]).map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setCluster(c)}
+                  className={`px-3 py-1.5 rounded-xl border font-bold flex items-center gap-1.5 transition ${cluster === c ? 'bg-slate-900 text-white border-slate-900 shadow' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+                >
+                  {c === 'HC23' ? <Building2 className="w-3.5 h-3.5" /> : c === 'HC_CA' ? <CalendarRange className="w-3.5 h-3.5" /> : <Clock3 className="w-3.5 h-3.5" />}
+                  {CLUSTER_META[c].label}
+                  <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${cluster === c ? 'bg-white/20' : 'bg-slate-100 text-slate-600'}`}>{clusterCounts[c]}</span>
+                </button>
+              ))}
             </div>
             <p className="text-[11px] text-slate-500 mt-2 leading-relaxed max-w-[880px]">
-              Kỳ công chính thức tính <b>21 tháng trước – 20 tháng này</b> (VD: {officialPayLabel} là kỳ tháng {selectedMonth}), thời vụ tính <b>01–cuối tháng</b> ({seasonalPayLabel}). Bảng lọc độc lập theo <b>loại hình hợp đồng</b> để đảm bảo số liệu chính xác theo từng chu kỳ.
+              Kỳ lương chính thức <b>21 tháng trước – 20 tháng này</b> (VD: 21/9–20/10 là lương tháng 10), thời vụ <b>01–cuối tháng</b> theo timeline riêng. Kỳ đang xem: <b>{payLabel}</b>.
             </p>
             <p className="text-[11px] text-slate-400 mt-1 flex flex-wrap gap-2">
               <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-teal-500"></span> PL=Tang/Cưới</span>
@@ -363,17 +565,11 @@ export const TimesheetCalendarPage: React.FC = () => {
             <option value="ALL">Tất cả Phòng Ban</option>
             {departments.map(d => (<option key={d} value={d}>{d}</option>))}
           </select>
-          <select value={selectedMonth} onChange={(e) => setSelectedMonth(parseInt(e.target.value))} className="px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs">
-            {Array.from({length:12}, (_,i)=> i+1).map(m=> <option key={m} value={m}>Tháng {m}</option>)}
-          </select>
-          <select value={selectedYear} onChange={(e) => setSelectedYear(parseInt(e.target.value))} className="px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs">
-            {[2025,2026,2027].map(y=> <option key={y} value={y}>{y}</option>)}
-          </select>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[11px] font-bold text-slate-500 mr-1">Chu kỳ:</span>
-          <button onClick={()=>setCycleMode('OFFICIAL')} className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${cycleMode==='OFFICIAL' ? 'bg-slate-900 text-white border-slate-900 shadow' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>Chính thức 21-20</button>
-          <button onClick={()=>setCycleMode('SEASONAL')} className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${cycleMode==='SEASONAL' ? 'bg-emerald-600 text-white border-emerald-600 shadow' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>Thời vụ 1-31</button>
+          <span className="text-[11px] font-bold text-slate-500 mr-1">Kỳ lương:</span>
+          <button onClick={() => shiftPayPeriod(-1)} className="px-3 py-1.5 rounded-xl text-xs font-bold border bg-white text-slate-600 border-slate-200 hover:bg-slate-50 transition" title="Kỳ trước">‹ Trước</button>
+          <button onClick={() => shiftPayPeriod(1)} className="px-3 py-1.5 rounded-xl text-xs font-bold border bg-white text-slate-600 border-slate-200 hover:bg-slate-50 transition" title="Kỳ sau">Sau ›</button>
           <button onClick={handleClearTimesheetData} className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-xl border border-rose-200 transition shadow-sm ml-1" title="Xóa nhanh dữ liệu bảng chấm công để import lại file mới">
             <Trash2 className="w-3.5 h-3.5" />
             <span>Làm sạch bảng công</span>
@@ -382,34 +578,31 @@ export const TimesheetCalendarPage: React.FC = () => {
       </div>
 
       <div className="flex items-center gap-2 flex-wrap text-[11px] font-semibold text-slate-600 bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
-        <span className="px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">W: Đủ công</span>
-        <span className="px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200">N: Ca đêm</span>
-        <span className="px-2 py-0.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200">Off: Chờ bù phép</span>
-        <span className="px-2 py-0.5 rounded-lg bg-purple-50 text-purple-700 border border-purple-200">ML: Nghỉ thai sản</span>
-        <span className="px-2 py-0.5 rounded-lg bg-blue-50 text-blue-700 border border-blue-200">AL: Phép năm</span>
-        <span className="px-2 py-0.5 rounded-lg bg-slate-100 text-slate-600 border border-slate-200">UL: Không lương</span>
-        <span className="px-2 py-0.5 rounded-lg bg-pink-50 text-pink-700 border border-pink-200">SL: Nghỉ ốm</span>
-        <span className="px-2 py-0.5 rounded-lg bg-teal-50 text-teal-700 border border-teal-200">PL: Tang/Cưới</span>
-        <span className="px-2 py-0.5 rounded-lg bg-amber-50 text-amber-700 border border-amber-200">PH: Nghỉ lễ</span>
-        <span className="px-2 py-0.5 rounded-lg bg-orange-50 text-orange-700 border border-orange-200">LA: Đi trễ</span>
-        <span className="px-2 py-0.5 rounded-lg bg-orange-50 text-orange-700 border border-orange-200">ED: Về sớm</span>
-        <span className="px-2 py-0.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200">MCO: Không ra</span>
-        <span className="px-2 py-0.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200">MCI: Không vào</span>
-        <span className="px-2 py-0.5 rounded-lg bg-sky-50 text-sky-800 border border-sky-200">BT: Đi công tác</span>
+        <span className="font-bold text-slate-800">Mỗi ngày 3 cột:</span>
+        <span className="px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">Giờ: 8 đủ công</span>
+        <span className="px-2 py-0.5 rounded-lg bg-orange-50 text-orange-700 border border-orange-200">Giờ: 6-7.9 thiếu giờ</span>
+        <span className="px-2 py-0.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200">Giờ: &lt;6 cảnh báo nhấp nháy</span>
+        <span className="px-2 py-0.5 rounded-lg bg-amber-50 text-amber-700 border border-amber-200">Phép: 4Off chờ duyệt</span>
+        <span className="px-2 py-0.5 rounded-lg bg-blue-50 text-blue-700 border border-blue-200">Phép: 4AL đã duyệt</span>
+        <span className="px-2 py-0.5 rounded-lg bg-amber-100 text-amber-900 border border-amber-300">TC: chờ đối soát</span>
+        <span className="px-2 py-0.5 rounded-lg bg-emerald-100 text-emerald-900 border border-emerald-300">TC: đã khớp OCR</span>
+        <span className="px-2 py-0.5 rounded-lg bg-rose-100 text-rose-900 border border-rose-300">TC: lệch phiếu</span>
+        <span className="px-2 py-0.5 rounded-lg bg-purple-50 text-purple-700 border border-purple-200">ML: thai sản</span>
+        <span className="px-2 py-0.5 rounded-lg bg-sky-50 text-sky-800 border border-sky-200">BT: công tác</span>
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex-1 flex flex-col">
         <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-xs">
           <span className="font-bold text-slate-800 flex items-center gap-1.5">
             <CalendarRange className="w-4 h-4 text-orange-500"/>
-            <span>{cycleMode==='OFFICIAL' ? `Nhóm Chính thức (21-20) — ${officialPayLabel}` : `Nhóm Thời vụ (1-31) — ${seasonalPayLabel}`}</span>
+            <span>{CLUSTER_META[cluster].label} — {payLabel}</span>
             <span className="ml-2 px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-[10px] font-extrabold">{filteredEmployees.length} nhân viên</span>
           </span>
           <span className="text-slate-500 font-medium">
-            {cycleMode==='OFFICIAL' ? `${officialDays[0].dayNum}/${officialDays[0].monthNum} → ${officialDays[30].dayNum}/${officialDays[30].monthNum}` : `01/${String(selectedMonth).padStart(2,'0')} → cuối tháng`}
+            {activeCycle === 'OFFICIAL' ? `${calendarDays[0].dayNum}/${calendarDays[0].monthNum} → ${calendarDays[30].dayNum}/${calendarDays[30].monthNum}` : `01/${String(payMonth).padStart(2, '0')} → cuối tháng`}
           </span>
         </div>
-        {renderTable(filteredEmployees, calendarDaysSingle)}
+        {renderTable(filteredEmployees, calendarDays)}
       </div>
 
       {filteredEmployees.length===0 && <div className="p-6 text-center text-xs text-slate-500 bg-white rounded-2xl border border-dashed"><AlertTriangle className="w-5 h-5 mx-auto text-amber-500 mb-1"/> Không có dữ liệu nhân viên khớp bộ lọc</div>}
@@ -455,6 +648,18 @@ export const TimesheetCalendarPage: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Modal tăng ca dùng chung với OvertimePage (mở từ cột TC) */}
+      {activeOtRecord && (
+        <OvertimeEditModal
+          key={activeOtRecord.otRecord.employeeId_date}
+          employee={activeOtRecord.employee}
+          day={activeOtRecord.day}
+          otRecord={activeOtRecord.otRecord}
+          isNew={!overtimeMap.has(activeOtRecord.otRecord.employeeId_date)}
+          onClose={() => setActiveOtRecord(null)}
+        />
       )}
     </div>
   );

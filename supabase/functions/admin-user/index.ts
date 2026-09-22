@@ -56,7 +56,7 @@ serve(async (req: Request): Promise<Response> => {
     }
     const callerRole = (caller.app_metadata as Record<string, unknown>)?.['role'];
     if (callerRole !== 'AD System') {
-      return json({ error: 'Chỉ AD System (Kieu/Glory) được cấp lại mật khẩu' }, 403);
+      return json({ error: 'Chỉ AD System (Kieu/Hoa/Glory) được cấp lại mật khẩu' }, 403);
     }
 
     // 2. Đọc tham số

@@ -13,17 +13,17 @@ import {
   ArrowRight,
   SunMedium,
   Check,
-  X,
   Edit3
 } from 'lucide-react';
-import { useLiveTable, upsertOne } from '../lib/tables';
-import type { IEmployee, IOvertimeRecord, OvertimeVerificationStatus } from '../types';
+import { useLiveTable } from '../lib/tables';
+import type { IEmployee, IOvertimeRecord } from '../types';
 import { generateCalendarDays, CalendarDay } from '../services/calendar-utils';
 import { formatPayPeriodLabel } from '../services/pay-period';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 import { useAuth } from '../context/AuthContext';
 import { NavPageId } from '../components/layout/Sidebar';
+import { OvertimeEditModal } from '../components/overtime/OvertimeEditModal';
 
 interface OvertimePageProps {
   onNavigate: (page: NavPageId) => void;
@@ -33,13 +33,10 @@ interface ActiveEditRecordState {
   employee: IEmployee;
   otRecord: IOvertimeRecord;
   day: CalendarDay;
-  hours: number;
-  note: string;
-  verificationStatus: OvertimeVerificationStatus;
 }
 
 export const OvertimePage: React.FC<OvertimePageProps> = ({ onNavigate }) => {
-  const { success, warning, error } = useToast();
+  const { warning } = useToast();
   const { confirm } = useModal();
   const { departmentScope, hasPermission } = useAuth();
 
@@ -154,9 +151,6 @@ export const OvertimePage: React.FC<OvertimePageProps> = ({ onNavigate }) => {
         employee: emp,
         otRecord: existing,
         day,
-        hours: existing.hours,
-        note: existing.note || '',
-        verificationStatus: existing.verificationStatus
       });
     } else {
       // Cho phép HR thêm mới thủ công nếu muốn
@@ -175,39 +169,7 @@ export const OvertimePage: React.FC<OvertimePageProps> = ({ onNavigate }) => {
           verificationStatus: 'PENDING'
         },
         day,
-        hours: 0,
-        note: '',
-        verificationStatus: 'PENDING'
       });
-    }
-  };
-
-  // Lưu bản ghi OT sau khi chỉnh sửa
-  const handleSaveOtRecord = async () => {
-    if (!activeEditRecord) return;
-    if (!canManageOt) {
-      error('Không đủ quyền', 'Bạn không có quyền lưu giờ tăng ca.');
-      return;
-    }
-    try {
-      const updated: IOvertimeRecord = {
-        ...activeEditRecord.otRecord,
-        hours: Number(activeEditRecord.hours),
-        note: activeEditRecord.note.trim(),
-        verificationStatus: activeEditRecord.verificationStatus,
-        verifiedAt: new Date().toISOString()
-      };
-
-      if (updated.hours <= 0 && !overtimeMap.has(updated.employeeId_date)) {
-        setActiveEditRecord(null);
-        return;
-      }
-
-      await upsertOne('overtimeRecords', updated);
-      success('Đã lưu tăng ca', `Đã cập nhật ${updated.hours}h tăng ca cho ${activeEditRecord.employee.fullName}`);
-      setActiveEditRecord(null);
-    } catch (err: any) {
-      error('Lỗi khi lưu tăng ca', err.message);
     }
   };
 
@@ -479,170 +441,16 @@ export const OvertimePage: React.FC<OvertimePageProps> = ({ onNavigate }) => {
         </div>
       )}
 
-      {/* Modal Chỉnh sửa Giờ Tăng Ca / Làm Tròn Thủ Công */}
+      {/* Modal Chỉnh sửa Giờ Tăng Ca / Làm Tròn Thủ Công (dùng chung với Bảng chấm công) */}
       {activeEditRecord && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <Clock className="w-5 h-5 text-orange-500" />
-                <h3 className="text-base font-bold text-slate-900">Chi Tiết Tăng Ca (Overtime)</h3>
-              </div>
-              <button 
-                onClick={() => setActiveEditRecord(null)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1.5">
-              <div>Nhân viên: <b className="text-slate-900">{activeEditRecord.employee.fullName}</b> ({activeEditRecord.employee.employeeId})</div>
-              <div>Ngày: <b>{activeEditRecord.day.dayVi}, {activeEditRecord.day.dateStr}</b> ({activeEditRecord.day.isSunday ? 'Chủ Nhật' : 'Ngày thường'})</div>
-              {activeEditRecord.otRecord.startTime && activeEditRecord.otRecord.endTime ? (
-                <div>Khung giờ: <b>{activeEditRecord.otRecord.startTime} → {activeEditRecord.otRecord.endTime}</b></div>
-              ) : null}
-              <div>Số phút quẹt thẻ thực tế: <b>{activeEditRecord.otRecord.rawMinutes || Math.round(activeEditRecord.otRecord.hours * 60)} phút</b></div>
-              {activeEditRecord.otRecord.isEarlyIn && (
-                <div className="text-sky-700 font-bold flex items-center gap-1 bg-sky-100 p-1.5 rounded-lg">
-                  <span className="w-2 h-2 rounded-full bg-sky-500" />
-                  Có tăng ca vào sớm trong khung 06:00 - 06:30
-                </div>
-              )}
-            </div>
-
-            {/* Input số giờ tăng ca (HR tự làm tròn) */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Số giờ tăng ca (HR tự làm tròn theo quy định):
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="24"
-                  value={activeEditRecord.hours}
-                  onChange={(e) => setActiveEditRecord({
-                    ...activeEditRecord,
-                    hours: parseFloat(e.target.value) || 0
-                  })}
-                  className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-orange-600 focus:outline-none focus:border-orange-500"
-                />
-                <span className="text-xs font-semibold text-slate-500">giờ</span>
-              </div>
-
-              {/* Quick round helpers */}
-              <div className="flex items-center gap-1.5 mt-2">
-                <span className="text-[11px] text-slate-400">Làm tròn nhanh:</span>
-                <button
-                  type="button"
-                  onClick={() => setActiveEditRecord({
-                    ...activeEditRecord,
-                    hours: Math.round(activeEditRecord.hours)
-                  })}
-                  className="px-2 py-0.5 text-[11px] font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition"
-                >
-                  Về chẵn (.0)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveEditRecord({
-                    ...activeEditRecord,
-                    hours: Math.round(activeEditRecord.hours * 2) / 2
-                  })}
-                  className="px-2 py-0.5 text-[11px] font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition"
-                >
-                  Về nửa giờ (.5)
-                </button>
-                {activeEditRecord.otRecord.rawMinutes ? (
-                  <button
-                    type="button"
-                    onClick={() => setActiveEditRecord({
-                      ...activeEditRecord,
-                      hours: +(activeEditRecord.otRecord.rawMinutes! / 60).toFixed(2)
-                    })}
-                    className="px-2 py-0.5 text-[11px] font-semibold bg-orange-50 hover:bg-orange-100 text-orange-700 rounded-lg transition"
-                  >
-                    Thực tế ({+(activeEditRecord.otRecord.rawMinutes / 60).toFixed(2)}h)
-                  </button>
-                ) : null}
-              </div>
-            </div>
-
-            {/* Trạng thái xác nhận */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Trạng thái xác nhận / đối soát:
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setActiveEditRecord({ ...activeEditRecord, verificationStatus: 'PENDING' })}
-                  className={`p-2 rounded-xl text-xs font-bold border transition text-center ${
-                    activeEditRecord.verificationStatus === 'PENDING'
-                      ? 'bg-amber-500 text-white border-amber-500 shadow-md'
-                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                  }`}
-                >
-                  Chờ xác nhận
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveEditRecord({ ...activeEditRecord, verificationStatus: 'MATCHED' })}
-                  className={`p-2 rounded-xl text-xs font-bold border transition text-center ${
-                    activeEditRecord.verificationStatus === 'MATCHED'
-                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-md'
-                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                  }`}
-                >
-                  Đã khớp OCR
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveEditRecord({ ...activeEditRecord, verificationStatus: 'MISMATCH' })}
-                  className={`p-2 rounded-xl text-xs font-bold border transition text-center ${
-                    activeEditRecord.verificationStatus === 'MISMATCH'
-                      ? 'bg-rose-600 text-white border-rose-600 shadow-md'
-                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                  }`}
-                >
-                  Lệch phiếu
-                </button>
-              </div>
-            </div>
-
-            {/* Ghi chú */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">Ghi chú tăng ca:</label>
-              <textarea
-                value={activeEditRecord.note}
-                onChange={(e) => setActiveEditRecord({ ...activeEditRecord, note: e.target.value })}
-                rows={2}
-                placeholder="Nhập ghi chú hoặc lý do điều chỉnh..."
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-orange-500 resize-none"
-              />
-            </div>
-
-            {/* Buttons */}
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setActiveEditRecord(null)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition"
-              >
-                Hủy bỏ
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveOtRecord}
-                className="px-4 py-2 text-xs font-bold text-white bg-orange-500 hover:bg-orange-600 rounded-xl shadow-md shadow-orange-200 transition"
-              >
-                Lưu thay đổi
-              </button>
-            </div>
-          </div>
-        </div>
+        <OvertimeEditModal
+          key={activeEditRecord.otRecord.employeeId_date}
+          employee={activeEditRecord.employee}
+          day={activeEditRecord.day}
+          otRecord={activeEditRecord.otRecord}
+          isNew={!overtimeMap.has(activeEditRecord.otRecord.employeeId_date)}
+          onClose={() => setActiveEditRecord(null)}
+        />
       )}
     </div>
   );

@@ -3,7 +3,9 @@
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
   X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
   Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
 
 # Model ONNX/WASM cache lâu (đổi tên khi đổi model)
 /PaddleOCR-Models/*

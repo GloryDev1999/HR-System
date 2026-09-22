@@ -16,16 +16,20 @@ import {
   CheckCircle2,
   XCircle,
   FileText,
+  FileSpreadsheet,
   SlidersHorizontal,
   UserMinus,
-  Gift
+  Gift,
+  Download,
+  Upload
 } from 'lucide-react';
-import { useLiveTable, upsertOne, updateByKey, removeByKey, bulkRemove, listWhere } from '../lib/tables';
+import { useLiveTable, upsertOne, updateByKey, removeByKey, bulkRemove, bulkUpsert, listWhere } from '../lib/tables';
 import type { IEmployee, IProductionLine, ShiftClassType, ContractType } from '../types';
 import { useToast } from '../context/ToastContext';
 import { useModal } from '../context/ModalContext';
 import { useAuth } from '../context/AuthContext';
 import { daysUntil, getPayPeriod, parseDateLoose } from '../services/pay-period';
+import { downloadEmployeeTemplate, parseEmployeeExcel } from '../services/employee-excel';
 
 export const EmployeeListPage: React.FC = () => {
   const { success, warning, error } = useToast();
@@ -141,6 +145,79 @@ export const EmployeeListPage: React.FC = () => {
       setEditingEmployee(null);
     } catch (err: any) {
       error('Lỗi khi lưu nhân viên', err.message);
+    }
+  };
+
+  // --- Nhập nhanh nhân viên từ Excel (mẫu 21 cột, trùng mã → cập nhật) ---
+  const empFileRef = React.useRef<HTMLInputElement>(null);
+
+  const handleDownloadEmpTemplate = async () => {
+    try {
+      await downloadEmployeeTemplate();
+      success('Đã tải file mẫu', 'Mở sheet HuongDan để xem giá trị hợp lệ từng cột, điền sheet NhanVien rồi dùng nút Nhập Excel.');
+    } catch (err: any) {
+      error('Lỗi tải file mẫu', err.message);
+    }
+  };
+
+  const handleEmpFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (empFileRef.current) empFileRef.current.value = '';
+    if (!file) return;
+    if (!hasPermission('MANAGE_EMPLOYEES')) {
+      error('Không đủ quyền', 'Bạn không có quyền thêm nhân sự hàng loạt (MANAGE_EMPLOYEES).');
+      return;
+    }
+    try {
+      const buffer = await file.arrayBuffer();
+      const lineRefs = rawProductionLines.map(l => ({ id: l.id, name: l.name }));
+      const { employees: parsed, errors } = parseEmployeeExcel(buffer, lineRefs);
+
+      if (parsed.length === 0) {
+        openCustomModal(
+          'Không nhập được dòng nào',
+          <div className="text-xs text-slate-600 space-y-2">
+            <p className="font-semibold text-rose-600">File có {errors.length} lỗi, 0 dòng hợp lệ:</p>
+            <div className="max-h-64 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100">
+              {errors.slice(0, 100).map((er, i) => (
+                <div key={i} className="px-3 py-1.5">Dòng {er.row} [{er.employeeId || '?'}]: {er.message}</div>
+              ))}
+            </div>
+          </div>,
+          <button onClick={closeCustomModal} className="px-4 py-2 text-xs font-bold bg-slate-900 text-white rounded-xl">Đã hiểu</button>
+        );
+        return;
+      }
+
+      const existingIds = new Set(rawEmployees.map(x => x.employeeId.toUpperCase()));
+      const toUpdate = parsed.filter(p => existingIds.has(p.employeeId.toUpperCase()));
+      const toAdd = parsed.filter(p => !existingIds.has(p.employeeId.toUpperCase()));
+
+      const ok = await confirm({
+        title: `Xác nhận nhập ${parsed.length} nhân viên từ Excel`,
+        message: `Thêm mới ${toAdd.length} + cập nhật ${toUpdate.length} mã đã tồn tại${errors.length > 0 ? ` (bỏ qua ${errors.length} dòng lỗi)` : ''}. Tiếp tục?`,
+        confirmText: `Nhập ${parsed.length} NV`,
+        cancelText: 'Hủy bỏ',
+        type: 'info'
+      });
+      if (!ok) return;
+
+      await bulkUpsert('employees', parsed);
+      if (errors.length > 0) {
+        openCustomModal(
+          `Đã nhập ${parsed.length} nhân viên (bỏ qua ${errors.length} dòng lỗi)`,
+          <div className="max-h-64 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100 text-xs text-slate-600">
+            {errors.slice(0, 100).map((er, i) => (
+              <div key={i} className="px-3 py-1.5">Dòng {er.row} [{er.employeeId || '?'}]: {er.message}</div>
+            ))}
+          </div>,
+          <button onClick={closeCustomModal} className="px-4 py-2 text-xs font-bold bg-slate-900 text-white rounded-xl">Đã hiểu</button>
+        );
+      } else {
+        success('Nhập nhân viên thành công!', `Đã thêm ${toAdd.length} mới + cập nhật ${toUpdate.length} mã đã tồn tại.`);
+      }
+    } catch (err: any) {
+      error('Lỗi nhập Excel nhân viên', err.message);
     }
   };
 
@@ -325,13 +402,38 @@ export const EmployeeListPage: React.FC = () => {
         </div>
 
         {hasPermission('MANAGE_EMPLOYEES') && (
-          <button
-            onClick={() => handleOpenAddEditModal()}
-            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white text-xs font-bold rounded-xl transition shadow-md shadow-orange-200"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Thêm Nhân Viên Mới</span>
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              type="file"
+              ref={empFileRef}
+              onChange={handleEmpFileChange}
+              accept=".xlsx,.xls"
+              className="hidden"
+            />
+            <button
+              onClick={handleDownloadEmpTemplate}
+              className="flex items-center gap-2 px-4 py-2.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs font-bold rounded-xl transition shadow-sm"
+              title="Tải file mẫu Excel 21 cột (kèm sheet Hướng dẫn)"
+            >
+              <Download className="w-4 h-4 text-slate-500" />
+              <span>Tải mẫu Excel</span>
+            </button>
+            <button
+              onClick={() => empFileRef.current?.click()}
+              className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition shadow-sm"
+              title="Nhập hàng loạt nhân viên từ Excel (mã trùng → cập nhật)"
+            >
+              <Upload className="w-4 h-4 text-emerald-400" />
+              <span>Nhập Excel</span>
+            </button>
+            <button
+              onClick={() => handleOpenAddEditModal()}
+              className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white text-xs font-bold rounded-xl transition shadow-md shadow-orange-200"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Thêm Nhân Viên Mới</span>
+            </button>
+          </div>
         )}
       </div>
 

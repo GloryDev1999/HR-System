@@ -3,9 +3,11 @@
 -- Role/scope nằm trong auth.users.raw_app_meta_data (server-side, RLS đọc JWT).
 --
 -- 6 users đã tạo sẵn qua Admin API (pass 123456):
---   vinh@leggett.com (Warehouse Admin / WH) · hoa@leggett.com (HR Manager)
+--   vinh@leggett.com (Warehouse Admin / WH) · hoa@leggett.com (AD System)
 --   kieu@leggett.com (AD System) · nguyetanh@leggett.com (QC Admin / QC)
 --   han@leggett.com (Production Admin / Production) · glory@leggett.com (AD System)
+-- (Chốt 2026-09-22: kieu = hoa = glory cùng AD System. Promote hoa bằng
+-- supabase/promote-hoa-to-ad-system.sql nếu acc hoa cũ còn role HR Manager.)
 --
 -- THÊM USER MỚI: Dashboard Authentication → Add user → Create user,
 -- rồi chạy UPDATE bên dưới để gán vai trò (mẫu cho role Warehouse Admin/WH).

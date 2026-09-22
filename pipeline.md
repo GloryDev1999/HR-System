@@ -38,7 +38,7 @@ Không còn: máy host `192.168.1.50`, `SmartHR-BangDieuKhien.lnk`, `mo-ui.vbs`,
 | Vai trò | Người | Quyền | Cách vào |
 |---|---|---|---|
 | AD System (master owner) | kieu | Toàn quyền + Settings + Users | Login qua URL public (Supabase Auth) |
-| HR Manager (co-owner, **vận hành chính**) | hoa | Toàn quyền trừ Settings/Users | Login qua URL public (Supabase Auth) |
+| AD System (co-owner, **vận hành chính**) | hoa | Toàn quyền + Settings + Users (= kieu/glory) | Login qua URL public (Supabase Auth) |
 | AD System (kỹ thuật) | glory | Toàn quyền | Login qua URL public khi cần |
 | Warehouse Admin | vinh (scope WH) | Sắp ca WH | Login qua URL public |
 | Production Admin | han (scope Production) | Sắp ca + tỷ lệ NS | Login qua URL public |

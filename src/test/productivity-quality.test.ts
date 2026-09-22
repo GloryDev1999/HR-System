@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { snakeToCamel, convertRowToCamel } from '../lib/tables';
+import { snakeToCamel, convertRowToCamel, convertToSnakeShallow } from '../lib/tables';
 import { DEFAULT_SETTINGS } from '../lib/defaultSettings';
 
 describe('Supabase tables mapper (thay Dexie stores)', () => {
@@ -31,6 +31,21 @@ describe('Supabase tables mapper (thay Dexie stores)', () => {
     const row = convertRowToCamel({ id: 'LOG_1', created_at: '2026-09-21T00:00:00Z' });
     expect(row.createdAt).toBe('2026-09-21T00:00:00Z');
     expect(row.timestamp).toBe('2026-09-21T00:00:00Z');
+  });
+
+  it('convertToSnakeShallow loại field timestamp alias (không gửi cột không tồn tại)', () => {
+    const row = convertRowToCamel({
+      employee_id: 'LEP001',
+      full_name: 'Test',
+      department: 'Production',
+      created_at: '2026-09-21T00:00:00Z',
+    });
+    expect(row.timestamp).toBe('2026-09-21T00:00:00Z');
+
+    const payload = convertToSnakeShallow(row, 'employees');
+    expect(payload).not.toHaveProperty('timestamp');
+    expect(payload).toHaveProperty('created_at', '2026-09-21T00:00:00Z');
+    expect(payload).toHaveProperty('employee_id', 'LEP001');
   });
 
   it('rolePermissions mặc định giữ đủ 6 vai trò', () => {

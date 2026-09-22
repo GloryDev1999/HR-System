@@ -1,9 +1,8 @@
 import React from 'react';
-import { 
+import {
   LayoutDashboard, 
   Users, 
   CalendarDays, 
-  Clock, 
   CalendarCheck, 
   RotateCcw, 
   ScanLine, 
@@ -19,7 +18,7 @@ import { useLanguage } from '../../context/LanguageContext';
 import { useAuth } from '../../context/AuthContext';
 import { useMemo } from 'react';
 import { useLiveTable } from '../../lib/tables';
-import type { ILeaveRequest, IShiftRosterEntry, IOvertimeRecord, IDailyTimesheetCell } from '../../types';
+import type { ILeaveRequest, IShiftRosterEntry, IDailyTimesheetCell } from '../../types';
 
 export type NavPageId = 
   | 'dashboard' 
@@ -48,18 +47,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
   // Badge realtime từ Supabase (postgres_changes tự refresh qua useLiveTable)
   const leaveRequests = useLiveTable<ILeaveRequest>('leaveRequests');
   const shiftRosters = useLiveTable<IShiftRosterEntry>('shiftRosters');
-  const overtimeRecords = useLiveTable<IOvertimeRecord>('overtimeRecords');
   const dailyTimesheets = useLiveTable<IDailyTimesheetCell>('dailyTimesheets');
   const badgeCounts = useMemo(() => ({
     pendingLeave: leaveRequests.filter(r => r.status === 'PENDING').length,
     violations: shiftRosters.filter(r => r.isRestViolation).length,
-    pendingOT: overtimeRecords.filter(r => r.verificationStatus === 'PENDING').length,
     attendanceViolations: dailyTimesheets.filter(r => ['LA', 'ED', 'MCO', 'MCI'].includes(r.statusCode)).length,
     shiftMismatches: shiftRosters.filter(r => r.isShiftMismatch).length,
-  }), [leaveRequests, shiftRosters, overtimeRecords, dailyTimesheets]);
+  }), [leaveRequests, shiftRosters, dailyTimesheets]);
   const pendingLeaveCount = badgeCounts?.pendingLeave ?? 0;
   const shiftViolationCount = (badgeCounts?.violations ?? 0) + (badgeCounts?.shiftMismatches ?? 0);
-  const pendingOTCount = badgeCounts?.pendingOT ?? 0;
   const attendanceViolationCount = badgeCounts?.attendanceViolations ?? 0;
 
   const menuItemClass = (isActive: boolean) => `w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-medium transition ${
@@ -127,23 +123,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
           </button>
         )}
 
-        {/* Overtime Page */}
-        {(hasPermission('MANAGE_OT') || hasPermission('PROPOSE_DEPT_OT')) && (
-          <button
-            onClick={() => onSelectPage('overtime')}
-            className={menuItemClass(activePage === 'overtime')}
-          >
-            <div className="flex items-center gap-2.5">
-              <Clock className={`w-4 h-4 ${activePage === 'overtime' ? 'text-[#FF5B26]' : 'text-slate-400'}`} />
-              <span>{t('overtime')}</span>
-            </div>
-            {pendingOTCount > 0 && (
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800">
-                {pendingOTCount}
-              </span>
-            )}
-          </button>
-        )}
+        {/* Overtime Table đã gộp vào Bảng chấm công (cột TC mỗi ngày):
+            menu ẩn khỏi sidebar nhưng route 'overtime' vẫn giữ để mở khi cần.
+            Logic OT + OCR + modal giữ nguyên trong OvertimePage. */}
 
         {/* Leave Pending Page */}
         {(hasPermission('MANAGE_LEAVE') || hasPermission('VIEW_DEPT_LEAVE')) && (
@@ -212,7 +194,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activePage, onSelectPage }) =>
           </button>
         )}
 
-        {/* Quản lý User & Nhật Ký - Chỉ hiển thị khi có quyền MANAGE_USERS (Kieu, Glory) */}
+        {/* Quản lý User & Nhật Ký - Chỉ hiển thị khi có quyền MANAGE_USERS (Kieu, Hoa, Glory) */}
         {hasPermission('MANAGE_USERS') && (
           <button
             onClick={() => onSelectPage('userManagement')}

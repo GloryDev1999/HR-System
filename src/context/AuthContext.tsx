@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from '../lib/defaultSettings';
 import { supabase } from '../lib/supabaseClient';
 import { getSetting } from '../lib/tables';
 import { logUserAction } from '../services/audit-log-service';
+import { checkLoginAllowed, recordLoginFailure, recordLoginSuccess, lockoutMessage } from '../services/login-guard';
 
 interface AuthContextType {
   /** Phiên đăng nhập hiện tại; null = chưa đăng nhập */
@@ -153,13 +154,21 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   );
 
   const login = useCallback(async (emailOrUsername: string, password: string): Promise<{ ok: boolean; error?: string }> => {
-    const email = usernameToEmail(emailOrUsername);
     if (!emailOrUsername.trim() || !password) return { ok: false, error: 'Vui lòng nhập email đăng nhập và mật khẩu' };
 
+    // Lớp chống dò mật khẩu phía client (server Supabase Auth vẫn rate-limit độc lập)
+    const gate = checkLoginAllowed(emailOrUsername);
+    if (!gate.allowed) {
+      return { ok: false, error: lockoutMessage(gate.retryAfterSec) };
+    }
+
+    const email = usernameToEmail(emailOrUsername);
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error || !data.user) {
+      recordLoginFailure(emailOrUsername);
       return { ok: false, error: 'Tên đăng nhập hoặc mật khẩu không đúng' };
     }
+    recordLoginSuccess(emailOrUsername);
 
     const s = sessionFromUser(data.user);
     if (!s) {

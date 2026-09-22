@@ -24,7 +24,7 @@ import { UserManagementPage } from './pages/UserManagementPage';
 import { presenceManager } from './services/presence-service';
 
 const Shell: React.FC = () => {
-  const { session, currentRole, hasPermission } = useAuth();
+  const { session, currentRole, hasPermission, logout } = useAuth();
   const [activePage, setActivePage] = useState<NavPageId>('dashboard');
   const isMasterUser = currentRole === 'AD System' || currentRole === 'HR Manager' || currentRole === 'HR Admin';
 
@@ -49,6 +49,25 @@ const Shell: React.FC = () => {
     presenceManager.updateCurrentTab(activePage);
   }, [activePage]);
 
+  // Tự đăng xuất sau 30 phút không thao tác (máy dùng chung ở xưởng).
+  // 0đ, thuần client: server Supabase vẫn giữ JWT expiry riêng.
+  useEffect(() => {
+    if (!session) return;
+    const TIMEOUT_MS = 30 * 60 * 1000;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const reset = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => logout(), TIMEOUT_MS);
+    };
+    const events = ['mousedown', 'keydown', 'touchstart', 'wheel'] as const;
+    events.forEach((ev) => window.addEventListener(ev, reset, { passive: true }));
+    reset();
+    return () => {
+      if (timer) clearTimeout(timer);
+      events.forEach((ev) => window.removeEventListener(ev, reset));
+    };
+  }, [session, logout]);
+
   if (!session) {
     return <LoginScreen />;
   }
@@ -57,7 +76,7 @@ const Shell: React.FC = () => {
     <Layout activePage={activePage} onSelectPage={setActivePage}>
       {activePage === 'dashboard' && <DashboardPage onNavigate={setActivePage} />}
       {activePage === 'employees' && <EmployeeListPage />}
-      {activePage === 'timesheet' && <TimesheetCalendarPage />}
+      {activePage === 'timesheet' && <TimesheetCalendarPage onNavigate={setActivePage} />}
       {activePage === 'productivityQuality' && <ProductivityQualityPage />}
       {activePage === 'overtime' && <OvertimePage onNavigate={setActivePage} />}
       {activePage === 'leavePending' && <LeavePendingPage />}
@@ -89,7 +108,7 @@ const Shell: React.FC = () => {
             </div>
             <h2 className="text-base font-bold text-slate-900">Quyền truy cập bị giới hạn</h2>
             <p className="text-xs text-slate-500 max-w-sm mt-2 leading-relaxed">
-              Tài khoản không được phép thao tác mục Cài đặt hệ thống. Vui lòng đăng nhập với tài khoản <b>Kieu(Mia)</b> hoặc <b>Glory(Software)</b>.
+              Tài khoản không được phép thao tác mục Cài đặt hệ thống. Vui lòng đăng nhập với tài khoản <b>Kieu(Mia)</b>, <b>Hoa(Molly)</b> hoặc <b>Glory(Software)</b>.
             </p>
             <button
               onClick={() => setActivePage('dashboard')}

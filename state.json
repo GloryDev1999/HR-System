@@ -3,8 +3,8 @@
     "project_name": "SmartHR - Cloud-Native HRMS & Timekeeping System",
     "organization": "Leggett & Platt / SmartHR",
     "architecture": "Supabase Cloud Backend (Postgres + Auth + Realtime + RLS) + Cloudflare Pages static frontend (React + TypeScript + Web Workers + ONNX Runtime Web)",
-    "last_updated": "2026-09-21T00:00:00Z",
-    "current_phase": "Phase M30: Supabase full migration + Cloudflare cloud-only (xoa Dexie/LAN/OneDrive/offline-singlefile)",
+    "last_updated": "2026-09-22T02:45:00Z",
+    "current_phase": "Phase M35: Employee Excel + 3 clusters + incremental diff import (vitest 185/185 + tsc 0 + build OK)",
     "version": "4.0.0"
   },
   "agent_profile": {
@@ -45,7 +45,14 @@
       "diligence_reduction_rules": "Default applies company-wide, but fully customizable per department or employee class module",
       "diligence_off_ul_aggregation": "Off (unexcused) and UL (unpaid approved leave) aggregated: >= 2 days deducts 50%, >= 3 days = 0đ. Other leave types (AL, SL, PL, PH, ML, BT) do not deduct",
       "group_2_productivity_bonus": "Formula: (actualWD + annualLeaveAL) * 1,000,000 / standardWD. Probation = 0đ. UL/Off deduction rules applied. Configurable in Settings.",
-      "trade_union_fee": "Dynamic configuration in SettingsPage and per-employee customAllowances, default 40,000đ"
+      "trade_union_fee": "Dynamic configuration in SettingsPage and per-employee customAllowances, default 40,000đ",
+      "rbac_hoa_ad_system_2026_09_22": "kieu = hoa = glory cung role AD System full quyen (Settings + Users); 3 dept vinh/han/nguyetanh khong doi; HR Manager tuong lai van bi chan Settings/Users trong code. Thuc hien bang SQL promote-hoa-to-ad-system.sql (dang xuat/dang nhap lai de JWT moi).",
+      "timesheet_3col_2026_09_22": "Moi ngay 3 cot: (1) Gio lam tu quet the, HC (OFFICE_M_S/M_F) tru 30p, Ca 1/2 khong tru, tran 8h; du 8 xanh, 6-7.9 cam, <6 do nhap nhay. (2) Phep suy tu leaveRequests: PENDING->nOff, APPROVED->n+loai phep, REJECTED->nOff; click sang menu bu phep. (3) TC gop tu Overtime Table, giu nguyen logic/OCR/modal (OvertimeEditModal dung chung), menu sidebar an nhung route giu.",
+      "header_cleanup_2026_09_22": "Bo pill Supabase latency + nut Xuat Excel o header; nut xuat Excel giu lai trong trang Bang cham cong.",
+      "security_0d_2026_09_22": "Uu tien 0d: Cloudflare WAF (block non-VN + challenge non-office IP) + 1 rate-limit rule (IP, 10s) + Bot Fight Mode; Supabase: doi pass mac dinh, tat public signup, MFA 3 admin, JWT 1800s; code: login-guard, khong in credential, auto-logout 30p, X-Frame-Options DENY. IP 10.233.98.x la LAN, allowlist phai dung IP public cua router.",
+      "parser_header_v2_2026_09_22": "Nap cham cong do header theo TEN COT (alias + bo dau + scoring), bat buoc Ma NV + Ngay, thieu thi bao ro tieu de thay vi doan index. ONNX table-structure (RapidTable SLANet) chi danh cho anh quet, khong dung cho .xlsx.",
+      "source_leave_punchdon_2026_09_22": "Goc LEP -> ca co dinh (uu tien sap ca) -> ngay -> gio vao/ra. Punch don so voi cua so ca: gan dau ca la VAO (MCO), gan cuoi ca la RA (MCI). Cot NGAY NGHI PHEP + PHEP: co quet thi hien dien thang; khong quet thi chot ma phep + PENDING (AL/UL/SL/PL), PH/BT/ML chi ma. Ngay M/D tu nhan dien. Di sai ca van du cong + canh bao (logic cu giu nguyen).",
+      "emp_excel_clusters_diff_2026_09_22": "Mau Excel NV 21 cot nhu modal, trung ma thi cap nhat. 3 cum: HC23=OFFICE_M_F, HC_CA=chinh thuc con lai, SEASONAL=moi thoi vu; mac dinh HC23; ky luong 21-20=thang luong, dieu huong ‹ ›, bo toggle + select thang/nam. Nap file incremental: khac thi modal duyet tung o moi ghi, khop thi bo qua; thoi vu timeline 1-31 rieng theo khoa ngay."
     }
   },
   "verified_schemas": {
@@ -439,6 +446,110 @@
         "Hien phap: agent/subagent/loop/pipeline/DEPLOY/report viet lai Supabase; xoa skill dexie-schema-architect + in-browser-backend-engine; learning KB-021",
         "Verify: tsc 0 loi, vitest 7 files 116/116 pass"
       ]
+    },
+    "M31_Timesheet3Col_Realtime_RBAC_2026_09_22": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "Header: removed Supabase latency pill + header Excel export (Header.tsx)",
+        "useLiveTable realtime fan-out: per-table listener set + per-table debounce (tables.ts)",
+        "day-hours.ts: worked from punches (office -30p, cap 8), tones 8/6-7.9/<6, leave from leaveRequests/cell codes",
+        "Timesheet 31x3 sub-columns (Gio/Phep/TC) + shared OvertimeEditModal + OT menu hidden (route kept)",
+        "excel-exporter 3 cols/day (base 6+dayIndex*3, summary at 102..124)",
+        "RBAC: hoa promoted to AD System (promote-hoa-to-ad-system.sql); code deny kept for future HR Managers"
+      ],
+      "files": [
+        "src/components/layout/Header.tsx",
+        "src/lib/tables.ts",
+        "src/services/day-hours.ts",
+        "src/test/day-hours.test.ts",
+        "src/components/overtime/OvertimeEditModal.tsx",
+        "src/pages/OvertimePage.tsx",
+        "src/pages/TimesheetCalendarPage.tsx",
+        "src/components/layout/Sidebar.tsx",
+        "src/services/excel-exporter.ts",
+        "src/App.tsx",
+        "supabase/promote-hoa-to-ad-system.sql",
+        "supabase/seed-users.sql",
+        "DEPLOY.md",
+        "pipeline.md",
+        "src/test/auth-rbac-presence.test.ts"
+      ],
+      "tests": "vitest 137/137 PASS, tsc --noEmit 0 errors"
+    },
+    "M32_Security_Hardening_0d_2026_09_22": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "login-guard.ts: per-account throttle 5 fails/60s, 8/300s, 12+/900s + 8 tests",
+        "AuthContext.login wired to guard; LoginScreen removed public test credentials",
+        "App auto-logout after 30m inactivity; _headers X-Frame-Options DENY + Permissions-Policy",
+        "admin-user message updated (Kieu/Hoa/Glory); DEPLOY section 9 zero-cost checklist"
+      ],
+      "files": [
+        "src/services/login-guard.ts",
+        "src/test/login-guard.test.ts",
+        "src/context/AuthContext.tsx",
+        "src/components/auth/LoginScreen.tsx",
+        "src/App.tsx",
+        "public/_headers",
+        "supabase/functions/admin-user/index.ts",
+        "DEPLOY.md"
+      ],
+      "tests": "vitest 145/145 PASS, tsc --noEmit 0 errors, vite build OK"
+    },
+    "M33_Parser_HeaderDetect_2026_09_22": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "detectHeaderRow: accent-insensitive normalize + alias scoring + greedy conflict resolution (empId+date required)",
+        "No silent hardcoded-index fallback; clear error listing found headers",
+        "15 new tests: reordered cols, MSNV/check-in aliases, traps (Kiem tra/Tang ca/Ca), serial dates"
+      ],
+      "files": [
+        "src/services/timesheet-parser-core.ts",
+        "src/test/timesheet-header-detect.test.ts"
+      ],
+      "tests": "vitest 160/160 PASS (15 new), tsc --noEmit 0 errors"
+    },
+    "M34_SourceLeave_PunchDon_2026_09_22": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "detectHeaderRow: merge 2-row headers; new fields leaveDate/leaveCode + hanh chinh alias",
+        "detectDateOrder M/D vs D/M from evidence; parseExcelDate order param",
+        "Source leave synthesis: cell code + PENDING leaves (AL/UL/SL/PL), PH/BT/ML code-only; _sourceLeave flag",
+        "Header: reclassifySinglePunch by shift window; skip recompute for source-leave cells; leaves dedupe merge",
+        "13 new tests replicating XuatLuoi screenshot fixture"
+      ],
+      "files": [
+        "src/services/timesheet-parser-core.ts",
+        "src/services/day-hours.ts",
+        "src/components/layout/Header.tsx",
+        "src/test/timesheet-source-leave.test.ts",
+        "src/test/day-hours.test.ts"
+      ],
+      "tests": "vitest 168/168 PASS, tsc --noEmit 0 errors"
+    },
+    "M35_EmpExcel_Clusters_DiffImport_2026_09_22": {
+      "status": "COMPLETED",
+      "completion_pct": 100,
+      "features": [
+        "employee-excel.ts: template 21 cols + parse/validate (7 tests); EmployeeListPage buttons + result modal",
+        "Timesheet 3 tabs (HC23/HC_CA/SEASONAL) + pay-period prev/next nav; default HC23; lazy per-cluster render",
+        "Header incremental import + diff-review modal (overwrite/add-only/cancel); OT verified preserved; leave UUID sanitize"
+      ],
+      "files": [
+        "src/services/employee-excel.ts",
+        "src/test/employee-excel.test.ts",
+        "src/pages/EmployeeListPage.tsx",
+        "src/pages/TimesheetCalendarPage.tsx",
+        "src/test/timesheet-clusters.test.ts",
+        "src/services/import-diff.ts",
+        "src/test/import-diff.test.ts",
+        "src/components/layout/Header.tsx"
+      ],
+      "tests": "vitest 185/185 PASS, tsc --noEmit 0 errors, vite build OK"
     }
   }
 }

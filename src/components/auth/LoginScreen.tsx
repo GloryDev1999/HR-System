@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Lock, User, LogIn, Eye, EyeOff, ShieldCheck } from 'lucide-react';
-import { useAuth, DEFAULT_ADMIN_USERNAME } from '../../context/AuthContext';
+import { useAuth } from '../../context/AuthContext';
 
 export const LoginScreen: React.FC = () => {
   const { login } = useAuth();
@@ -107,41 +107,18 @@ export const LoginScreen: React.FC = () => {
               )}
             </button>
 
-            {/* Quick Login buttons */}
+            {/* Ghi chú bảo mật: KHÔNG hiển thị tài khoản/mật khẩu mẫu ở màn hình public.
+                Tài khoản do System Admin cấp riêng; nhập sai 5 lần bị khóa tạm thời. */}
             <div className="pt-2 border-t border-slate-100">
-              <p className="text-[11px] font-bold text-slate-500 mb-2 text-center">
-                Chọn tài khoản kiểm tra phân quyền:
+              <p className="text-[11px] text-slate-500 mb-2 text-center leading-relaxed">
+                Tài khoản do quản trị hệ thống cấp riêng cho từng người.
+                <br />
+                Nhập sai 5 lần liên tiếp sẽ bị khóa tạm thời để chống dò mật khẩu.
               </p>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setUsername('vinh@leggett.com');
-                    setPassword('123456');
-                  }}
-                  className="px-2.5 py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-xl text-left transition cursor-pointer"
-                >
-                  <div className="font-bold text-xs">👤 Vinh</div>
-                  <div className="text-[10px] text-purple-600">Admin system (123456)</div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setUsername('kieu@leggett.com');
-                    setPassword('123456');
-                  }}
-                  className="px-2.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-left transition cursor-pointer"
-                >
-                  <div className="font-bold text-xs">👤 Kiều</div>
-                  <div className="text-[10px] text-blue-600">HR manager (123456)</div>
-                </button>
-              </div>
             </div>
 
             <div className="text-center text-[10px] text-slate-400 leading-relaxed">
-              • <b>Vinh (123456)</b>: Toàn quyền hệ thống &amp; Cài đặt RBAC
-              <br />• <b>Kiều (123456)</b>: Toàn quyền nhân sự (không vào Cài đặt)
+              Xác thực qua Supabase Auth. Nhập username (vd: kieu) hoặc full email.
             </div>
           </form>
         </div>

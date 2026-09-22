@@ -16,7 +16,7 @@ describe('Auth & RBAC - Ma trận phân quyền 6 vai trò (Supabase profiles)',
     // Test này khóa vai trò/phạm vi chuẩn của từng user.
     const expected: Record<string, { role: string; scope: string | null }> = {
       kieu: { role: 'AD System', scope: null },
-      hoa: { role: 'HR Manager', scope: null },
+      hoa: { role: 'AD System', scope: null },
       vinh: { role: 'Warehouse Admin', scope: 'WH' },
       nguyetanh: { role: 'QC Admin', scope: 'QC' },
       han: { role: 'Production Admin', scope: 'Production' },
@@ -29,7 +29,7 @@ describe('Auth & RBAC - Ma trận phân quyền 6 vai trò (Supabase profiles)',
     expect(Object.keys(expected)).toHaveLength(6);
   });
 
-  it('kiểm tra phân quyền: Kieu(Mia) và Glory(Software) có quyền MANAGE_USERS, Hoa(Molly) không có quyền MANAGE_USERS', () => {
+  it('kiểm tra phân quyền: Kieu(Mia), Hoa(Molly) và Glory(Software) full quyền (AD System); HR Manager tương lai vẫn bị chặn Settings/Users', () => {
     const perms = DEFAULT_SETTINGS.rolePermissions;
 
     const makeCheckPerm = (role: string) => (action: string): boolean => {
@@ -48,11 +48,18 @@ describe('Auth & RBAC - Ma trận phân quyền 6 vai trò (Supabase profiles)',
     expect(checkKieu('MANAGE_USERS')).toBe(true);
     expect(checkKieu('SYSTEM_SETTINGS')).toBe(true);
 
-    const checkHoa = makeCheckPerm('HR Manager');
-    expect(checkHoa('MANAGE_USERS')).toBe(false);
-    expect(checkHoa('SYSTEM_SETTINGS')).toBe(false);
+    // hoa đã promote lên AD System → full quyền như kieu/glory
+    const checkHoa = makeCheckPerm('AD System');
+    expect(checkHoa('MANAGE_USERS')).toBe(true);
+    expect(checkHoa('SYSTEM_SETTINGS')).toBe(true);
     expect(checkHoa('MANAGE_TIMESHEET')).toBe(true);
     expect(checkHoa('MANAGE_EMPLOYEES')).toBe(true);
+
+    // Role HR Manager (cho acc tương lai) vẫn bị chặn Settings/Users
+    const checkFutureHR = makeCheckPerm('HR Manager');
+    expect(checkFutureHR('MANAGE_USERS')).toBe(false);
+    expect(checkFutureHR('SYSTEM_SETTINGS')).toBe(false);
+    expect(checkFutureHR('MANAGE_TIMESHEET')).toBe(true);
   });
 
   it('kiểm tra phân quyền: Vinh(Glory) chỉ duy nhất có quyền sắp ca cho WH, không thấy các menu khác', () => {

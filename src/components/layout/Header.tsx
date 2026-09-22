@@ -1,13 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Upload,
-  Download,
   Globe,
   CheckCircle2,
   Loader2,
-  FileSpreadsheet,
   ChevronDown,
-  Cloud,
   LogOut,
   UserCircle2,
   Bell,
@@ -22,36 +19,15 @@ import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
 import { useModal } from '../../context/ModalContext';
-import { exportTimesheetToExcel } from '../../services/excel-exporter';
 import { parseTimesheetFile } from '../../services/timesheet-parser-service';
-import { useLiveTable, listAll, bulkUpsert, clearTable, getSetting } from '../../lib/tables';
-import { lanSyncService } from '../../services/lan-sync-service';
+import { reclassifySinglePunch } from '../../services/day-hours';
+import { useLiveTable, listAll, bulkUpsert } from '../../lib/tables';
+import { diffTimesheets, diffOvertimes, diffRawLogs, diffLeaves, type TsChange } from '../../services/import-diff';
 import { daysUntil as calcDaysUntil } from '../../services/pay-period';
 import { PresenceBar } from './PresenceBar';
 
-/** Đốm trạng thái kết nối Supabase realtime (thay đồng bộ JSON tay). */
-const SupabaseStatusPill: React.FC = () => {
-  const [online, setOnline] = React.useState(lanSyncService.getIsServerOnline());
-  const [latency, setLatency] = React.useState(0);
-  React.useEffect(() => lanSyncService.onStatus((o, lat) => {
-    setOnline(o);
-    setLatency(lat);
-  }), []);
-  return (
-    <span
-      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold border shrink-0 ${
-        online ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-rose-50 text-rose-700 border-rose-200'
-      }`}
-      title={online ? `Supabase realtime đã kết nối (${latency}ms)` : 'Chưa kết nối Supabase — kiểm tra mạng và .env'}
-    >
-      <span className={`w-2 h-2 rounded-full ${online ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-      <span>{online ? `Supabase ${latency}ms` : 'Offline'}</span>
-    </span>
-  );
-};
-
 export const Header: React.FC = () => {
-  const { session, currentRole, hasPermission, logout, refreshPermissions, departmentScope } = useAuth();
+  const { session, currentRole, hasPermission, logout, refreshPermissions } = useAuth();
   const { language, toggleLanguage, t } = useLanguage();
   const { success, error, warning, info } = useToast();
   const { alertModal, confirm } = useModal();
@@ -60,6 +36,29 @@ export const Header: React.FC = () => {
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
   const [importStatusText, setImportStatusText] = useState('');
+
+  // Modal rà soát diff trước khi ghi (incremental, KB-028)
+  const [diffReview, setDiffReview] = useState<null | {
+    tsAdded: number;
+    tsChanged: TsChange[];
+    otAdded: number;
+    otChanged: TsChange[];
+    otPreserved: number;
+    logsAdded: number;
+    leavesAdded: number;
+    resolve: (v: 'overwrite' | 'add-only' | null) => void;
+  }>(null);
+
+  const askDiffChoice = (summary: Omit<NonNullable<typeof diffReview>, 'resolve'>): Promise<'overwrite' | 'add-only' | null> => {
+    return new Promise((resolve) => {
+      setDiffReview({ ...summary, resolve });
+    });
+  };
+
+  const decideDiff = (v: 'overwrite' | 'add-only' | null) => {
+    diffReview?.resolve(v);
+    setDiffReview(null);
+  };
   const [isUserDropdownOpen, setIsUserDropdownOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
@@ -339,8 +338,21 @@ export const Header: React.FC = () => {
             for (const ts of postTimesheets) {
               const emp = empMap.get(String(ts.employeeId || '').toUpperCase());
               const shiftInfo = getShiftInfo(emp, ts.date);
-              const checkIn = String(ts.checkIn || '').trim();
-              const checkOut = String(ts.checkOut || '').trim();
+              // Ô phép từ file nguồn (NGÀY NGHỈ PHÉP + PHÉP): giữ nguyên mã phép,
+              // không tính lại thành OFF; yêu cầu chờ duyệt đã sinh ở parser (KB-027)
+              if ((ts as any)._sourceLeave) continue;
+              // QUY TẮC PUNCH ĐƠN (KB-027): máy dồn giờ chấm duy nhất vào cột Giờ vào.
+              // Gốc LEP → ca cố định (shiftInfo đã ưu tiên sắp ca) → gần đầu ca là VÀO
+              // (thiếu ra → MCO), gần cuối ca là RA (thiếu vào → MCI).
+              let checkIn = String(ts.checkIn || '').trim();
+              let checkOut = String(ts.checkOut || '').trim();
+              if ((checkIn && !checkOut) || (!checkIn && checkOut)) {
+                const fixed = reclassifySinglePunch(checkIn || checkOut, shiftInfo.start, shiftInfo.end);
+                checkIn = fixed.checkIn;
+                checkOut = fixed.checkOut;
+                ts.checkIn = checkIn;
+                ts.checkOut = checkOut;
+              }
 
               const [yr, mo, da] = ts.date.split('-').map(Number);
               const dayOfWeek = new Date(yr, mo - 1, da).getDay(); // 0: CN, 1: T2.. 6: T7
@@ -719,26 +731,69 @@ export const Header: React.FC = () => {
           }
 
           setImportProgress(90);
-          setImportStatusText('[6/6] Ghi lên Supabase...');
+          setImportStatusText('[6/7] So sánh với dữ liệu hệ thống...');
 
-          // Làm sạch và ghi mới tuần tự lên Supabase (mỗi op nguyên tử phía server).
+          // Rà soát diff incremental (KB-028): KHÔNG xóa toàn bảng nữa.
+          // Thêm mới + thay đổi + khớp (bỏ qua); thời vụ theo timeline 1-31 riêng
+          // nhờ khóa theo ngày, không ép vào khung 21-20.
+          const [existingTS, existingOT, existingLogs, existingLeaves] = await Promise.all([
+            listAll('dailyTimesheets'),
+            listAll('overtimeRecords'),
+            listAll('rawAttendanceLogs'),
+            listAll('leaveRequests'),
+          ]);
+          const tsDiff = diffTimesheets(existingTS, postTimesheets);
+          const otDiff = diffOvertimes(existingOT, overtimesToCreate);
+          const logsAdded = diffRawLogs(existingLogs, postRawLogs);
+          const leavesAdded = diffLeaves(existingLeaves, [...leaveRequestsToCreate, ...(msg.leaves || [])]);
+
+          const totalNew = tsDiff.added.length + otDiff.added.length + logsAdded.length + leavesAdded.length;
+          const totalChanged = tsDiff.changed.length + otDiff.changed.length;
+
+          if (totalNew === 0 && totalChanged === 0) {
+            setImportProgress(100);
+            setIsImporting(false);
+            info('Dữ liệu khớp 100%', 'File nguồn khớp hoàn toàn dữ liệu hệ thống — không có gì để cập nhật.');
+            return;
+          }
+
+          const choice = await askDiffChoice({
+            tsAdded: tsDiff.added.length,
+            tsChanged: tsDiff.changed,
+            otAdded: otDiff.added.length,
+            otChanged: otDiff.changed,
+            otPreserved: otDiff.preserved,
+            logsAdded: logsAdded.length,
+            leavesAdded: leavesAdded.length,
+          });
+          if (!choice) {
+            setIsImporting(false);
+            info('Đã hủy cập nhật', 'Dữ liệu hệ thống được giữ nguyên 100%.');
+            return;
+          }
+
+          setImportProgress(95);
+          setImportStatusText('[7/7] Ghi lên Supabase...');
+
+          // Ghi incremental tuần tự (mỗi op nguyên tử phía server).
           // KHÔNG clear shiftRosters để bảo toàn dữ liệu sắp ca!
-          await clearTable('dailyTimesheets');
-          await clearTable('overtimeRecords');
-          await clearTable('rawAttendanceLogs');
-          await clearTable('leaveRequests');
-
-          if (postTimesheets.length > 0) {
-            await bulkUpsert('dailyTimesheets', postTimesheets);
+          const tsToWrite = choice === 'overwrite'
+            ? [...tsDiff.added, ...tsDiff.changed.map(c => c.record)]
+            : tsDiff.added;
+          const otToWrite = choice === 'overwrite'
+            ? [...otDiff.added, ...otDiff.changed.map(c => c.record)]
+            : otDiff.added;
+          if (tsToWrite.length > 0) {
+            await bulkUpsert('dailyTimesheets', tsToWrite);
           }
-          if (overtimesToCreate.length > 0) {
-            await bulkUpsert('overtimeRecords', overtimesToCreate);
+          if (otToWrite.length > 0) {
+            await bulkUpsert('overtimeRecords', otToWrite);
           }
-          if (postRawLogs.length > 0) {
-            await bulkUpsert('rawAttendanceLogs', postRawLogs);
+          if (logsAdded.length > 0) {
+            await bulkUpsert('rawAttendanceLogs', logsAdded);
           }
-          if (leaveRequestsToCreate.length > 0) {
-            await bulkUpsert('leaveRequests', leaveRequestsToCreate);
+          if (leavesAdded.length > 0) {
+            await bulkUpsert('leaveRequests', leavesAdded);
           }
           const rostersToSave = Array.from(updatedRostersMap.values());
           if (rostersToSave.length > 0) {
@@ -753,46 +808,13 @@ export const Header: React.FC = () => {
           setIsImporting(false);
           success(
             'Nạp dữ liệu chấm công thành công!',
-            `Đã làm sạch bảng công cũ và cập nhật ${postTimesheets.length.toLocaleString()} ô công, ${overtimesToCreate.length.toLocaleString()} bản ghi tăng ca, ${restViolationCount} cảnh báo nghỉ < 12h, ${mismatchCount} cảnh báo đi sai ca.`
+            `Đã thêm ${totalNew.toLocaleString()} mới${choice === 'overwrite' ? ` + ghi đè ${totalChanged.toLocaleString()} thay đổi` : ` (bỏ qua ${totalChanged.toLocaleString()} thay đổi)`}${otDiff.preserved > 0 ? `, giữ ${otDiff.preserved} OT đã đối soát` : ''}. ${restViolationCount} cảnh báo nghỉ < 12h, ${mismatchCount} cảnh báo đi sai ca.`
           );
     } catch (err: any) {
       setIsImporting(false);
       error('Lỗi hệ thống', err.message);
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
-  const handleExportExcel = async () => {
-    try {
-      info('Đang chuẩn bị dữ liệu xuất Excel...', 'Hệ thống đang định dạng tiêu đề, chèn logo Leggett & Platt và áp dụng công thức.');
-      const emps = await listAll('employees');
-      const timesheets = await listAll('dailyTimesheets');
-      const overtimes = await listAll('overtimeRecords');
-
-      const savedMonth = localStorage.getItem('smarthr_selected_month');
-      const savedYear = localStorage.getItem('smarthr_selected_year');
-      const now = new Date();
-      const curMonth = savedMonth ? parseInt(savedMonth, 10) : (now.getMonth() + 1);
-      const curYear = savedYear ? parseInt(savedYear, 10) : now.getFullYear();
-
-      const exportEmps = departmentScope ? emps.filter(e => e.department === departmentScope) : emps;
-
-      if (exportEmps.length === 0) {
-        warning('Chưa có dữ liệu nhân viên để xuất tệp.');
-        return;
-      }
-
-      // Lấy settings hiện tại để truyền vào exporter (công thức custom)
-      let settings: any = undefined;
-      try {
-        const val = await getSetting('systemSettings');
-        if (val) settings = val;
-      } catch {}
-      await exportTimesheetToExcel(exportEmps, timesheets, overtimes, curMonth, curYear, 'ALL', settings);
-      success('Xuất file Excel thành công!', `Đã xuất ${exportEmps.length} NV kỳ ${curMonth}/${curYear} (Chính thức 21-20 + Thời vụ 1-31, 2 sheet nếu có đủ nhóm).`);
-    } catch (err: any) {
-      error('Lỗi xuất Excel', err.message);
     }
   };
 
@@ -806,9 +828,6 @@ export const Header: React.FC = () => {
           className="h-9 w-auto object-contain max-w-[200px]"
           loading="eager"
         />
-
-        {/* Trạng thái realtime Supabase (thay nút JSON/HR_Data đã bỏ) */}
-        <SupabaseStatusPill />
 
         {/* Chuông thông báo hợp đồng sắp hết hạn - CHỈ HIỂN THỊ VỚI PHÒNG NHÂN SỰ (HR) */}
         {isHR && (
@@ -890,18 +909,6 @@ export const Header: React.FC = () => {
               <Upload className="w-4 h-4 text-slate-600" />
             )}
             <span className="hidden lg:inline">{isImporting ? `${importProgress}%` : t('importExcel')}</span>
-          </button>
-        )}
-
-        {/* Export Button (yêu cầu quyền quản lý chấm công) */}
-        {hasPermission('MANAGE_TIMESHEET') && (
-          <button
-            onClick={handleExportExcel}
-            className="flex items-center gap-2 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl transition shadow-sm shadow-emerald-200"
-            title="Xuất bảng chốt công chuẩn theo mẫu KIỂM TRA CHÔT CÔNG THÁNG 08.2026.xlsx"
-          >
-            <FileSpreadsheet className="w-4 h-4" />
-            <span className="hidden lg:inline">{t('exportExcel')}</span>
           </button>
         )}
 
@@ -1011,6 +1018,85 @@ export const Header: React.FC = () => {
                 <div>• Tính giờ tăng ca thực tế & gắn cờ vào sớm (khung 6h-6h30)</div>
                 <div>• Kiểm soát vi phạm xoay ca không nghỉ đủ 12 tiếng</div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal rà soát diff trước khi cập nhật (incremental, KB-028) */}
+      {diffReview && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-md animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-100 max-h-[90vh] flex flex-col">
+            <h3 className="text-base font-bold text-slate-900 pb-3 border-b border-slate-100">
+              Rà soát trước khi cập nhật
+            </h3>
+            <div className="py-4 space-y-3 text-xs overflow-y-auto">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-center">
+                  <div className="text-lg font-extrabold text-emerald-700">{diffReview.tsAdded + diffReview.otAdded + diffReview.logsAdded + diffReview.leavesAdded}</div>
+                  <div className="font-semibold text-emerald-800">Dòng mới</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-center">
+                  <div className="text-lg font-extrabold text-amber-700">{diffReview.tsChanged.length + diffReview.otChanged.length}</div>
+                  <div className="font-semibold text-amber-800">Dòng thay đổi</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-sky-50 border border-sky-200 text-center">
+                  <div className="text-lg font-extrabold text-sky-700">{diffReview.leavesAdded}</div>
+                  <div className="font-semibold text-sky-800">Chờ bù phép mới</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-center">
+                  <div className="text-lg font-extrabold text-slate-700">{diffReview.otPreserved}</div>
+                  <div className="font-semibold text-slate-600">OT đã duyệt (giữ)</div>
+                </div>
+              </div>
+              {(diffReview.tsChanged.length + diffReview.otChanged.length) > 0 ? (
+                <div>
+                  <div className="font-bold text-slate-700 mb-1.5">
+                    Chi tiết thay đổi (ô công + tăng ca) — tối đa 200 dòng đầu:
+                  </div>
+                  <div className="max-h-64 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100">
+                    {[...diffReview.tsChanged, ...diffReview.otChanged].slice(0, 200).map((c, i) => (
+                      <div key={i} className="px-3 py-1.5">
+                        <span className="font-mono font-bold text-slate-800">{c.record.employeeId} • {c.record.date}</span>
+                        {c.conflicts.map((cf, j) => (
+                          <div key={j} className="text-slate-600">
+                            {cf.field}: <s className="text-slate-400">{cf.oldVal || '∅'}</s>
+                            <span className="mx-1 text-slate-400">→</span>
+                            <b className="text-orange-600">{cf.newVal || '∅'}</b>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                    {(diffReview.tsChanged.length + diffReview.otChanged.length) > 200 && (
+                      <div className="px-3 py-1.5 text-slate-400 italic">
+                        …và {(diffReview.tsChanged.length + diffReview.otChanged.length) - 200} dòng nữa
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-slate-500">Không có ô nào thay đổi — chỉ thêm dòng mới.</p>
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-4 border-t border-slate-100 flex-wrap">
+              <button
+                onClick={() => decideDiff(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                onClick={() => decideDiff('add-only')}
+                className="px-4 py-2 text-xs font-bold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-xl transition"
+              >
+                Chỉ thêm mới ({diffReview.tsAdded + diffReview.otAdded + diffReview.logsAdded + diffReview.leavesAdded})
+              </button>
+              <button
+                onClick={() => decideDiff('overwrite')}
+                className="px-4 py-2 text-xs font-bold text-white bg-orange-500 hover:bg-orange-600 rounded-xl shadow-md shadow-orange-200 transition"
+              >
+                Ghi đè + thêm mới ({diffReview.tsChanged.length + diffReview.otChanged.length} thay đổi)
+              </button>
             </div>
           </div>
         </div>
